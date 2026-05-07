@@ -4,5 +4,8 @@ use thiserror::Error;
 pub enum ContractError {
     #[error("{0}")]
     Std(#[from] cosmwasm_std::StdError),
-    // TODO: add contract-specific errors in P-2
+    #[error("not verifier")]
+    NotVerifier {},
+    #[error("invalid bridge payload")]
+    InvalidPayload {},
 }

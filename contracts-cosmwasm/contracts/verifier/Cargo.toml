@@ -17,4 +17,9 @@ thiserror       = { workspace = true }
 tessera-types   = { workspace = true }
 
 [dev-dependencies]
-cw-multi-test = { workspace = true }
+cw-multi-test      = { workspace = true }
+bond               = { path = "../../contracts/bond" }
+relayer-registry   = { path = "../../contracts/relayer-registry" }
+tusdc              = { path = "../../contracts/tusdc" }
+bridge-mint        = { path = "../../contracts/bridge-mint" }
+bridge-vault       = { path = "../../contracts/bridge-vault" }

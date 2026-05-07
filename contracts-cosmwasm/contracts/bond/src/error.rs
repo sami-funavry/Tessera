@@ -4,5 +4,18 @@ use thiserror::Error;
 pub enum ContractError {
     #[error("{0}")]
     Std(#[from] cosmwasm_std::StdError),
-    // TODO: add contract-specific errors in P-2
+    #[error("not deployer")]
+    NotDeployer {},
+    #[error("verifier already set")]
+    VerifierAlreadySet {},
+    #[error("not verifier")]
+    NotVerifier {},
+    #[error("no native untrn funds sent")]
+    NativeFundsRequired {},
+    #[error("insufficient bond balance")]
+    InsufficientFunds {},
+    #[error("withdrawal cooldown not elapsed")]
+    WithdrawalCooldown {},
+    #[error("transfer failed")]
+    TransferFailed {},
 }

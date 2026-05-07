@@ -1194,15 +1194,20 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 name = "verifier"
 version = "0.1.0"
 dependencies = [
+ "bond",
+ "bridge-mint",
+ "bridge-vault",
  "cosmwasm-schema",
  "cosmwasm-std",
  "cw-multi-test",
  "cw-storage-plus",
  "cw2",
+ "relayer-registry",
  "schemars",
  "serde",
  "tessera-types",
  "thiserror 1.0.69",
+ "tusdc",
 ]
 
 [[package]]

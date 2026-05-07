@@ -69,3 +69,25 @@
 **Notes:** The `_verifyProof` stub (non-empty proof = valid) is intentional for P-1. Real Patricia trie verification wired in P-4. The Bond/Registry one-time-setter pattern is the correct production deploy pattern — not a test-only hack. Virtual function coverage gap: the base `_verifyProof` body is counted as uncovered since it's always overridden by TestableVerifier; the 20% gap in Verifier is almost entirely this function.
 
 ---
+
+### [P-2] CosmWasm contracts + cw-multi-test scenarios — 2026-05-07
+
+**Prompt:** Implement all 6 CosmWasm contracts mirror to Solidity P-1, write cw-multi-test suite covering S-1 through S-4 demo scenarios, cargo test + clippy both clean, show diff before commit.
+
+**Actions:**
+- Implemented all 6 CosmWasm contracts from empty stubs: `tusdc` (standalone CW20 with 24h claim rate-limit, SetBridgeMint, BridgeMintTo/BridgeBurnFrom), `bond` (native uNTRN custody, 100/50/25 NTRN thresholds, withdrawal cooldown, one-time SetVerifier), `relayer-registry` (Active/Benched/CoolingDown/Deregistered state machine, swap-and-pop active list, cross-contract bond queries, one-time SetVerifier), `bridge-mint` (IApp OnCrossChainMessage → tusdc.BridgeMintTo; Burn), `bridge-vault` (OnCrossChainMessage → tusdc.Transfer; Lock), `verifier` (submitMessage, challenge, executeMessage, claimAbsenceSlash; `_verify_proof` stub: non-empty = valid).
+- Extended `tessera-types` with `IAppExecuteMsg`, `BridgePayload`, `message_id()`, `submission_id()` helpers.
+- Updated `verifier/Cargo.toml` dev-dependencies to pull in all 5 other contracts for cw-multi-test integration tests.
+- Wrote 28 tests: 8 bond, 5 tusdc, 4 registry, 2 bridge-mint, 1 bridge-vault, 8 verifier integration (S-1 honest, S-2 lying, S-3 silent, S-4 frivolous + 4 edge cases).
+- Key bug fixes: `SubmissionStatus` had duplicate `PartialEq` derive from `#[cw_serde]`; CosmWasm 2.x `addr_validate` requires real bech32 — fixed all unit tests and integration tests to use `MockApi::default().addr_make("name")`; `BridgePayload.recipient` in integration test payloads must be valid bech32 or dispatch chain fails at tusdc.addr_validate.
+- `cargo clippy -- -D warnings` passes with zero warnings.
+
+**Outcome:** worked — 28/28 tests pass; `cargo clippy -- -D warnings` clean.
+
+**Files:** `contracts-cosmwasm/packages/tessera-types/src/{lib,envelope}.rs`, `contracts-cosmwasm/contracts/{bond,tusdc,relayer-registry,bridge-mint,bridge-vault,verifier}/src/{contract,msg,state,error,lib,tests/mod}.rs`, `contracts-cosmwasm/contracts/verifier/src/tests/scenarios.rs`, `contracts-cosmwasm/contracts/verifier/Cargo.toml`
+
+**Tokens:** ~55,000
+
+**Notes:** CosmWasm 2.x `MockApi::addr_validate` enforces real bech32 — bare strings like "admin" fail at contract entry points. Pattern fix: use `MockApi::default().addr_make("name")` everywhere in tests. The `_verify_proof` stub (non-empty bytes = valid) mirrors P-1 Solidity and will be replaced with real IAVL verification in P-4. Tessera-types `submission_id` uses string formatting (not keccak256) which is sufficient for P-2 tests; may need cryptographic hashing for on-chain uniqueness guarantees in P-4+.
+
+---
