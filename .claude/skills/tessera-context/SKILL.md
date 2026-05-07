@@ -51,10 +51,12 @@ Tessera solves three explicit problems:
 | Frivolous challenge | 25% of challenger's bond | 100% to submitter | Tx executes; user receives bridged tokens |
 | Submitter silence past handover | 50% of original assignee's bond | 100% to whoever submitted | Tx executes via successor; user receives |
 
-Three-tier bond thresholds per relayer per chain:
-- **Initial:** 0.5 ETH on Sepolia, 100 NTRN on Neutron
-- **Operating:** 0.25 ETH / 50 NTRN — below this, no new submissions accepted (one slash drops you here)
-- **Deregistration:** 0.125 ETH / 25 NTRN — below this, fully removed (two slashes hits here)
+Three-tier bond thresholds per relayer per chain (testnet values — production values in parentheses):
+- **Initial:** 0.02 ETH on Sepolia, 1 NTRN on Neutron (production: 0.5 ETH / 100 NTRN)
+- **Operating:** 0.01 ETH / 0.5 NTRN — below this, no new submissions accepted (production: 0.25 ETH / 50 NTRN)
+- **Deregistration:** 0.005 ETH / 0.25 NTRN — below this, fully removed (production: 0.125 ETH / 25 NTRN)
+
+> Testnet thresholds are low due to daily faucet yield limits (~0.05 ETH/day Sepolia, ~2 NTRN/day Neutron). All slashing ratios (50%/25%) and economic mechanisms are identical to production.
 
 Cooldown on re-registration: 1 hour testnet, 24 hours production. Voluntary bond withdrawal allowed after 1-hour idle period.
 

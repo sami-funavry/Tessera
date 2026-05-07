@@ -96,7 +96,7 @@ contract RelayerRegistry is IRelayerRegistry {
 
     // ─── External ─────────────────────────────────────────────────────────────
 
-    /// @notice Register as a relayer. Caller must have already deposited ≥0.5 ETH in Bond.
+    /// @notice Register as a relayer. Caller must have already deposited ≥INITIAL_BOND in Bond.
     /// @param pubkey Ed25519 public key used for off-chain proof signing.
     function register(bytes calldata pubkey) external {
         if (pubkey.length == 0) revert ZeroPubkey();
@@ -109,7 +109,7 @@ contract RelayerRegistry is IRelayerRegistry {
             uint256 unlocksAt = info.deregisteredAt + REREGISTRATION_COOLDOWN;
             if (block.timestamp < unlocksAt) revert CoolingDown(unlocksAt);
         }
-        if (bond.balanceOf(msg.sender) < 0.5 ether) revert InsufficientBond();
+        if (bond.balanceOf(msg.sender) < bond.INITIAL_BOND()) revert InsufficientBond();
 
         info.status = RelayerStatus.Active;
         info.pubkey = pubkey;

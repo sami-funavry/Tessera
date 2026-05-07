@@ -166,3 +166,58 @@
 **Notes:** The symmetric design is the key invariant: Solidity verifier accepts flags=0 (Keccak256), CosmWasm verifier accepts flags=1 (SHA-256) — each rejects the other's format at the `flags & 1` check. The `make_tessera_proof` helper computes `sha256(msg_id_str.as_bytes())` for the msgId field; this must match `tessera_types::message_id(&envelope)` exactly. The `abi.encodePacked(address)` → `abi.encode(address)` fix was necessary because `abi.decode` requires 32-byte ABI-padded input, not 20-byte packed.
 
 ---
+
+### [P-5 prep] wallet setup + bond threshold calibration — 2026-05-07
+
+**Prompt:** Fund 4 wallets (deployer + 2 relayers on Sepolia + Neutron); generate relayer mnemonics; calibrate bond thresholds to testnet faucet reality; confirm no dummy token reward pool is needed.
+
+**Actions:** Generated BIP39 mnemonics for Relayer A and B using `cast wallet new-mnemonic`; derived Neutron addresses via Python BIP32/bech32 script; added all 4 addresses + private keys to `.env`. Confirmed balances: 0.05 ETH / 2.0 NTRN per wallet. Reduced bond thresholds from 0.5 ETH/100 NTRN to 0.02 ETH/1 NTRN (50%/25% ratios preserved) across SPEC.md (R-43 + config examples + P-0 checklist), tessera-context SKILL.md, and plan file. Added testnet disclaimer to each. Confirmed challenger/absence rewards come from slashed bonds — no separate reward pool needed. No code changes; docs/plan/memory only.
+
+**Outcome:** worked — all numbers consistent across SPEC.md, skill, plan, and memory. Wallets funded and .env complete.
+
+**Files:** `.env`, `SPEC.md`, `.claude/skills/tessera-context/SKILL.md`, plan file, `PROMPT_LOG.md`
+
+**Tokens:** ~6,000
+
+**Notes:** Challenger rewards are self-funded from the slashed party's existing bond deposit — no external reward pool needed at all. Bond threshold calibration is docs-only for now; actual contract constants (Bond.sol, state.rs) get updated at P-5 start when we first touch code again.
+
+---
+
+### [P-5] deploy all 12 contracts + verify + smoke tests — 2026-05-07
+
+**Prompt:** Update contracts to testnet bond thresholds (0.02 ETH / 1 NTRN), deploy all 6 Solidity contracts to Sepolia and all 6 CosmWasm contracts to Neutron pion-1 using deployer (non-relayer) wallets, verify on Etherscan + Celatone, smoke-test both chains against real deployed contracts via Go relayer, report summary, check for secrets, wait for commit approval.
+
+**Actions:**
+1. Updated bond constants: `Bond.sol` 0.02/0.01/0.005 ETH; `state.rs` 1/0.5/0.25 NTRN; `IBond.sol` added `INITIAL_BOND()`; `RelayerRegistry.sol` replaced hardcoded 0.5 ether with `bond.INITIAL_BOND()`. Fixed 6 threshold-dependent tests in `Bond.t.sol` and `RelayerRegistry.t.sol` to use contract constants dynamically.
+2. Created `contracts-evm/script/Deploy.s.sol` (Foundry deploy + wiring + address log), `scripts/deploy/sepolia.sh` (broadcast + verify + addresses.json), `scripts/deploy/neutron.js` (CosmJS upload + instantiate × 6 + wiring + smoke), `scripts/deploy/package.json`, `scripts/addresses.json`.
+3. Fixed env var names: renamed `DEPLOYER_PRIVATE_KEY` → `SEPOLIA_DEPLOYER_PRIVATE_KEY`; `KEPLR_PRIVATE_KEY` → `NEUTRON_DEPLOYER_PRIVATE_KEY`; updated Deploy.s.sol to use `vm.startBroadcast()` (key from CLI `--private-key`).
+4. Fixed CosmWasm build: wasm binaries had `memory.copy`/`memory.fill` bulk-memory instructions rejected by Neutron pion-1 (CosmWasm v0.61.0). Rebuilt with `RUSTFLAGS='-C target-feature=-bulk-memory'` then lowered with `wasm-opt --enable-bulk-memory-opt --llvm-memory-copy-fill-lowering -Oz`.
+5. Deployed and verified 6 Sepolia contracts. Deployed 6 Neutron contracts (code IDs 13994–13999), wired all inter-contract references, smoke-tested `tusdc.claim()` on both chains.
+6. Added `Addresses` struct + 12 address fields to `relayer/internal/config/config.go`; added all 12 contract address env vars to `.env`.
+7. Final test run: forge 87/87 PASS, cargo 28/28 PASS, go -race 4 packages PASS.
+
+**Outcome:** worked — all 12 contracts deployed, verified, and wired; smoke tests pass on both chains; all 134 tests green.
+
+**Files:** `contracts-evm/src/Bond.sol`, `contracts-evm/src/RelayerRegistry.sol`, `contracts-evm/src/interfaces/IBond.sol`, `contracts-evm/script/Deploy.s.sol`, `contracts-evm/test/unit/Bond.t.sol`, `contracts-evm/test/unit/RelayerRegistry.t.sol`, `contracts-cosmwasm/contracts/bond/src/state.rs`, `scripts/deploy/sepolia.sh`, `scripts/deploy/neutron.js`, `scripts/deploy/package.json`, `scripts/addresses.json`, `relayer/internal/config/config.go`, `.env`
+
+**Tokens:** ~18,000
+
+**Notes:** The CosmWasm bulk-memory issue required two steps: `RUSTFLAGS='-C target-feature=-bulk-memory'` alone doesn't strip existing `memory.copy` instructions (LLVM still emits them); `wasm-opt --llvm-memory-copy-fill-lowering` does the actual lowering but needs `--enable-bulk-memory-opt` first to validate the input. The `vm.startBroadcast()` (no-arg) pattern is cleaner than `vm.envUint()` when the key is already passed via CLI `--private-key`; no 0x-prefix parsing issues.
+
+---
+
+### [P-5] commit + push P-5 work; explain P-6 flow — 2026-05-07
+
+**Prompt:** Review commit tree for unnecessary files or secrets; if clean, commit and push to GitHub with proper message. Explain what Phase 6 involves (2 relayers, bonding, cross-chain transfer, receipt mechanism) as documented in SPEC.md.
+
+**Actions:** Verified 15 files to stage — no secrets, no node_modules, no .env. Committed and pushed all P-5 changes. Explained P-6 flow: relayer registration, bond posting, Sepolia→Neutron transfer lifecycle (lock → proof → submit → verify → execute → mint), Neutron→Sepolia direction, and the receipt pattern.
+
+**Outcome:** worked — clean push; P-5 commit live on GitHub.
+
+**Files:** all P-5 staged files, `PROMPT_LOG.md`
+
+**Tokens:** ~3,000
+
+**Notes:** No "receipt back to chain 1" in Tessera MVP — finality is confirmed by watching destination chain events. Supabase indexer (P-6) bridges this for the frontend.
+
+---

@@ -221,9 +221,11 @@ The four scenarios below are simultaneously: (a) the demo content shown on Demo 
 **R-42.** **Absence slash.** A relayer who fails to submit within their assigned handover period (30s testnet) is slashed 50% of their bond on the destination chain. The slashed amount goes to the relayer who eventually submitted the message. Triggered by `claimAbsenceSlash(messageId, originalAssignee)` callable by anyone after the handover period.
 
 **R-43.** **Three-tier bond thresholds.** Per chain, per relayer:
-  - **Initial bond minimum:** required to register. Sepolia: 0.5 ETH. Neutron: 100 NTRN.
-  - **Operating threshold:** 50% of initial. Below this, the relayer cannot make new submissions but pending submissions still settle. Sepolia: 0.25 ETH. Neutron: 50 NTRN.
-  - **Deregistration threshold:** 25% of initial. Below this, the relayer is fully removed from the registry; cannot submit, cannot challenge. Sepolia: 0.125 ETH. Neutron: 25 NTRN.
+  - **Initial bond minimum:** required to register. Sepolia: 0.02 ETH. Neutron: 1 NTRN.
+  - **Operating threshold:** 50% of initial. Below this, the relayer cannot make new submissions but pending submissions still settle. Sepolia: 0.01 ETH. Neutron: 0.5 NTRN.
+  - **Deregistration threshold:** 25% of initial. Below this, the relayer is fully removed from the registry; cannot submit, cannot challenge. Sepolia: 0.005 ETH. Neutron: 0.25 NTRN.
+
+  > **Testnet note:** These thresholds are intentionally low because testnet faucets yield small daily amounts (Sepolia: ~0.05 ETH/day, Neutron: ~2 NTRN/day). In production deployments these values would be significantly higher (e.g., 0.5 ETH / 100 NTRN). The slashing ratios (50%/25%) and all economic mechanisms are identical.
 
 **R-44.** **Single bond per relayer per chain.** A relayer has one bond on Sepolia (in ETH) and one bond on Neutron (in NTRN). Both submission slashing and frivolous-challenge slashing draw from the same bond on the chain where the bad action occurred. There is no separate "challenger deposit" pool.
 
@@ -405,7 +407,7 @@ chains:
       bridge_vault: <DEPLOYED_VAULT>
       bridge_mint: <DEPLOYED_MINT>
       tusdc: <DEPLOYED_TUSDC>
-    bond_amount_initial: "500000000000000000"  # 0.5 ETH in wei
+    bond_amount_initial: "20000000000000000"   # 0.02 ETH in wei (testnet; production: 0.5 ETH)
 
   - name: neutron
     plugin: tendermint
@@ -416,7 +418,7 @@ chains:
     contracts:
       verifier: <DEPLOYED_VERIFIER>
       # ... etc
-    bond_amount_initial: "100000000"  # 100 NTRN
+    bond_amount_initial: "1000000"     # 1 NTRN in uNTRN (testnet; production: 100 NTRN)
 
 routes:
   - { from: sepolia, to: neutron, fee_bps: 10 }
@@ -701,8 +703,8 @@ See §2.1.1 above.
 - [ ] PROMPT_LOG.md present with at least one entry.
 - [ ] All tools installed and version-printed in a `versions.txt` committed at root.
 - [ ] Supabase project created, schema migration applied, test connection passes.
-- [ ] Sepolia RPC + faucet ETH both verified (`eth_blockNumber` succeeds, deployer wallet has ≥0.5 ETH).
-- [ ] Neutron RPC + faucet NTRN both verified (ABCI query succeeds, deployer wallet has ≥200 NTRN).
+- [ ] Sepolia RPC + faucet ETH both verified (`eth_blockNumber` succeeds, deployer wallet has ≥0.05 ETH).
+- [ ] Neutron RPC + faucet NTRN both verified (ABCI query succeeds, deployer wallet has ≥2 NTRN).
 - [ ] "Hello world" Go service deployed and reachable on chosen hosting.
 - [ ] CI runs and passes (with no real tests yet).
 - [ ] Smoke test stub committed.

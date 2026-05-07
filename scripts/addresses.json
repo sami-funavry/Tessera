@@ -1,0 +1,18 @@
+{
+  "sepolia": {
+    "tusdc": "0xa355a4C216080B4CD1231e3De96F7ee06226d7c4",
+    "bond": "0xe651e39903F04444Af400d1F38BB10a3f89Ef97a",
+    "relayer_registry": "0xAc52aeDBf264320CC2F3BE1c26af72b0198E2Fad",
+    "verifier": "0x92532d563400ACF3D377e1891fE880e787d9A47b",
+    "bridge_vault": "0x8538da0D97bdCd07a38a8eE42826B0cA5e660174",
+    "bridge_mint": "0x276BaAdfE0f40799f3F15E142dB2fB23b6377EC8"
+  },
+  "neutron": {
+    "tusdc": "neutron1m5ma9hh20y373zw6adf7rvcg32fupwtcjxpc9xunnl2kjnt4pejqlyw7wa",
+    "bond": "neutron1tzu97ujpa0fw6x5glsr9h6x9tfgwsulvxk4snwmvtqujdp5v9j6sgm05st",
+    "relayer_registry": "neutron10dll486zv7a4ps6ppvreqvgx0dwvruh2cxnv2p734t5m38ngx9gqcv677r",
+    "verifier": "neutron15nnzuqct22a9pthrywwhzdlcchyl74zyrry66eu3fadn5hdnqtgsmzd7qx",
+    "bridge_vault": "neutron1plylyr2zk022qdqska2wh87jsgjhwsgxx8mjw8h66qaf430m7uessvn7tx",
+    "bridge_mint": "neutron1yhl05vq5pw5a99puedk5dygdkazjn38d9raf80w78hyptp22ug6qpmmyh7"
+  }
+}

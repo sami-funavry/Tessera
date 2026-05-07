@@ -5,13 +5,16 @@ import "./interfaces/IBond.sol";
 
 /// @title Bond — ETH custody and slashing for Tessera relayers
 /// @notice Relayers deposit ETH here. Verifier slashes misbehaving relayers.
-///         Three-tier thresholds: Initial 0.5 ETH, Operating 0.25 ETH, Deregistration 0.125 ETH.
+///         Three-tier thresholds (testnet): Initial 0.02 ETH, Operating 0.01 ETH, Deregistration 0.005 ETH.
+///         Production equivalents: 0.5 ETH / 0.25 ETH / 0.125 ETH.
 contract Bond is IBond {
     // ─── Constants ───────────────────────────────────────────────────────────
 
-    uint256 public constant INITIAL_BOND = 0.5 ether;
-    uint256 public constant OPERATING_THRESHOLD = 0.25 ether;
-    uint256 public constant DEREGISTRATION_THRESHOLD = 0.125 ether;
+    // Testnet values — calibrated to daily faucet yield (~0.05 ETH/day Sepolia).
+    // Production: INITIAL=0.5 ETH, OPERATING=0.25 ETH, DEREGISTRATION=0.125 ETH.
+    uint256 public constant INITIAL_BOND = 0.02 ether;
+    uint256 public constant OPERATING_THRESHOLD = 0.01 ether;
+    uint256 public constant DEREGISTRATION_THRESHOLD = 0.005 ether;
     uint256 public constant WITHDRAWAL_COOLDOWN = 1 hours;
     uint256 public constant BASIS_POINTS = 10_000;
 

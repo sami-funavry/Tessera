@@ -43,29 +43,34 @@ contract BondTest is Test {
     // ─── requestWithdrawal ────────────────────────────────────────────────────
 
     function test_requestWithdrawal_reducesBalance() public {
-        bond.deposit{ value: 0.5 ether }(alice);
+        uint256 initial = bond.INITIAL_BOND();
+        uint256 half = initial / 2;
+        bond.deposit{ value: initial }(alice);
         vm.prank(alice);
-        bond.requestWithdrawal(0.25 ether);
-        // 0.5 - 0.25 = 0.25 remaining, which equals DEREGISTRATION_THRESHOLD (0.125 ETH)
-        // Wait — 0.25 >= 0.125 so this should pass
-        assertEq(bond.balanceOf(alice), 0.25 ether);
-        assertEq(bond.pendingWithdrawal(alice), 0.25 ether);
+        // Withdraw half — remaining = half >= DEREGISTRATION_THRESHOLD
+        bond.requestWithdrawal(half);
+        assertEq(bond.balanceOf(alice), initial - half);
+        assertEq(bond.pendingWithdrawal(alice), half);
     }
 
     function test_requestWithdrawal_belowDeregistrationThreshold_reverts() public {
-        bond.deposit{ value: 0.5 ether }(alice);
+        uint256 initial = bond.INITIAL_BOND();
+        uint256 dereg = bond.DEREGISTRATION_THRESHOLD();
+        bond.deposit{ value: initial }(alice);
         vm.prank(alice);
-        // Trying to withdraw leaving 0.1 ETH (< 0.125 deregistration threshold) should fail
+        // Withdraw leaving 1 wei below DEREGISTRATION_THRESHOLD — should revert
         vm.expectRevert(Bond.InsufficientBond.selector);
-        bond.requestWithdrawal(0.401 ether);
+        bond.requestWithdrawal(initial - dereg + 1);
     }
 
     function test_requestWithdrawal_exactDeregistrationThreshold_passes() public {
-        bond.deposit{ value: 0.5 ether }(alice);
+        uint256 initial = bond.INITIAL_BOND();
+        uint256 dereg = bond.DEREGISTRATION_THRESHOLD();
+        bond.deposit{ value: initial }(alice);
         vm.prank(alice);
-        // Withdraw 0.375, leaving exactly 0.125 = DEREGISTRATION_THRESHOLD
-        bond.requestWithdrawal(0.375 ether);
-        assertEq(bond.balanceOf(alice), 0.125 ether);
+        // Withdraw all but DEREGISTRATION_THRESHOLD — leaving exactly the minimum
+        bond.requestWithdrawal(initial - dereg);
+        assertEq(bond.balanceOf(alice), dereg);
     }
 
     // ─── withdraw ─────────────────────────────────────────────────────────────
@@ -147,12 +152,12 @@ contract BondTest is Test {
     // ─── meetsOperatingThreshold ──────────────────────────────────────────────
 
     function test_meetsOperatingThreshold_trueWhenAbove() public {
-        bond.deposit{ value: 0.25 ether }(alice);
+        bond.deposit{ value: bond.OPERATING_THRESHOLD() }(alice);
         assertTrue(bond.meetsOperatingThreshold(alice));
     }
 
     function test_meetsOperatingThreshold_falseWhenBelow() public {
-        bond.deposit{ value: 0.1 ether }(alice);
+        bond.deposit{ value: bond.OPERATING_THRESHOLD() - 1 }(alice);
         assertFalse(bond.meetsOperatingThreshold(alice));
     }
 

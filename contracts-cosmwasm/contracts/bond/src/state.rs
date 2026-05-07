@@ -9,8 +9,10 @@ pub const BALANCE: Map<&Addr, Uint128> = Map::new("balance");
 pub const LAST_ACTIVITY: Map<&Addr, u64> = Map::new("last_activity");
 
 // Thresholds in uNTRN (1 NTRN = 1_000_000 uNTRN).
-pub const INITIAL_BOND: Uint128 = Uint128::new(100_000_000);
-pub const OPERATING_THRESHOLD: Uint128 = Uint128::new(50_000_000);
-pub const DEREGISTRATION_THRESHOLD: Uint128 = Uint128::new(25_000_000);
+// Testnet values — calibrated to daily faucet yield (~2 NTRN/day Neutron).
+// Production: INITIAL=100_000_000, OPERATING=50_000_000, DEREGISTRATION=25_000_000.
+pub const INITIAL_BOND: Uint128 = Uint128::new(1_000_000);      // 1 NTRN
+pub const OPERATING_THRESHOLD: Uint128 = Uint128::new(500_000);  // 0.5 NTRN
+pub const DEREGISTRATION_THRESHOLD: Uint128 = Uint128::new(250_000); // 0.25 NTRN
 pub const WITHDRAWAL_COOLDOWN: u64 = 3_600; // 1 h
 pub const BASIS_POINTS: u128 = 10_000;

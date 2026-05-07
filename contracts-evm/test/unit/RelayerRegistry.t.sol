@@ -30,7 +30,7 @@ contract RelayerRegistryTest is Test {
     // ─── register ─────────────────────────────────────────────────────────────
 
     function test_register_insufficientBond_reverts() public {
-        _fund(alice, 0.4 ether); // below 0.5 ETH threshold
+        _fund(alice, bond.INITIAL_BOND() - 1); // 1 wei below INITIAL_BOND threshold
         vm.prank(alice);
         vm.expectRevert(RelayerRegistry.InsufficientBond.selector);
         registry.register(PUBKEY_A);
@@ -150,16 +150,17 @@ contract RelayerRegistryTest is Test {
     }
 
     function test_recordSlash_belowOperatingThreshold_benches() public {
-        _fund(alice, 0.5 ether);
+        // Fund exactly INITIAL_BOND so two 50% slashes bring alice below OPERATING_THRESHOLD.
+        _fund(alice, bond.INITIAL_BOND());
         vm.prank(alice);
         registry.register(PUBKEY_A);
-        // Slash alice 50% via bond (drops to 0.25 ETH — exactly at operating threshold)
+        // First 50% slash: INITIAL_BOND → INITIAL_BOND/2 = OPERATING_THRESHOLD (still at threshold, not benched)
         vm.prank(verifier);
         bond.slash(alice, bob, 5_000);
-        // Now slash again to drop to 0.125 ETH (deregistration threshold)
+        // Second 50% slash: OPERATING_THRESHOLD → OPERATING_THRESHOLD/2 = DEREGISTRATION_THRESHOLD (below, benched)
         vm.prank(verifier);
         bond.slash(alice, bob, 5_000);
-        // recordSlash twice to trigger state machine
+        // recordSlash twice to trigger state machine transitions
         vm.prank(verifier);
         registry.recordSlash(alice);
         vm.prank(verifier);

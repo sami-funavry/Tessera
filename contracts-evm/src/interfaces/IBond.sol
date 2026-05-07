@@ -18,4 +18,7 @@ interface IBond {
 
     /// @notice The deregistration threshold below which relayers are force-removed.
     function DEREGISTRATION_THRESHOLD() external view returns (uint256);
+
+    /// @notice The initial bond minimum required to register as a relayer.
+    function INITIAL_BOND() external view returns (uint256);
 }
