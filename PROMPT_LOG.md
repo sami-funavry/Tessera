@@ -45,3 +45,27 @@
 **Notes:** Etherscan V1 URL was broken (returned "deprecated" error) — fixed to V2 path before any other code relies on it. CosmWasm `error.rs` stubs needed explicit `ContractError` type to satisfy `pub use` in `lib.rs`. Supabase MCP requires a personal access token (not service-role key) — applied schema via node-postgres directly. Realtime publication (`ALTER PUBLICATION supabase_realtime ADD TABLE`) requires enabling via Supabase dashboard for `messages`, `submissions`, `disputes`, `events` tables before P-8 frontend work.
 
 ---
+
+### [P-1] Solidity contracts + Foundry tests — 2026-05-07
+
+**Prompt:** Move to phase 1. Implement all 6 Solidity contracts and tests per SPEC.md. No deployment. Stop when forge test -vvv passes 100%. Show diff, wait for commit approval.
+
+**Actions:**
+- Installed OpenZeppelin v5 via `forge install`.
+- Implemented all 6 contracts: `TUSDC.sol` (ERC20 + 24h claim rate-limit), `Bond.sol` (ETH custody, 3-tier thresholds, 1h withdrawal cooldown, onlyVerifier slash), `RelayerRegistry.sol` (ordered active list, swap-and-pop, state machine Active/Benched/CoolingDown/Deregistered), `BridgeVault.sol` (lock/release, IApp), `BridgeMint.sol` (mint/burn, IApp), `Verifier.sol` (submitMessage, challenge, executeMessage, claimAbsenceSlash, virtual _verifyProof stub).
+- Added interfaces: `IBond.sol`, `IRelayerRegistry.sol`, `IApp.sol`, and `libraries/MessageEnvelope.sol` (canonical envelope struct + messageId helper).
+- Changed Bond and Registry from immutable verifier to one-time `setVerifier()` setter — eliminates circular-dependency nonce-prediction hack, which broke under `forge coverage --ir-minimum`; matches production deploy pattern.
+- Wrote 77 tests across 7 test files: `TUSDC.t.sol` (14), `Bond.t.sol` (19 incl. fuzz), `RelayerRegistry.t.sol` (15), `BridgeVault.t.sol` (6), `BridgeMint.t.sol` (7), `Verifier.t.sol` (7), `BridgeScenarios.t.sol` (9 integration).
+- Added `TestableVerifier.sol` helper that overrides `_verifyProof` with a whitelist map — enables test control of proof validity without real Patricia trie computation.
+- All 4 demo scenarios tested and passing (S-1 honest, S-2 lying relayer, S-3 silent/handover, S-4 frivolous challenger).
+- Bug fixes during test run: TUSDC first-claim reverted at low timestamp (fixed: skip cooldown when `lastClaim==0`); wrong expected error in absence-slash test; Bond test missing `deal()` for ETH.
+
+**Outcome:** worked — 77/77 tests pass; coverage ≥80% for all 6 source files (Total: 91.06% lines, Verifier: exactly 80.00%).
+
+**Files:** `contracts-evm/src/TUSDC.sol`, `contracts-evm/src/Bond.sol`, `contracts-evm/src/RelayerRegistry.sol`, `contracts-evm/src/BridgeVault.sol`, `contracts-evm/src/BridgeMint.sol`, `contracts-evm/src/Verifier.sol`, `contracts-evm/src/interfaces/IBond.sol`, `contracts-evm/src/interfaces/IRelayerRegistry.sol`, `contracts-evm/src/interfaces/IApp.sol`, `contracts-evm/src/libraries/MessageEnvelope.sol`, `contracts-evm/test/unit/*.t.sol`, `contracts-evm/test/integration/BridgeScenarios.t.sol`, `contracts-evm/test/helpers/TestableVerifier.sol`, `.gas-snapshot`
+
+**Tokens:** ~35,000
+
+**Notes:** The `_verifyProof` stub (non-empty proof = valid) is intentional for P-1. Real Patricia trie verification wired in P-4. The Bond/Registry one-time-setter pattern is the correct production deploy pattern — not a test-only hack. Virtual function coverage gap: the base `_verifyProof` body is counted as uncovered since it's always overridden by TestableVerifier; the 20% gap in Verifier is almost entirely this function.
+
+---
