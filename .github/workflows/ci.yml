@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Solidity ──────────────────────────────────────────────────────────────
+  contracts-evm:
+    name: Foundry tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: stable
+
+      - name: Build
+        working-directory: contracts-evm
+        run: forge build --sizes
+
+      - name: Test
+        working-directory: contracts-evm
+        run: forge test -vvv
+
+      - name: Snapshot
+        working-directory: contracts-evm
+        run: forge snapshot --check || true   # non-blocking until P-1 baselines set
+
+  # ── CosmWasm ─────────────────────────────────────────────────────────────
+  contracts-cosmwasm:
+    name: CosmWasm tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            contracts-cosmwasm/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('contracts-cosmwasm/Cargo.lock') }}
+
+      - name: Clippy
+        working-directory: contracts-cosmwasm
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        working-directory: contracts-cosmwasm
+        run: cargo test --workspace
+
+      - name: Wasm build check
+        working-directory: contracts-cosmwasm
+        run: cargo check --target wasm32-unknown-unknown --workspace
+
+  # ── Go relayer ────────────────────────────────────────────────────────────
+  relayer:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+          cache-dependency-path: relayer/go.sum
+
+      - name: Build
+        working-directory: relayer
+        run: go build ./...
+
+      - name: Test (with race detector)
+        working-directory: relayer
+        run: go test -race -count=1 ./...
+
+      - name: Vet
+        working-directory: relayer
+        run: go vet ./...
+
+  # ── Frontend ──────────────────────────────────────────────────────────────
+  frontend:
+    name: TypeScript check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - name: Install
+        working-directory: frontend
+        run: pnpm install --frozen-lockfile
+
+      - name: Type check
+        working-directory: frontend
+        run: pnpm tsc --noEmit
+
+      - name: Build
+        working-directory: frontend
+        run: pnpm build

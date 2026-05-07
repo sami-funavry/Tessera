@@ -1,0 +1,14 @@
+# Tessera toolchain versions — generated 2026-05-07
+# Re-generate: bash scripts/print-versions.sh > versions.txt
+
+node:       v24.13.1
+pnpm:       10.33.4
+go:         go1.26.0
+forge:      forge Version: 1.6.0-v1.7.0
+cast:       cast Version: 1.6.0-v1.7.0
+anvil:      anvil Version: 1.6.0-v1.7.0
+rustc:      rustc 1.93.1 (01f6ddf75 2026-02-11)
+cargo:      cargo 1.93.1 (083ac5135 2025-12-15)
+wasm-pack:  wasm-pack 0.14.0
+docker:     29.4.1
+git:        2.43.0

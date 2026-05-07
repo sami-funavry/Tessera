@@ -32,3 +32,14 @@ Thumbs.db
 
 # Logs
 *.log
+scripts/smoke-test.log
+
+# TypeScript build info
+tsconfig.tsbuildinfo
+frontend/tsconfig.tsbuildinfo
+
+# Go binaries
+relayer/bin/
+
+# Foundry gas snapshots (committed intentionally per convention — but not broadcast)
+broadcast/

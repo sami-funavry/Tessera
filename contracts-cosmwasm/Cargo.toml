@@ -1,0 +1,35 @@
+[workspace]
+members = [
+    "contracts/relayer-registry",
+    "contracts/verifier",
+    "contracts/bond",
+    "contracts/bridge-vault",
+    "contracts/bridge-mint",
+    "contracts/tusdc",
+    "packages/tessera-types",
+]
+resolver = "2"
+
+[workspace.dependencies]
+cosmwasm-std      = { version = "2.1", features = ["cosmwasm_2_0"] }
+cosmwasm-schema   = "2.1"
+cw-storage-plus   = "2.0"
+cw2               = "2.0"
+cw20              = { version = "2.0", features = [] }
+cw20-base         = { version = "2.0", features = ["library"] }
+schemars          = "0.8"
+serde             = { version = "1.0", default-features = false, features = ["derive"] }
+thiserror         = "1.0"
+cw-multi-test     = "2.1"
+tessera-types     = { path = "packages/tessera-types" }
+
+[profile.release]
+codegen-units    = 1
+debug            = false
+debug-assertions = false
+incremental      = false
+lto              = true
+opt-level        = 3
+overflow-checks  = true
+panic            = "abort"
+rpath            = false

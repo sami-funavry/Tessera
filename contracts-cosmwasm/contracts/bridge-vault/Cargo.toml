@@ -1,0 +1,20 @@
+[package]
+name        = "bridge-vault"
+version     = "0.1.0"
+edition     = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cosmwasm-std    = { workspace = true }
+cosmwasm-schema = { workspace = true }
+cw-storage-plus = { workspace = true }
+cw2             = { workspace = true }
+schemars        = { workspace = true }
+serde           = { workspace = true }
+thiserror       = { workspace = true }
+tessera-types   = { workspace = true }
+
+[dev-dependencies]
+cw-multi-test = { workspace = true }
