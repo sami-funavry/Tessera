@@ -283,3 +283,28 @@
 **Notes:** The scenario package's mock plugins return a non-zero `[32]byte{0x01}` submissionID, which exercises the pending map correctly. Real Neutron submissions still return `[32]byte{}` until event parsing is added (P-6 known gap). The admin secret guard uses a simple header check — sufficient for testnet demo isolation; production would use mTLS. `ETHEREUM_SEPOLIA_ENDPOINT` rename is a breaking change for anyone with the old `.env` — document in the README.
 
 ---
+
+### [P-7+] security hardening + observability + submission deliverables — 2026-05-07
+
+**Prompt:** Fix remaining audit gaps (H-5, M-6, M-7), review notionfile_hackathon.txt scoring rubric for any pitfalls, ensure 10/10 on all scoring metrics, add Sentry observability, improve DB indexes, create prompt log highlights. Use subagents where possible.
+
+**Actions:**
+- Spawned two parallel subagents: one assessed all remaining security gaps (H-2 through H-5, M-6 through M-9) + current observability state + Supabase schema; one ran all 3 test suites and reported results.
+- Read scoring rubric from notionfile_hackathon.txt: 10 criteria, -25pp penalty for missing CLAUDE.md/prompt-log, criterion 8 (observability, 8%) requires PostHog + Sentry + env-based config.
+- Fixed H-5: added zero-submissionID guard in `submitter.go` — returns early if SubmitMessage returns [32]byte{}, preventing silent map key collision.
+- Fixed M-7: `Bond.requestWithdrawal` now reverts with `PendingWithdrawalExists` if called while a withdrawal is already pending — closes cooldown-reset attack vector. Added new test `test_requestWithdrawal_twiceBeforeWithdraw_reverts`.
+- Fixed M-6: `Verifier.submitMessage` now checks `sub.submittedAt != 0` and reverts with `DuplicateSubmission` — closes same-relayer same-block overwrite vector.
+- Added `internal/obs` package: thin Sentry wrapper (Init/Flush/CaptureError/CaptureMessage) reading SENTRY_DSN from env. Wired into CLI PersistentPreRun/PersistentPostRun and runner goroutine error paths. Used sentry-go v0.27.0 (compatible with cockroachdb/errors indirect dep; v0.46.2 broke `event.Extra` field).
+- Added migration 002: partial index on submissions WHERE status='pending', covering indexes on bonds, benchmark_runs, messages.updated_at, disputes.outcome.
+- Created `docs/prompt-log-highlights.md`: 5 best prompts (P-4b on-chain verification, P-4 transform layer, P-3 Ed25519 bypass, P-1 Solidity contracts, P-7 challenger) + 3 worst (P-5 CosmWasm bulk-memory, P-6 Neutron submissionId gap, P-0 Etherscan V1 URL) with analysis.
+- Added SENTRY_DSN + TESSERA_ENV to .env.example.
+
+**Outcome:** worked — 88 Foundry (was 87) + 5 Go packages + CosmWasm all pass; committed 3cd728d + pushed.
+
+**Files:** `contracts-evm/src/Bond.sol`, `contracts-evm/src/Verifier.sol`, `contracts-evm/test/unit/Bond.t.sol`, `relayer/internal/relayer/submitter.go`, `relayer/internal/relayer/runner.go`, `relayer/internal/cli/root.go`, `relayer/internal/obs/obs.go`, `supabase/migrations/002_indexes_and_constraints.sql`, `docs/prompt-log-highlights.md`, `.env.example`
+
+**Tokens:** ~35,000
+
+**Notes:** sentry-go v0.46.2 removed `event.Extra` which cockroachdb/errors (indirect dep) uses — must stay on v0.27.0 or use a build tag to isolate the Sentry import from cockroach. H-3 (wall-clock deadline) is not a real issue in Go: `time.Now().Add(...)` stores a monotonic component, and `time.Until` uses it for duration arithmetic — immune to NTP jumps unless times are serialized across process restarts. Noted in code comments.
+
+---
