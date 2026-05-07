@@ -91,3 +91,30 @@
 **Notes:** CosmWasm 2.x `MockApi::addr_validate` enforces real bech32 — bare strings like "admin" fail at contract entry points. Pattern fix: use `MockApi::default().addr_make("name")` everywhere in tests. The `_verify_proof` stub (non-empty bytes = valid) mirrors P-1 Solidity and will be replaced with real IAVL verification in P-4. Tessera-types `submission_id` uses string formatting (not keccak256) which is sufficient for P-2 tests; may need cryptographic hashing for on-chain uniqueness guarantees in P-4+.
 
 ---
+
+### [P-3] Go relayer skeleton — real chain plugins, Ed25519 verification, mock pipeline — 2026-05-07
+
+**Prompt summary:** Implement Phase 3 of the Tessera relayer. Build real Go chain plugins for Sepolia (go-ethereum v1.15.7) and Neutron (cometbft v0.38.12), expand the Plugin interface to match SPEC R-80, implement the `tessera fetch` CLI command, create a mock pipeline demonstrating the full Sepolia↔Neutron flow with stub transforms/submissions, and write Ed25519 unit tests including the critical forged-signature rejection case.
+
+**Files created/modified:**
+- `internal/chain/plugin.go` — expanded Plugin interface: Fingerprint, Event, MessageEnvelope types; VerifyConsensus, FetchBlockFingerprint, SubscribeEvents, TranslateProofTo, SubmitMessage, SubmitChallenge; ErrNotImplemented sentinel; CrossChainEvent kept for transform stub compatibility
+- `plugins/ethereum/plugin.go` — real ethclient+gethclient; lazy connect(); FetchBlockFingerprint returns stateRoot (32B); FetchProof via eth_getProof with placeholder zero address; VerifyConsensus documented stub (R-54/R-122); compile-time Plugin assertion
+- `plugins/ethereum/plugin_test.go` — unit tests: ChainID, stub consensus (no dial), ErrNotImplemented for translate/submit/challenge; integration tests gated on ETHERUM_SEPOLIA_ENDPOINT env var
+- `plugins/tendermint/plugin.go` — real rpchttp.HTTP client; VerifyConsensus: fetches Commit + Validators, builds ValidatorSet, calls valSet.VerifyCommit (2/3+ Ed25519 off-chain bypass R-55); FetchBlockFingerprint returns AppHash; FetchProof via ABCIQueryWithOptions with placeholder path
+- `plugins/tendermint/plugin_test.go` — TestVerifyConsensusUnit (single validator, positive + forged sig negative case); TestVerifyConsensusMultiValidator (4 validators, 3/4 passes = 75%>2/3, 1/4 fails = 25%<2/3; correctly handles NewValidatorSet address sorting); integration tests gated on NEUTRON_RPC_URL
+- `internal/pipeline/pipeline.go` — RunMockSepoliaToNeutron + RunMockNeutronToSepolia, 6-stage pipeline with real chain data + stub transforms/submissions; ErrNotImplemented handled gracefully
+- `internal/cli/root.go` — real `tessera fetch --chain [sepolia|neutron] --block N` command; `tessera test-scenario mock` runs both pipeline directions
+
+**Key decisions:**
+- go-ethereum pinned to v1.15.7 (v1.14.11 had a go-kzg-4844 build error with gnark-crypto v0.12.1)
+- cometbft pinned to v0.38.12 (v1.0.1 pulled in cometbft/api which breaks module resolution)
+- NewValidatorSet sorts by voting power then address; multi-validator test uses `addrToKey` map + valSet.Validators[i] ordering to ensure commit slot alignment with batch verifier
+- VerifyConsensus uses `commit.VoteSignBytes(chainID, i)` not `types.VoteSignBytes` directly — the commit's method reconstructs the vote from CommitSig (including Timestamp), which is what the batch verifier reproduces
+
+**Tests:** `go test ./...` PASS, `go test -race ./...` PASS. Integration tests auto-skip without env vars.
+
+**Tokens:** ~80,000
+
+**Notes:** The Ed25519 bypass is fully wired and proven correct by the forged-signature rejection test. The critical invariant: validator slot index in Commit must align with sorted ValidatorSet order, not the order validators were passed to NewValidatorSet. The pipeline is wired end-to-end; P-4 plugs into the TranslateProofTo stubs; P-6 plugs into SubmitMessage.
+
+---
