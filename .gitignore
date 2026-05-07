@@ -1,0 +1,34 @@
+# Local-only working files
+info/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Dependencies
+node_modules/
+target/
+
+# Build artifacts (Foundry, CosmWasm, Next.js)
+out/
+cache/
+broadcast/
+.next/
+dist/
+*.wasm
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Logs
+*.log
