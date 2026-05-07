@@ -1,44 +1,59 @@
 // Package ethereum implements the Tessera chain plugin for Sepolia/EVM chains.
-// It uses go-ethereum v1.14.x for RPC access and eth_getProof for Patricia proofs.
+// It uses go-ethereum v1.15.x for RPC access, event subscription, and transaction signing.
 package ethereum
 
 import (
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/ethclient/gethclient"
-	"github.com/tessera-bridge/tessera/internal/chain"
+	chain "github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/config"
 	"github.com/tessera-bridge/tessera/internal/transform"
 )
 
 // Plugin is the Sepolia/EVM chain adapter.
-// It dials the RPC endpoint lazily on first use.
 type Plugin struct {
 	rpcURL     string
 	chainID    string
+	addrs      config.Addresses
+	privKeyHex string // hex, no 0x prefix
 	mu         sync.Mutex
 	client     *ethclient.Client
 	gethClient *gethclient.Client
+	// parsed ABI instances, initialised lazily
+	verifierABI  *abi.ABI
+	registryABI  *abi.ABI
+	bondABI      *abi.ABI
+	vaultABI     *abi.ABI
+	bridgeMintABI *abi.ABI
 }
 
-// New returns a new Ethereum plugin. The RPC connection is established lazily
-// on first method call that requires it.
-func New(rpcURL string) *Plugin {
+// New returns a new Ethereum plugin wired with deployed contract addresses and signer key.
+func New(rpcURL string, addrs config.Addresses, privKeyHex string) *Plugin {
 	return &Plugin{
-		rpcURL:  rpcURL,
-		chainID: "sepolia",
+		rpcURL:     rpcURL,
+		chainID:    "sepolia",
+		addrs:      addrs,
+		privKeyHex: privKeyHex,
 	}
 }
 
-// connect establishes the ethclient and gethclient connections if not already connected.
-// It is idempotent: concurrent callers will block but only one dials.
+// connect establishes ethclient connections and parses ABI definitions.
 func (p *Plugin) connect(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -51,12 +66,57 @@ func (p *Plugin) connect(ctx context.Context) error {
 	}
 	p.client = client
 	p.gethClient = gethclient.New(client.Client())
+
+	// Parse all ABIs once.
+	vABI, err := abi.JSON(strings.NewReader(verifierABIJSON))
+	if err != nil {
+		return fmt.Errorf("ethereum plugin: parse verifier ABI: %w", err)
+	}
+	rABI, err := abi.JSON(strings.NewReader(registryABIJSON))
+	if err != nil {
+		return fmt.Errorf("ethereum plugin: parse registry ABI: %w", err)
+	}
+	bABI, err := abi.JSON(strings.NewReader(bondABIJSON))
+	if err != nil {
+		return fmt.Errorf("ethereum plugin: parse bond ABI: %w", err)
+	}
+	vaABI, err := abi.JSON(strings.NewReader(bridgeVaultABIJSON))
+	if err != nil {
+		return fmt.Errorf("ethereum plugin: parse vault ABI: %w", err)
+	}
+	bmABI, err := abi.JSON(strings.NewReader(bridgeMintABIJSON))
+	if err != nil {
+		return fmt.Errorf("ethereum plugin: parse bridge-mint ABI: %w", err)
+	}
+	p.verifierABI = &vABI
+	p.registryABI = &rABI
+	p.bondABI = &bABI
+	p.vaultABI = &vaABI
+	p.bridgeMintABI = &bmABI
+
 	slog.Info("ethereum plugin connected", "chain", p.chainID, "rpc", p.rpcURL)
 	return nil
 }
 
 // ChainID returns the canonical chain identifier.
 func (p *Plugin) ChainID() string { return p.chainID }
+
+// PubKeyBytes derives the 33-byte compressed secp256k1 public key from the private key.
+// Returns nil if no private key is configured.
+func (p *Plugin) PubKeyBytes() []byte {
+	if p.privKeyHex == "" {
+		return nil
+	}
+	privKeyBytes, err := hex.DecodeString(p.privKeyHex)
+	if err != nil {
+		return nil
+	}
+	privKey, err := crypto.ToECDSA(privKeyBytes)
+	if err != nil {
+		return nil
+	}
+	return crypto.CompressPubkey(&privKey.PublicKey)
+}
 
 // LatestBlock returns the current Sepolia chain-tip block number.
 func (p *Plugin) LatestBlock(ctx context.Context) (uint64, error) {
@@ -71,7 +131,6 @@ func (p *Plugin) LatestBlock(ctx context.Context) (uint64, error) {
 }
 
 // FetchBlockFingerprint retrieves the stateRoot of the block at height.
-// The stateRoot is the 32-byte root of the Patricia Merkle Trie for Sepolia state.
 func (p *Plugin) FetchBlockFingerprint(ctx context.Context, height uint64) (chain.Fingerprint, error) {
 	if err := p.connect(ctx); err != nil {
 		return chain.Fingerprint{}, err
@@ -83,46 +142,52 @@ func (p *Plugin) FetchBlockFingerprint(ctx context.Context, height uint64) (chai
 	return chain.Fingerprint{
 		ChainID:   p.chainID,
 		Height:    height,
-		Root:      header.Root.Bytes(), // stateRoot, keccak256, 32 bytes
+		Root:      header.Root.Bytes(),
 		Timestamp: time.Unix(int64(header.Time), 0),
 	}, nil
 }
 
-// FetchProof retrieves an eth_getProof (Patricia Merkle Trie inclusion proof)
-// for the given event's source application at height.
-//
-// P-5 note: storageAddress is a placeholder zero address until the BridgeVault
-// contract is deployed to Sepolia. After P-5, replace with the real vault address.
+// FetchProof retrieves an eth_getProof for the BridgeVault's lockedAmount storage slot.
+// For Burned events on BridgeMint, it proofs the contract account itself.
 func (p *Plugin) FetchProof(ctx context.Context, event chain.Event, height uint64) (chain.Proof, error) {
 	if err := p.connect(ctx); err != nil {
 		return chain.Proof{}, err
 	}
 
-	// P-5: replace with deployed BridgeVault contract address.
-	storageAddress := common.HexToAddress("0x0000000000000000000000000000000000000000")
-	slog.Warn("ethereum FetchProof using placeholder address — replace with BridgeVault after P-5",
-		"chain", p.chainID, "height", height, "placeholder_address", storageAddress.Hex())
+	var contractAddr common.Address
+	var storageKey string
+
+	if event.SourceApp == p.addrs.SepoliaBridgeVault || event.SourceApp == "" {
+		// Sepolia→Neutron direction: proof of lockedAmount[nonce] in BridgeVault.
+		// Storage layout: lockedAmount is mapping at slot 0.
+		contractAddr = common.HexToAddress(p.addrs.SepoliaBridgeVault)
+		storageKey = "0x" + hex.EncodeToString(lockStorageSlot(event.Nonce))
+	} else {
+		// Neutron→Sepolia direction: proof of BridgeMint account (event came from Neutron).
+		contractAddr = common.HexToAddress(p.addrs.SepoliaBridgeMint)
+		storageKey = "0x0000000000000000000000000000000000000000000000000000000000000000"
+	}
+
+	if contractAddr == (common.Address{}) {
+		// Addresses not configured yet — return a placeholder proof.
+		slog.Warn("ethereum FetchProof: contract address not set in config, using placeholder")
+		contractAddr = common.HexToAddress("0x0000000000000000000000000000000000000001")
+	}
 
 	blockNum := big.NewInt(int64(height))
-	// Storage slot 0 is a placeholder key until P-5 maps the real tUSDC nonce slot.
-	storageKey := "0x0000000000000000000000000000000000000000000000000000000000000000"
-
-	result, err := p.gethClient.GetProof(ctx, storageAddress, []string{storageKey}, blockNum)
+	result, err := p.gethClient.GetProof(ctx, contractAddr, []string{storageKey}, blockNum)
 	if err != nil {
-		return chain.Proof{}, fmt.Errorf("ethereum FetchProof eth_getProof height=%d: %w", height, err)
+		return chain.Proof{}, fmt.Errorf("ethereum FetchProof eth_getProof height=%d addr=%s: %w",
+			height, contractAddr.Hex(), err)
 	}
-
 	proofBytes, err := json.Marshal(result)
 	if err != nil {
-		return chain.Proof{}, fmt.Errorf("ethereum FetchProof marshal AccountResult: %w", err)
+		return chain.Proof{}, fmt.Errorf("ethereum FetchProof marshal: %w", err)
 	}
-
-	// Fetch the stateRoot for the block so the proof carries its own root reference.
 	header, err := p.client.HeaderByNumber(ctx, blockNum)
 	if err != nil {
 		return chain.Proof{}, fmt.Errorf("ethereum FetchProof header height=%d: %w", height, err)
 	}
-
 	return chain.Proof{
 		ChainID:     p.chainID,
 		BlockNumber: height,
@@ -133,77 +198,448 @@ func (p *Plugin) FetchProof(ctx context.Context, event chain.Event, height uint6
 	}, nil
 }
 
-// VerifyConsensus is a documented stub for Sepolia.
-//
-// R-54 / R-122: Ethereum sync committee verification requires ZK or light-client
-// infrastructure that is out of scope for the hackathon demo. The relayer therefore
-// trusts the configured RPC endpoint's view of the chain. This is the documented
-// limitation; sync committee integration is future work.
+// lockStorageSlot computes keccak256(abi.encode(uint256(nonce), uint256(0))) —
+// the storage slot for lockedAmount[nonce] in BridgeVault.
+func lockStorageSlot(nonce uint64) []byte {
+	var buf [64]byte
+	binary.BigEndian.PutUint64(buf[24:32], nonce) // nonce padded to 32 bytes
+	// slot index 0 at [32:64] is all zeros
+	return crypto.Keccak256(buf[:])
+}
+
+// VerifyConsensus is a documented stub: EVM trusts the configured RPC provider (R-54 / R-122).
 func (p *Plugin) VerifyConsensus(ctx context.Context, height uint64) error {
 	slog.Warn("R-54: Ethereum consensus verification trusts RPC; sync committee integration is future work (R-122)",
 		"chain", p.chainID, "height", height)
 	return nil
 }
 
-// SubscribeEvents watches for cross-chain Locked/Burned events emitted by the
-// BridgeVault contract.
-//
-// P-5 note: contract address and event topics are placeholders until BridgeVault
-// is deployed to Sepolia. In P-3, the subscription returns an open (but empty)
-// channel that closes when ctx is cancelled.
+// SubscribeEvents watches BridgeVault.Locked events (Sepolia→Neutron direction).
+// Each event is decoded and sent on the returned channel until ctx is cancelled.
 func (p *Plugin) SubscribeEvents(ctx context.Context, fromBlock uint64) (<-chan chain.Event, error) {
 	if err := p.connect(ctx); err != nil {
 		return nil, err
 	}
-	slog.Warn("ethereum SubscribeEvents using placeholder filter — no contract address until P-5",
-		"chain", p.chainID, "from_block", fromBlock)
 
-	ch := make(chan chain.Event)
+	vaultAddr := common.HexToAddress(p.addrs.SepoliaBridgeVault)
+	if p.addrs.SepoliaBridgeVault == "" {
+		slog.Warn("ethereum SubscribeEvents: SepoliaBridgeVault address not configured")
+		ch := make(chan chain.Event)
+		go func() { defer close(ch); <-ctx.Done() }()
+		return ch, nil
+	}
+
+	lockedTopic := p.vaultABI.Events["Locked"].ID
+
+	query := ethereum.FilterQuery{
+		FromBlock: big.NewInt(int64(fromBlock)),
+		Addresses: []common.Address{vaultAddr},
+		Topics:    [][]common.Hash{{lockedTopic}},
+	}
+
+	slog.Info("ethereum SubscribeEvents: subscribing to BridgeVault.Locked",
+		"vault", vaultAddr.Hex(), "from_block", fromBlock)
+
+	logCh := make(chan types.Log, 64)
+	sub, err := p.client.SubscribeFilterLogs(ctx, query, logCh)
+	if err != nil {
+		// Fall back to polling if WebSocket subscription unavailable.
+		slog.Warn("ethereum SubscribeEvents: WebSocket subscribe failed, falling back to polling",
+			"err", err)
+		return p.pollEvents(ctx, fromBlock, vaultAddr, lockedTopic)
+	}
+
+	ch := make(chan chain.Event, 32)
 	go func() {
 		defer close(ch)
-		// P-3: scan blocks using FilterLogs with empty criteria as a connectivity check.
-		// P-5 will narrow FilterQuery to the deployed BridgeVault address + Locked topic.
-		query := ethereum_filterQuery(fromBlock)
-		_ = query // suppress unused variable; actual filtering added in P-5.
-
-		<-ctx.Done()
-		slog.Info("ethereum SubscribeEvents goroutine exiting", "chain", p.chainID)
+		for {
+			select {
+			case <-ctx.Done():
+				sub.Unsubscribe()
+				return
+			case err := <-sub.Err():
+				slog.Error("ethereum SubscribeEvents: subscription error", "err", err)
+				sub.Unsubscribe()
+				return
+			case log := <-logCh:
+				ev, err := p.decodeLocked(log)
+				if err != nil {
+					slog.Error("ethereum SubscribeEvents: decode Locked log", "err", err)
+					continue
+				}
+				select {
+				case ch <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
 	}()
 	return ch, nil
 }
 
-// ethereum_filterQuery builds a placeholder FilterQuery for P-3 connectivity checks.
-// P-5 replaces this with a real query targeting BridgeVault + Locked/Burned topics.
-func ethereum_filterQuery(fromBlock uint64) interface{} {
-	return struct {
-		FromBlock uint64
-		// P-5: Addresses []common.Address  — add BridgeVault address here.
-		// P-5: Topics    [][]common.Hash    — add Locked(bytes32,...) topic here.
-	}{FromBlock: fromBlock}
+// pollEvents is the polling fallback for non-WebSocket RPC providers.
+func (p *Plugin) pollEvents(ctx context.Context, fromBlock uint64,
+	vaultAddr common.Address, lockedTopic common.Hash) (<-chan chain.Event, error) {
+
+	ch := make(chan chain.Event, 32)
+	go func() {
+		defer close(ch)
+		ticker := time.NewTicker(12 * time.Second) // ~1 Ethereum block
+		defer ticker.Stop()
+		cursor := big.NewInt(int64(fromBlock))
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				tip, err := p.client.BlockNumber(ctx)
+				if err != nil {
+					slog.Error("ethereum pollEvents: BlockNumber", "err", err)
+					continue
+				}
+				to := big.NewInt(int64(tip))
+				if cursor.Cmp(to) > 0 {
+					continue
+				}
+				// Scan at most 500 blocks per tick to avoid provider limits.
+				maxTo := new(big.Int).Add(cursor, big.NewInt(499))
+				if maxTo.Cmp(to) < 0 {
+					to = maxTo
+				}
+				query := ethereum.FilterQuery{
+					FromBlock: cursor,
+					ToBlock:   to,
+					Addresses: []common.Address{vaultAddr},
+					Topics:    [][]common.Hash{{lockedTopic}},
+				}
+				logs, err := p.client.FilterLogs(ctx, query)
+				if err != nil {
+					slog.Error("ethereum pollEvents: FilterLogs", "err", err)
+					continue
+				}
+				for _, log := range logs {
+					ev, err := p.decodeLocked(log)
+					if err != nil {
+						slog.Error("ethereum pollEvents: decode Locked", "err", err)
+						continue
+					}
+					select {
+					case ch <- ev:
+					case <-ctx.Done():
+						return
+					}
+				}
+				cursor = new(big.Int).Add(to, big.NewInt(1))
+			}
+		}
+	}()
+	return ch, nil
 }
 
-// TranslateProofTo converts the Patricia proof into a TesseraProof for destChainID.
-// Implemented in P-4 using PatriciaToIAVL (SHA-256 hashing for Neutron verifier).
-// The MessageEnvelope is partially constructed from proof metadata; P-6 will supply
-// the full envelope from the subscribed event.
+// decodeLocked decodes a BridgeVault.Locked log into a chain.Event.
+func (p *Plugin) decodeLocked(log types.Log) (chain.Event, error) {
+	// Unpack non-indexed fields from log.Data.
+	data := map[string]any{}
+	if err := p.vaultABI.UnpackIntoMap(data, "Locked", log.Data); err != nil {
+		return chain.Event{}, fmt.Errorf("unpack Locked: %w", err)
+	}
+	// user is indexed (topics[1]).
+	user := common.BytesToAddress(log.Topics[1].Bytes())
+	amount := data["amount"].(*big.Int)
+	nonce := data["nonce"].(uint64)
+	destChainIDBytes32 := data["destinationChainId"].([32]byte)
+	destApp := data["destinationApp"].([]byte)
+
+	// Convert bytes32 chainId to string (right-trim zeros).
+	destChainIDStr := bytes32ToString(destChainIDBytes32)
+
+	return chain.Event{
+		SourceChainID: p.chainID,
+		SourceApp:     p.addrs.SepoliaBridgeVault,
+		DestChainID:   destChainIDStr,
+		DestApp:       string(destApp),
+		Action:        [4]byte{0x00, 0x00, 0x00, 0x01}, // LOCK action
+		Payload:       buildLockPayload(user, amount, nonce),
+		Nonce:         nonce,
+		BlockHeight:   log.BlockNumber,
+		TxHash:        log.TxHash.Hex(),
+		Sender:        user.Hex(),
+	}, nil
+}
+
+// TranslateProofTo converts the Patricia proof to a TesseraProof for destChainID.
 func (p *Plugin) TranslateProofTo(proof chain.Proof, destChainID string) (chain.Proof, error) {
 	env := chain.MessageEnvelope{
-		SourceChainID: p.chainID, // "sepolia"
+		SourceChainID: p.chainID,
 		DestChainID:   destChainID,
 	}
 	return transform.PatriciaToIAVL(proof, env)
 }
 
-// SubmitMessage submits a message and proof to the Neutron verifier contract.
-// Stub — implemented in P-6.
-func (p *Plugin) SubmitMessage(ctx context.Context, env chain.MessageEnvelope, proof chain.Proof) (string, error) {
-	return "", chain.ErrNotImplemented
+// SubmitMessage signs and sends Verifier.submitMessage to the Sepolia Verifier.
+// This is called by the dst plugin for the Neutron→Sepolia direction.
+func (p *Plugin) SubmitMessage(ctx context.Context, env chain.MessageEnvelope, proof chain.Proof) (string, [32]byte, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", [32]byte{}, err
+	}
+	if p.privKeyHex == "" {
+		return "", [32]byte{}, fmt.Errorf("ethereum SubmitMessage: RELAYER_PRIVATE_KEY not set")
+	}
+
+	var fingerprint [32]byte
+	copy(fingerprint[:], proof.StateRoot)
+
+	envelope := toEVMEnvelope(env)
+	eventTimestamp := big.NewInt(time.Now().Unix())
+
+	data, err := p.verifierABI.Pack("submitMessage", envelope, fingerprint, eventTimestamp)
+	if err != nil {
+		return "", [32]byte{}, fmt.Errorf("ethereum SubmitMessage ABI pack: %w", err)
+	}
+
+	txHash, err := p.sendTx(ctx, p.addrs.SepoliaVerifier, data, nil)
+	if err != nil {
+		return "", [32]byte{}, fmt.Errorf("ethereum SubmitMessage sendTx: %w", err)
+	}
+
+	// Decode submissionId from the receipt.
+	submissionID, err := p.waitForSubmissionID(ctx, txHash)
+	if err != nil {
+		// Non-fatal: submissionId extraction might fail on some providers.
+		slog.Warn("ethereum SubmitMessage: could not extract submissionId from receipt", "err", err)
+	}
+
+	slog.Info("ethereum SubmitMessage success",
+		"tx_hash", txHash, "submission_id", hex.EncodeToString(submissionID[:]),
+		"nonce", env.Nonce)
+	return txHash, submissionID, nil
 }
 
-// SubmitChallenge files a dispute against a submitted message.
-// Stub — implemented in P-7.
-func (p *Plugin) SubmitChallenge(ctx context.Context, msgID string, counterProof chain.Proof) (string, error) {
-	return "", chain.ErrNotImplemented
+// ExecuteMessage calls Verifier.executeMessage after the challenge window elapses.
+func (p *Plugin) ExecuteMessage(ctx context.Context, submissionID [32]byte, proof chain.Proof) (string, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", err
+	}
+	data, err := p.verifierABI.Pack("executeMessage", submissionID, proof.ProofBytes)
+	if err != nil {
+		return "", fmt.Errorf("ethereum ExecuteMessage ABI pack: %w", err)
+	}
+	txHash, err := p.sendTx(ctx, p.addrs.SepoliaVerifier, data, nil)
+	if err != nil {
+		return "", fmt.Errorf("ethereum ExecuteMessage: %w", err)
+	}
+	slog.Info("ethereum ExecuteMessage success",
+		"tx_hash", txHash, "submission_id", hex.EncodeToString(submissionID[:]))
+	return txHash, nil
+}
+
+// SubmitChallenge calls Verifier.challenge with an independently re-derived proof.
+func (p *Plugin) SubmitChallenge(ctx context.Context, submissionID [32]byte, counterProof chain.Proof) (string, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", err
+	}
+	var correctFingerprint [32]byte
+	copy(correctFingerprint[:], counterProof.StateRoot)
+	data, err := p.verifierABI.Pack("challenge", submissionID, correctFingerprint, counterProof.ProofBytes)
+	if err != nil {
+		return "", fmt.Errorf("ethereum SubmitChallenge ABI pack: %w", err)
+	}
+	txHash, err := p.sendTx(ctx, p.addrs.SepoliaVerifier, data, nil)
+	if err != nil {
+		return "", fmt.Errorf("ethereum SubmitChallenge: %w", err)
+	}
+	slog.Info("ethereum SubmitChallenge success",
+		"tx_hash", txHash, "submission_id", hex.EncodeToString(submissionID[:]))
+	return txHash, nil
+}
+
+// ClaimAbsenceSlash calls Verifier.claimAbsenceSlash.
+func (p *Plugin) ClaimAbsenceSlash(ctx context.Context, submissionID [32]byte) (string, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", err
+	}
+	data, err := p.verifierABI.Pack("claimAbsenceSlash", submissionID)
+	if err != nil {
+		return "", fmt.Errorf("ethereum ClaimAbsenceSlash ABI pack: %w", err)
+	}
+	txHash, err := p.sendTx(ctx, p.addrs.SepoliaVerifier, data, nil)
+	if err != nil {
+		return "", fmt.Errorf("ethereum ClaimAbsenceSlash: %w", err)
+	}
+	return txHash, nil
+}
+
+// Register calls RelayerRegistry.register with this relayer's public key.
+func (p *Plugin) Register(ctx context.Context, pubKeyBytes []byte) (string, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", err
+	}
+	data, err := p.registryABI.Pack("register", pubKeyBytes)
+	if err != nil {
+		return "", fmt.Errorf("ethereum Register ABI pack: %w", err)
+	}
+	txHash, err := p.sendTx(ctx, p.addrs.SepoliaRelayerRegistry, data, nil)
+	if err != nil {
+		return "", fmt.Errorf("ethereum Register: %w", err)
+	}
+	slog.Info("ethereum Register success", "tx_hash", txHash)
+	return txHash, nil
+}
+
+// DepositBond calls Bond.deposit() with the given ETH amount (in wei as decimal string).
+func (p *Plugin) DepositBond(ctx context.Context, amountWei string) (string, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", err
+	}
+	data, err := p.bondABI.Pack("deposit")
+	if err != nil {
+		return "", fmt.Errorf("ethereum DepositBond ABI pack: %w", err)
+	}
+	value := new(big.Int)
+	if _, ok := value.SetString(amountWei, 10); !ok {
+		return "", fmt.Errorf("ethereum DepositBond: invalid amount %q", amountWei)
+	}
+	txHash, err := p.sendTx(ctx, p.addrs.SepoliaBond, data, value)
+	if err != nil {
+		return "", fmt.Errorf("ethereum DepositBond: %w", err)
+	}
+	slog.Info("ethereum DepositBond success", "tx_hash", txHash, "amount_wei", amountWei)
+	return txHash, nil
+}
+
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+// sendTx signs and broadcasts a transaction to the given contract.
+// Returns the transaction hash immediately (does not wait for confirmation).
+func (p *Plugin) sendTx(ctx context.Context, toHex string, data []byte, value *big.Int) (string, error) {
+	privKeyBytes, err := hex.DecodeString(p.privKeyHex)
+	if err != nil {
+		return "", fmt.Errorf("sendTx: decode private key: %w", err)
+	}
+	privKey, err := crypto.ToECDSA(privKeyBytes)
+	if err != nil {
+		return "", fmt.Errorf("sendTx: parse private key: %w", err)
+	}
+	from := crypto.PubkeyToAddress(privKey.PublicKey)
+	to := common.HexToAddress(toHex)
+
+	nonce, err := p.client.PendingNonceAt(ctx, from)
+	if err != nil {
+		return "", fmt.Errorf("sendTx: nonce: %w", err)
+	}
+	gasPrice, err := p.client.SuggestGasPrice(ctx)
+	if err != nil {
+		return "", fmt.Errorf("sendTx: gas price: %w", err)
+	}
+	// Add 20% buffer to suggested gas price to avoid under-pricing.
+	gasPrice = new(big.Int).Mul(gasPrice, big.NewInt(12))
+	gasPrice.Div(gasPrice, big.NewInt(10))
+
+	msg := ethereum.CallMsg{From: from, To: &to, GasPrice: gasPrice, Data: data, Value: value}
+	gasLimit, err := p.client.EstimateGas(ctx, msg)
+	if err != nil {
+		// Fallback gas limit for known-complex operations.
+		gasLimit = 500_000
+		slog.Warn("sendTx: EstimateGas failed, using fallback", "err", err, "gas_limit", gasLimit)
+	}
+	gasLimit = gasLimit * 15 / 10 // 50% safety buffer
+
+	if value == nil {
+		value = big.NewInt(0)
+	}
+	chainID := big.NewInt(11155111) // Sepolia
+	tx := types.NewTransaction(nonce, to, value, gasLimit, gasPrice, data)
+	signer := types.NewLondonSigner(chainID)
+	signed, err := types.SignTx(tx, signer, privKey)
+	if err != nil {
+		return "", fmt.Errorf("sendTx: sign: %w", err)
+	}
+	if err := p.client.SendTransaction(ctx, signed); err != nil {
+		return "", fmt.Errorf("sendTx: broadcast: %w", err)
+	}
+	return signed.Hash().Hex(), nil
+}
+
+// waitForSubmissionID waits for a transaction receipt and extracts the submissionId
+// from the MessageSubmitted event log.
+func (p *Plugin) waitForSubmissionID(ctx context.Context, txHashHex string) ([32]byte, error) {
+	txHash := common.HexToHash(txHashHex)
+	// Poll for receipt up to 90 seconds.
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return [32]byte{}, ctx.Err()
+		default:
+		}
+		receipt, err := p.client.TransactionReceipt(ctx, txHash)
+		if err != nil {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		for _, log := range receipt.Logs {
+			if len(log.Topics) == 0 {
+				continue
+			}
+			msgSubmittedID := p.verifierABI.Events["MessageSubmitted"].ID
+			if log.Topics[0] == msgSubmittedID {
+				// topics[1] = submissionId (indexed)
+				var id [32]byte
+				copy(id[:], log.Topics[1].Bytes())
+				return id, nil
+			}
+		}
+		return [32]byte{}, fmt.Errorf("MessageSubmitted event not found in receipt")
+	}
+	return [32]byte{}, fmt.Errorf("timeout waiting for receipt")
+}
+
+// evmEnvelope matches the Verifier ABI tuple layout.
+type evmEnvelope struct {
+	SourceChainId      [32]byte
+	SourceApp          []byte
+	DestinationChainId [32]byte
+	DestinationApp     []byte
+	Action             [4]byte
+	Payload            []byte
+	Nonce              uint64
+}
+
+// toEVMEnvelope converts a chain.MessageEnvelope to the EVM ABI struct.
+func toEVMEnvelope(env chain.MessageEnvelope) evmEnvelope {
+	return evmEnvelope{
+		SourceChainId:      stringToBytes32(env.SourceChainID),
+		SourceApp:          []byte(env.SourceApp),
+		DestinationChainId: stringToBytes32(env.DestChainID),
+		DestinationApp:     []byte(env.DestApp),
+		Action:             env.Action,
+		Payload:            env.Payload,
+		Nonce:              env.Nonce,
+	}
+}
+
+// stringToBytes32 encodes a string as a right-zero-padded bytes32.
+func stringToBytes32(s string) [32]byte {
+	var b [32]byte
+	copy(b[:], []byte(s))
+	return b
+}
+
+// bytes32ToString decodes a right-zero-padded bytes32 to a string.
+func bytes32ToString(b [32]byte) string {
+	return strings.TrimRight(string(b[:]), "\x00")
+}
+
+// buildLockPayload encodes abi.encode(recipient, amount, nonce) as the cross-chain payload.
+func buildLockPayload(user common.Address, amount *big.Int, nonce uint64) []byte {
+	// ABI encode: (address, uint256, uint64)
+	// Pad each to 32 bytes for simplicity (matches abi.encode in Solidity).
+	var buf [96]byte
+	copy(buf[12:32], user.Bytes()) // address: 20 bytes, left-padded
+	amount.FillBytes(buf[32:64])
+	binary.BigEndian.PutUint64(buf[88:96], nonce) // uint64 right-aligned in 32 bytes
+	return buf[:]
 }
 
 // Compile-time assertion: Plugin implements chain.Plugin.

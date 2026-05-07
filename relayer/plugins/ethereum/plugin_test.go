@@ -9,23 +9,25 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/config"
 	"github.com/tessera-bridge/tessera/plugins/ethereum"
 )
 
+// newTestPlugin returns a plugin wired with empty addresses and no signer key.
+// Suitable for unit tests that do not dial the chain.
+func newTestPlugin(rpcURL string) *ethereum.Plugin {
+	return ethereum.New(rpcURL, config.Addresses{}, "")
+}
+
 // TestEthereumPluginChainID verifies the plugin reports the correct chain identifier.
 func TestEthereumPluginChainID(t *testing.T) {
-	p := ethereum.New("http://localhost:8545")
+	p := newTestPlugin("http://localhost:8545")
 	assert.Equal(t, "sepolia", p.ChainID())
 }
 
-// TestEthereumPluginStubConsensus verifies VerifyConsensus is a documented stub
-// that returns nil (trusts RPC per R-54 / R-122) without requiring a network connection.
-//
-// This confirms the Ethereum consensus bypass contract: the EVM cannot verify
-// sync committee proofs at acceptable gas cost, so the relayer trusts its RPC.
+// TestEthereumPluginStubConsensus verifies VerifyConsensus returns nil without dialing (R-54 / R-122).
 func TestEthereumPluginStubConsensus(t *testing.T) {
-	// Using a non-existent local address to confirm the stub does NOT dial.
-	p := ethereum.New("http://127.0.0.1:19999")
+	p := newTestPlugin("http://127.0.0.1:19999")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	err := p.VerifyConsensus(ctx, 1234567)
@@ -33,27 +35,33 @@ func TestEthereumPluginStubConsensus(t *testing.T) {
 }
 
 // TestEthereumPluginTranslateProof verifies TranslateProofTo succeeds (P-4 implemented).
-// A proof with no ProofBytes produces a valid depth-0 TesseraProof.
 func TestEthereumPluginTranslateProof(t *testing.T) {
-	p := ethereum.New("http://127.0.0.1:19999")
+	p := newTestPlugin("http://127.0.0.1:19999")
 	result, err := p.TranslateProofTo(chain.Proof{ChainID: "sepolia"}, "pion-1")
 	require.NoError(t, err, "TranslateProofTo must not error after P-4 implementation")
 	assert.Equal(t, "pion-1", result.ChainID, "translated proof must target pion-1")
 	assert.NotEmpty(t, result.ProofBytes, "translated proof must have wire bytes")
 }
 
-// TestEthereumPluginStubSubmitMessage verifies SubmitMessage returns ErrNotImplemented.
-func TestEthereumPluginStubSubmitMessage(t *testing.T) {
-	p := ethereum.New("http://127.0.0.1:19999")
-	_, err := p.SubmitMessage(context.Background(), chain.MessageEnvelope{}, chain.Proof{})
-	assert.ErrorIs(t, err, chain.ErrNotImplemented, "SubmitMessage must return ErrNotImplemented until P-6")
+// TestEthereumPluginSubmitMessageNoKey verifies SubmitMessage returns an error when no key is set.
+func TestEthereumPluginSubmitMessageNoKey(t *testing.T) {
+	p := newTestPlugin("http://127.0.0.1:19999")
+	_, _, err := p.SubmitMessage(context.Background(), chain.MessageEnvelope{}, chain.Proof{})
+	// Should fail with "RELAYER_PRIVATE_KEY not set" (no key) or a dial error, not nil.
+	assert.Error(t, err, "SubmitMessage must return an error when no private key is configured")
 }
 
-// TestEthereumPluginStubSubmitChallenge verifies SubmitChallenge returns ErrNotImplemented.
-func TestEthereumPluginStubSubmitChallenge(t *testing.T) {
-	p := ethereum.New("http://127.0.0.1:19999")
-	_, err := p.SubmitChallenge(context.Background(), "msg-id", chain.Proof{})
-	assert.ErrorIs(t, err, chain.ErrNotImplemented, "SubmitChallenge must return ErrNotImplemented until P-7")
+// TestEthereumPluginSubmitChallengeNoKey verifies SubmitChallenge returns an error when no key is set.
+func TestEthereumPluginSubmitChallengeNoKey(t *testing.T) {
+	p := newTestPlugin("http://127.0.0.1:19999")
+	_, err := p.SubmitChallenge(context.Background(), [32]byte{}, chain.Proof{})
+	assert.Error(t, err, "SubmitChallenge must return an error when no private key is configured")
+}
+
+// TestEthereumPluginPubKeyBytesNoKey verifies PubKeyBytes returns nil when no key is set.
+func TestEthereumPluginPubKeyBytesNoKey(t *testing.T) {
+	p := newTestPlugin("http://127.0.0.1:19999")
+	assert.Nil(t, p.PubKeyBytes(), "PubKeyBytes must return nil when no private key is configured")
 }
 
 // TestEthereumPluginIntegration fetches a real Sepolia block fingerprint.
@@ -64,7 +72,7 @@ func TestEthereumPluginIntegration(t *testing.T) {
 		t.Skip("ETHERUM_SEPOLIA_ENDPOINT not set — skipping integration test")
 	}
 
-	p := ethereum.New(rpcURL)
+	p := newTestPlugin(rpcURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -79,18 +87,16 @@ func TestEthereumPluginIntegration(t *testing.T) {
 	assert.Equal(t, 32, len(fp.Root), "stateRoot must be exactly 32 bytes")
 	assert.False(t, fp.Timestamp.IsZero(), "block timestamp must not be zero")
 	t.Logf("Sepolia block %d stateRoot: 0x%x", fp.Height, fp.Root)
-	t.Logf("Sepolia block %d timestamp: %s", fp.Height, fp.Timestamp.UTC())
 }
 
-// TestEthereumPluginConsensusStubIntegration confirms VerifyConsensus returns nil
-// even when called with a real RPC. The stub never inspects the chain.
+// TestEthereumPluginConsensusStubIntegration confirms VerifyConsensus returns nil even with a real RPC.
 func TestEthereumPluginConsensusStubIntegration(t *testing.T) {
 	rpcURL := os.Getenv("ETHERUM_SEPOLIA_ENDPOINT")
 	if rpcURL == "" {
 		t.Skip("ETHERUM_SEPOLIA_ENDPOINT not set — skipping integration test")
 	}
 
-	p := ethereum.New(rpcURL)
+	p := newTestPlugin(rpcURL)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 

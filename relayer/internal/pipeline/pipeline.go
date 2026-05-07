@@ -98,7 +98,7 @@ func (r *Runner) RunMockSepoliaToNeutron(ctx context.Context) error {
 
 	// Stage 6: Submit to Neutron verifier.
 	// ErrNotImplemented is expected until P-6.
-	_, submitErr := r.TmPlugin.SubmitMessage(ctx, chain.MessageEnvelope{
+	_, _, submitErr := r.TmPlugin.SubmitMessage(ctx, chain.MessageEnvelope{
 		SourceChainID: "sepolia",
 		DestChainID:   "pion-1",
 		SourceApp:     mockEvent.SourceApp,
@@ -201,7 +201,7 @@ func (r *Runner) RunMockNeutronToSepolia(ctx context.Context) error {
 
 	// Stage 6: Submit to Sepolia verifier.
 	// ErrNotImplemented expected until P-6.
-	_, submitErr := r.EthPlugin.SubmitMessage(ctx, chain.MessageEnvelope{
+	_, _, submitErr := r.EthPlugin.SubmitMessage(ctx, chain.MessageEnvelope{
 		SourceChainID: "pion-1",
 		DestChainID:   "sepolia",
 		SourceApp:     mockEvent.SourceApp,

@@ -105,11 +105,23 @@ type Plugin interface {
 	TranslateProofTo(proof Proof, destChainID string) (Proof, error)
 
 	// SubmitMessage submits a cross-chain message and proof to the destination
-	// verifier contract. Returns the submission transaction hash.
-	// Stub returning ErrNotImplemented until P-6.
-	SubmitMessage(ctx context.Context, env MessageEnvelope, proof Proof) (string, error)
+	// verifier contract. Returns the submission transaction hash and 32-byte submissionId.
+	SubmitMessage(ctx context.Context, env MessageEnvelope, proof Proof) (txHash string, submissionID [32]byte, err error)
+
+	// ExecuteMessage triggers message dispatch after the 60-second challenge window.
+	// Called by the submitter goroutine automatically after the window elapses.
+	ExecuteMessage(ctx context.Context, submissionID [32]byte, proof Proof) (string, error)
 
 	// SubmitChallenge files a challenge against a submitted message.
-	// Stub returning ErrNotImplemented until P-7.
-	SubmitChallenge(ctx context.Context, msgID string, counterProof Proof) (string, error)
+	SubmitChallenge(ctx context.Context, submissionID [32]byte, counterProof Proof) (string, error)
+
+	// ClaimAbsenceSlash slashes the original assignee after the 30-second handover period.
+	ClaimAbsenceSlash(ctx context.Context, submissionID [32]byte) (string, error)
+
+	// Register registers this relayer address with its public key on the destination chain.
+	Register(ctx context.Context, pubKeyBytes []byte) (string, error)
+
+	// DepositBond deposits ETH/NTRN into the Bond contract.
+	// amount is in the native denomination (wei for EVM, untrn for Cosmos).
+	DepositBond(ctx context.Context, amount string) (string, error)
 }

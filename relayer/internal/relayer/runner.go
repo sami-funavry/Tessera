@@ -7,30 +7,76 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/supabase"
 )
 
 // Config holds the configuration for a single relayer instance.
 type Config struct {
-	RelayerAddr string       // this relayer's on-chain address (used for both chains)
-	EthPlugin   chain.Plugin // Sepolia plugin
-	TmPlugin    chain.Plugin // Neutron plugin
-	FromBlock   uint64       // starting block for event subscription
+	RelayerAddr string        // this relayer's on-chain address (used for both chains)
+	EthPlugin   chain.Plugin  // Sepolia plugin
+	TmPlugin    chain.Plugin  // Neutron plugin
+	FromBlock   uint64        // starting block for event subscription
+	DB          *supabase.Client // nil = no DB writes (e.g. in unit tests)
+}
+
+// pendingSubmission tracks a message the relayer submitted, waiting for challenge window.
+type pendingSubmission struct {
+	SubmissionID  [32]byte
+	SubmissionDBID int64
+	MessageDBID   int64
+	SourceChainID string
+	BlockHeight   uint64
+	Nonce         uint64
+	Deadline      time.Time // challenge window closes (60 s)
+	Env           chain.MessageEnvelope
+	Proof         chain.Proof // transformed proof submitted to dest
+	DestPlugin    chain.Plugin
+	TxHash        string
 }
 
 // Runner runs all goroutines and coordinates the relayer loop.
 type Runner struct {
-	cfg   Config
-	admin *AdminState
+	cfg     Config
+	admin   *AdminState
+	mu      sync.Mutex
+	pending map[[32]byte]*pendingSubmission // keyed by submissionID
 }
 
 // New creates a new Runner.
 func New(cfg Config) *Runner {
 	return &Runner{
-		cfg:   cfg,
-		admin: &AdminState{},
+		cfg:     cfg,
+		admin:   &AdminState{},
+		pending: make(map[[32]byte]*pendingSubmission),
 	}
+}
+
+// addPending registers a submission for the challenger to watch.
+func (r *Runner) addPending(ps *pendingSubmission) {
+	r.mu.Lock()
+	r.pending[ps.SubmissionID] = ps
+	r.mu.Unlock()
+}
+
+// removePending removes a submission from the watch list.
+func (r *Runner) removePending(id [32]byte) {
+	r.mu.Lock()
+	delete(r.pending, id)
+	r.mu.Unlock()
+}
+
+// pendingList returns a snapshot of all pending submissions.
+func (r *Runner) pendingList() []*pendingSubmission {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	list := make([]*pendingSubmission, 0, len(r.pending))
+	for _, ps := range r.pending {
+		list = append(list, ps)
+	}
+	return list
 }
 
 // Run starts the submitter, challenger, and admin goroutines and blocks until
@@ -56,7 +102,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}()
 
-	// Goroutine 5: challenge watcher (both directions).
+	// Goroutine: challenge watcher (both directions).
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

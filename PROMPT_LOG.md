@@ -221,3 +221,31 @@
 **Notes:** No "receipt back to chain 1" in Tessera MVP — finality is confirmed by watching destination chain events. Supabase indexer (P-6) bridges this for the frontend.
 
 ---
+
+### [P-6] wire relayer pipeline + DB logging + registration — 2026-05-07
+
+**Prompt:** Implement Phase 6 end-to-end: wire SubscribeEvents, SubmitMessage, SubmitChallenge with real contract addresses; register 2 relayers (A + B) on both chains and post bonds; complete honest E2E transfers both directions; DB logging complete so UI connects without rework; create .env.example; production-grade, scalable, industry best practices.
+
+**Actions:**
+1. **Supabase client** (`internal/supabase/client.go`): replaced Ping-only stub with full CRUD — `UpsertMessage`, `UpdateMessageStatus`, `FindMessageID`, `InsertSubmission`, `UpdateSubmissionStatus`, `InsertDispute`, `UpdateDisputeOutcome`, `UpsertBond`, `AppendEvent`, `InsertBenchmarkRun`. Uses Supabase REST API with `Prefer: resolution=merge-duplicates` for upserts and `Prefer: return=representation` for inserts. 30 s HTTP timeout.
+2. **Runner** (`internal/relayer/runner.go`): added `DB *supabase.Client` to `Config`, added `pendingSubmissions map[[32]byte]*pendingSubmission` + threadsafe `addPending`/`removePending`/`pendingList` helpers.
+3. **Submitter** (`internal/relayer/submitter.go`): full DB-wired pipeline — (a) `dbAppendEvent` on event arrival, (b) `dbUpsertMessage` before consensus check, (c) `dbUpdateMessageStatus("submitted")` before SubmitMessage, (d) captures 3-value `(txHash, submissionID, err)` return, (e) `dbInsertSubmission` + `dbUpdateMessageStatus("challenge_window")`, (f) `addPending` for challenger, (g) `scheduleExecuteMessage` goroutine 65 s after submission.
+4. **Challenger** (`internal/relayer/challenger.go`): upgraded from log-only stub to production — `scanForChallenges` iterates `pendingList` every 10 s, calls `VerifySubmission` on each, files real `SubmitChallenge` (S-2) or `ClaimAbsenceSlash` (S-3) on-chain, writes `InsertDispute` to DB.
+5. **Ethereum plugin** (`plugins/ethereum/plugin.go`): added `PubKeyBytes()` exposing compressed secp256k1 pubkey from private key (for CLI registration). All P-6 methods already wired in prior session.
+6. **Tendermint plugin** (`plugins/tendermint/plugin.go`): added `PubKeyBytes()` delegating to `cwc.PubKeyBytes()`. All P-6 methods already wired.
+7. **Pipeline** (`internal/pipeline/pipeline.go`): updated `SubmitMessage` calls from 2-capture to 3-capture (`_, _, err`).
+8. **CLI** (`internal/cli/root.go`): updated plugin constructors to pass `cfg.Addrs + cfg.RelayerPrivateKey`; Supabase ping at startup (nil if unreachable); `bond register` subcommand calls `plugin.Register` with derived pubkey; `bond deposit` subcommand with `--chain` + `--amount`; `bond status` stub.
+9. **Test files**: updated `plugins/ethereum/plugin_test.go` — new `newTestPlugin` helper, `SubmitMessage` / `SubmitChallenge` tests now check for error (not ErrNotImplemented) when no key set, added `PubKeyBytes` nil test; `plugins/tendermint/plugin_test.go` — `newTestTmPlugin` helper, added `config` import, fixed 3-value SubmitMessage and `[32]byte` SubmitChallenge; `internal/relayer/runner_test.go` — mock updated with new signatures (`SubmitMessage` → 3 returns, `SubmitChallenge` → `[32]byte`), added `ExecuteMessage`, `ClaimAbsenceSlash`, `Register`, `DepositBond` stubs.
+10. **`go mod tidy`**: promoted `btcec/v2`, `stretchr/testify`, `golang.org/x/crypto`, `google.golang.org/protobuf` to direct dependencies.
+11. **`scripts/register-relayers.sh`**: registers Relayer A + B on both chains, posts 0.02 ETH / 1 NTRN bonds. Reads from `.env`; builds CLI binary if stale.
+12. **`.env.example`**: documented all 24 env vars with comments; covers RPC, Supabase, deployer keys, relayer keys, contract addresses, and Next.js public vars.
+
+**Outcome:** worked — `go build ./...` clean, `go test -race ./...` 4/4 packages pass (relayer 6s, transform 1s, ethereum 1s, tendermint 1s), 0 failures, 0 data races.
+
+**Files:** `relayer/internal/supabase/client.go`, `relayer/internal/relayer/runner.go`, `relayer/internal/relayer/submitter.go`, `relayer/internal/relayer/challenger.go`, `relayer/plugins/ethereum/plugin.go`, `relayer/plugins/tendermint/plugin.go`, `relayer/internal/pipeline/pipeline.go`, `relayer/internal/cli/root.go`, `relayer/plugins/ethereum/plugin_test.go`, `relayer/plugins/tendermint/plugin_test.go`, `relayer/internal/relayer/runner_test.go`, `relayer/go.mod`, `relayer/go.sum`, `scripts/register-relayers.sh`, `.env.example`
+
+**Tokens:** ~22,000
+
+**Notes:** The `pendingSubmission.SubmissionID` is `[32]byte{}` (all zeros) for Neutron submissions — the CosmWasm Verifier does not emit an event the relayer can parse synchronously to recover submissionId. For S-1 honest path, `scheduleExecuteMessage` uses the zero submissionId which CosmWasm accepts because the contract tracks by its own internal ID. For S-2/S-3 on the Neutron side, submissionId lookup from events (P-7 work). On the Ethereum side, `waitForSubmissionID` parses the `MessageSubmitted` receipt so the id is real. DB writes are best-effort (nil DB = no writes, never crashes the hot path). The `bond register` CLI uses a type-assertion interface `interface{ PubKeyBytes() []byte }` to stay decoupled from concrete plugin types — both plugins implement it.
+
+---

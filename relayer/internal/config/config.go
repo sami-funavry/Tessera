@@ -36,7 +36,10 @@ type Config struct {
 	SupabaseServiceKey string
 	EtherscanAPIKey    string
 	EtherscanAPIURL    string
-	Addrs              Addresses
+	// RelayerPrivateKey is this instance's hex-encoded secp256k1 private key (no 0x prefix).
+	// Used for both EVM (Sepolia) and Cosmos (Neutron) signing.
+	RelayerPrivateKey string
+	Addrs             Addresses
 }
 
 // Load reads configuration from environment variables and returns an error
@@ -66,6 +69,7 @@ func Load() (*Config, error) {
 		SupabaseServiceKey: get("SUPABASE_SERVICE_ROLE_KEY"),
 		EtherscanAPIKey:    get("ETHERSCAN_API_KEY"),
 		EtherscanAPIURL:    get("ETHERSCAN_API_URL"),
+		RelayerPrivateKey:  get("RELAYER_PRIVATE_KEY"),
 		Addrs: Addresses{
 			SepoliaTUSDC:           getOpt("SEPOLIA_TUSDC"),
 			SepoliaBond:            getOpt("SEPOLIA_BOND"),

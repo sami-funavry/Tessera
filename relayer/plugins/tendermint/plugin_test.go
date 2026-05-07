@@ -13,37 +13,42 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/config"
 	"github.com/tessera-bridge/tessera/plugins/tendermint"
 )
 
+// newTestTmPlugin returns a plugin with empty addresses and no signer key.
+func newTestTmPlugin(rpcURL, chainID string) *tendermint.Plugin {
+	return tendermint.New(rpcURL, chainID, "", config.Addresses{}, "")
+}
+
 // TestTendermintPluginChainID verifies the plugin reports the correct chain identifier.
 func TestTendermintPluginChainID(t *testing.T) {
-	p := tendermint.New("http://127.0.0.1:26657", "pion-1")
+	p := newTestTmPlugin("http://127.0.0.1:26657", "pion-1")
 	assert.Equal(t, "pion-1", p.ChainID())
 }
 
 // TestTendermintPluginTranslateProof verifies TranslateProofTo succeeds (P-4 implemented).
-// A proof with no ProofBytes produces a valid depth-0 TesseraProof.
 func TestTendermintPluginTranslateProof(t *testing.T) {
-	p := tendermint.New("http://127.0.0.1:26657", "pion-1")
+	p := newTestTmPlugin("http://127.0.0.1:26657", "pion-1")
 	result, err := p.TranslateProofTo(chain.Proof{ChainID: "pion-1"}, "sepolia")
 	require.NoError(t, err, "TranslateProofTo must not error after P-4 implementation")
 	assert.Equal(t, "sepolia", result.ChainID, "translated proof must target sepolia")
 	assert.NotEmpty(t, result.ProofBytes, "translated proof must have wire bytes")
 }
 
-// TestTendermintPluginStubSubmitMessage verifies SubmitMessage returns ErrNotImplemented.
-func TestTendermintPluginStubSubmitMessage(t *testing.T) {
-	p := tendermint.New("http://127.0.0.1:26657", "pion-1")
-	_, err := p.SubmitMessage(context.Background(), chain.MessageEnvelope{}, chain.Proof{})
-	assert.ErrorIs(t, err, chain.ErrNotImplemented, "SubmitMessage must return ErrNotImplemented until P-6")
+// TestTendermintPluginSubmitMessageNoKey verifies SubmitMessage errors when no key is set.
+func TestTendermintPluginSubmitMessageNoKey(t *testing.T) {
+	p := newTestTmPlugin("http://127.0.0.1:26657", "pion-1")
+	_, _, err := p.SubmitMessage(context.Background(), chain.MessageEnvelope{}, chain.Proof{})
+	assert.Error(t, err, "SubmitMessage must return an error when no private key is configured")
 }
 
-// TestTendermintPluginStubSubmitChallenge verifies SubmitChallenge returns ErrNotImplemented.
-func TestTendermintPluginStubSubmitChallenge(t *testing.T) {
-	p := tendermint.New("http://127.0.0.1:26657", "pion-1")
-	_, err := p.SubmitChallenge(context.Background(), "msg-id", chain.Proof{})
-	assert.ErrorIs(t, err, chain.ErrNotImplemented, "SubmitChallenge must return ErrNotImplemented until P-7")
+// TestTendermintPluginSubmitChallengeNoKey verifies SubmitChallenge errors when no key is set.
+func TestTendermintPluginSubmitChallengeNoKey(t *testing.T) {
+	p := newTestTmPlugin("http://127.0.0.1:26657", "pion-1")
+	_, err := p.SubmitChallenge(context.Background(), [32]byte{}, chain.Proof{})
+	assert.Error(t, err, "SubmitChallenge must return an error when no private key is configured")
 }
 
 // TestVerifyConsensusUnit tests Ed25519 signature verification using synthetic keys.
@@ -243,7 +248,7 @@ func TestVerifyConsensusIntegration(t *testing.T) {
 		t.Skip("NEUTRON_RPC_URL not set — skipping integration test")
 	}
 
-	p := tendermint.New(rpcURL, "pion-1")
+	p := newTestTmPlugin(rpcURL, "pion-1")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
@@ -267,7 +272,7 @@ func TestFetchBlockFingerprintIntegration(t *testing.T) {
 		t.Skip("NEUTRON_RPC_URL not set — skipping integration test")
 	}
 
-	p := tendermint.New(rpcURL, "pion-1")
+	p := newTestTmPlugin(rpcURL, "pion-1")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

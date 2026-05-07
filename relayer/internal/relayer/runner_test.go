@@ -83,18 +83,34 @@ func (m *mockPlugin) TranslateProofTo(proof chain.Proof, destChainID string) (ch
 	return transform.IAVLToPatricia(proof, env)
 }
 
-func (m *mockPlugin) SubmitMessage(_ context.Context, env chain.MessageEnvelope, proof chain.Proof) (string, error) {
+func (m *mockPlugin) SubmitMessage(_ context.Context, env chain.MessageEnvelope, proof chain.Proof) (string, [32]byte, error) {
 	if m.submitErr != nil {
-		return "", m.submitErr
+		return "", [32]byte{}, m.submitErr
 	}
 	m.mu.Lock()
 	m.submissions = append(m.submissions, submitRecord{env: env, proof: proof})
 	m.mu.Unlock()
-	return "mock_tx_hash", nil
+	return "mock_tx_hash", [32]byte{}, nil
 }
 
-func (m *mockPlugin) SubmitChallenge(_ context.Context, _ string, _ chain.Proof) (string, error) {
+func (m *mockPlugin) ExecuteMessage(_ context.Context, _ [32]byte, _ chain.Proof) (string, error) {
+	return "mock_execute_tx", nil
+}
+
+func (m *mockPlugin) SubmitChallenge(_ context.Context, _ [32]byte, _ chain.Proof) (string, error) {
 	return "mock_challenge_tx", nil
+}
+
+func (m *mockPlugin) ClaimAbsenceSlash(_ context.Context, _ [32]byte) (string, error) {
+	return "mock_absence_tx", nil
+}
+
+func (m *mockPlugin) Register(_ context.Context, _ []byte) (string, error) {
+	return "mock_register_tx", nil
+}
+
+func (m *mockPlugin) DepositBond(_ context.Context, _ string) (string, error) {
+	return "mock_deposit_tx", nil
 }
 
 func (m *mockPlugin) submissionCount() int {

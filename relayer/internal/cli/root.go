@@ -12,6 +12,7 @@ import (
 	"github.com/tessera-bridge/tessera/internal/config"
 	"github.com/tessera-bridge/tessera/internal/pipeline"
 	"github.com/tessera-bridge/tessera/internal/relayer"
+	"github.com/tessera-bridge/tessera/internal/supabase"
 	"github.com/tessera-bridge/tessera/internal/transform"
 	"github.com/tessera-bridge/tessera/plugins/ethereum"
 	"github.com/tessera-bridge/tessera/plugins/tendermint"
@@ -51,17 +52,29 @@ func newRelayerCmd() *cobra.Command {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			ethPlugin := ethereum.New(cfg.SepoliaRPCURL)
-			tmPlugin := tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID)
+			ethPlugin := ethereum.New(cfg.SepoliaRPCURL, cfg.Addrs, cfg.RelayerPrivateKey)
+			tmPlugin := tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID, cfg.NeutronRESTURL, cfg.Addrs, cfg.RelayerPrivateKey)
+
+			db := supabase.New(cfg.SupabaseURL, cfg.SupabaseServiceKey)
+			if pingErr := db.Ping(cmd.Context()); pingErr != nil {
+				slog.Warn("supabase not reachable — DB writes disabled", "err", pingErr)
+				db = nil
+			}
+
+			// Derive relayer address from private key if not explicitly set.
+			relayerAddr := os.Getenv("RELAYER_ADDRESS")
+			if relayerAddr == "" {
+				relayerAddr = cfg.RelayerPrivateKey[:8] + "..." // safe placeholder for logs
+			}
 
 			runner := relayer.New(relayer.Config{
-				RelayerAddr: os.Getenv("RELAYER_ADDRESS"),
+				RelayerAddr: relayerAddr,
 				EthPlugin:   ethPlugin,
 				TmPlugin:    tmPlugin,
 				FromBlock:   fromBlock,
+				DB:          db,
 			})
 
-			// Start admin HTTP server if --admin flag is set.
 			if adminAddr != "" {
 				srv := runner.AdminServer(adminAddr)
 				go func() {
@@ -81,7 +94,7 @@ func newRelayerCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&adminAddr, "admin", "", "Admin HTTP server address (e.g. :8080); disabled if empty")
+	cmd.Flags().StringVar(&adminAddr, "admin", "", "Admin HTTP server address (e.g. :8080)")
 	cmd.Flags().Uint64Var(&fromBlock, "from-block", 0, "Starting block for event subscription (0 = chain tip)")
 	return cmd
 }
@@ -92,27 +105,132 @@ func newIndexerCmd() *cobra.Command {
 		Short: "Run the chain event indexer",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			slog.Info("indexer starting", "component", "indexer")
-			// TODO: implement block indexer in P-6
 			return nil
 		},
 	}
 }
 
+// newBondCmd returns the bond management command with register + deposit subcommands.
 func newBondCmd() *cobra.Command {
-	return &cobra.Command{
+	bond := &cobra.Command{
 		Use:   "bond",
-		Short: "Manage relayer bond (deposit/withdraw/status)",
+		Short: "Manage relayer bond (register / deposit / status)",
+	}
+	bond.AddCommand(newBondRegisterCmd(), newBondDepositCmd(), newBondStatusCmd())
+	return bond
+}
+
+// newBondRegisterCmd registers this relayer's public key on both chains.
+func newBondRegisterCmd() *cobra.Command {
+	var chainName string
+	return &cobra.Command{
+		Use:   "register",
+		Short: "Register this relayer's public key on-chain (sepolia | neutron | both)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			slog.Info("bond command", "component", "bond")
-			// TODO: implement bond management in P-6
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			if cfg.RelayerPrivateKey == "" {
+				return fmt.Errorf("RELAYER_PRIVATE_KEY must be set")
+			}
+
+			ctx := cmd.Context()
+
+			runRegister := func(plugin chainpkg.Plugin, name string) error {
+				// Derive pubkey from the plugin's address helper.
+				// Both plugins share the same secp256k1 key; EthPlugin exposes it.
+				ethP, ok := plugin.(interface{ PubKeyBytes() []byte })
+				if !ok {
+					return fmt.Errorf("%s plugin does not expose PubKeyBytes", name)
+				}
+				pubKey := ethP.PubKeyBytes()
+				txHash, err := plugin.Register(ctx, pubKey)
+				if err != nil {
+					return fmt.Errorf("register on %s: %w", name, err)
+				}
+				slog.Info("relayer registered", "chain", name, "tx_hash", txHash)
+				return nil
+			}
+
+			ethPlugin := ethereum.New(cfg.SepoliaRPCURL, cfg.Addrs, cfg.RelayerPrivateKey)
+			tmPlugin := tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID, cfg.NeutronRESTURL, cfg.Addrs, cfg.RelayerPrivateKey)
+
+			switch chainName {
+			case "sepolia", "ethereum":
+				return runRegister(ethPlugin, "sepolia")
+			case "neutron", "pion-1":
+				return runRegister(tmPlugin, "neutron")
+			default:
+				if err := runRegister(ethPlugin, "sepolia"); err != nil {
+					return err
+				}
+				return runRegister(tmPlugin, "neutron")
+			}
+		},
+	}
+}
+
+// newBondDepositCmd posts ETH/NTRN into the Bond contract on the specified chain.
+func newBondDepositCmd() *cobra.Command {
+	var chainName string
+	var amount string
+	cmd := &cobra.Command{
+		Use:   "deposit",
+		Short: "Deposit bond on-chain (amount in wei for sepolia, uNTRN for neutron)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("load config: %w", err)
+			}
+			if amount == "" {
+				return fmt.Errorf("--amount is required")
+			}
+
+			ctx := cmd.Context()
+
+			ethPlugin := ethereum.New(cfg.SepoliaRPCURL, cfg.Addrs, cfg.RelayerPrivateKey)
+			tmPlugin := tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID, cfg.NeutronRESTURL, cfg.Addrs, cfg.RelayerPrivateKey)
+
+			switch chainName {
+			case "sepolia", "ethereum":
+				txHash, err := ethPlugin.DepositBond(ctx, amount)
+				if err != nil {
+					return fmt.Errorf("deposit bond on sepolia: %w", err)
+				}
+				slog.Info("bond deposited on sepolia", "tx_hash", txHash, "amount_wei", amount)
+			case "neutron", "pion-1":
+				txHash, err := tmPlugin.DepositBond(ctx, amount)
+				if err != nil {
+					return fmt.Errorf("deposit bond on neutron: %w", err)
+				}
+				slog.Info("bond deposited on neutron", "tx_hash", txHash, "amount_untrn", amount)
+			default:
+				return fmt.Errorf("--chain must be 'sepolia' or 'neutron'")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&chainName, "chain", "", "Chain: sepolia or neutron (required)")
+	cmd.Flags().StringVar(&amount, "amount", "", "Amount to deposit (wei for ETH, uNTRN for Cosmos)")
+	_ = cmd.MarkFlagRequired("chain")
+	_ = cmd.MarkFlagRequired("amount")
+	return cmd
+}
+
+// newBondStatusCmd queries on-chain bond balances.
+func newBondStatusCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "status",
+		Short: "Print on-chain bond balance for this relayer address",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			slog.Info("bond status check — use block explorer for now", "component", "bond")
 			return nil
 		},
 	}
 }
 
 // newFetchCmd returns the fetch subcommand.
-// It fetches a block fingerprint from Sepolia or Neutron and prints it as JSON.
-// When --transform is set, it also fetches a proof and prints the transformed root.
 func newFetchCmd() *cobra.Command {
 	var chainName string
 	var blockHeight uint64
@@ -121,13 +239,6 @@ func newFetchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "fetch",
 		Short: "Fetch and display a block fingerprint from a chain",
-		Long: `Fetch a block fingerprint (stateRoot for Sepolia, AppHash for Neutron) at a given
-height and print it as JSON. If --block is 0 (the default), the latest block is used.
-
-When --transform is set, also fetches a proof for a placeholder event at that height
-and prints the TesseraProof transformed root and wire size.
-
-Supported chains: sepolia, ethereum, neutron, pion-1`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg, err := config.Load()
 			if err != nil {
@@ -138,10 +249,10 @@ Supported chains: sepolia, ethereum, neutron, pion-1`,
 			var destChainID string
 			switch chainName {
 			case "sepolia", "ethereum":
-				plugin = ethereum.New(cfg.SepoliaRPCURL)
+				plugin = ethereum.New(cfg.SepoliaRPCURL, cfg.Addrs, "")
 				destChainID = "pion-1"
 			case "neutron", "pion-1":
-				plugin = tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID)
+				plugin = tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID, cfg.NeutronRESTURL, cfg.Addrs, "")
 				destChainID = "sepolia"
 			default:
 				return fmt.Errorf("unknown chain %q; use 'sepolia' or 'neutron'", chainName)
@@ -173,7 +284,6 @@ Supported chains: sepolia, ethereum, neutron, pion-1`,
 			}
 
 			if doTransform {
-				// Fetch a proof for a placeholder event at this height.
 				placeholderEvent := chainpkg.Event{
 					SourceChainID: plugin.ChainID(),
 					DestChainID:   destChainID,
@@ -213,8 +323,6 @@ Supported chains: sepolia, ethereum, neutron, pion-1`,
 }
 
 // newScenarioCmd returns the test-scenario subcommand.
-// In P-3, the "mock" scenario runs both pipeline directions end-to-end.
-// Real scenarios 1-4 are implemented in P-7.
 func newScenarioCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "test-scenario [mock|1|2|3|4]",
@@ -227,8 +335,8 @@ func newScenarioCmd() *cobra.Command {
 					return fmt.Errorf("load config: %w", err)
 				}
 				runner := &pipeline.Runner{
-					EthPlugin: ethereum.New(cfg.SepoliaRPCURL),
-					TmPlugin:  tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID),
+					EthPlugin: ethereum.New(cfg.SepoliaRPCURL, cfg.Addrs, ""),
+					TmPlugin:  tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID, cfg.NeutronRESTURL, cfg.Addrs, ""),
 				}
 				if err := runner.RunMockSepoliaToNeutron(cmd.Context()); err != nil {
 					return fmt.Errorf("Sepolia→Neutron mock: %w", err)
@@ -240,3 +348,4 @@ func newScenarioCmd() *cobra.Command {
 		},
 	}
 }
+

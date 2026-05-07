@@ -2,17 +2,22 @@ package relayer
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/supabase"
 	"github.com/tessera-bridge/tessera/internal/transform"
 )
 
+const (
+	challengeWindow = 65 * time.Second // 60 s window + 5 s buffer before executing
+)
+
 // runSubmitter runs the event listener + submission handler for a source→dest direction.
-// For each event received, it executes the fetch → verifyConsensus → fetchProof →
-// transform → submit pipeline. The loop runs until ctx is cancelled or the event
-// channel is closed.
+// For each event it executes: VerifyConsensus → FetchProof → Transform → Submit → schedule Execute.
 func (r *Runner) runSubmitter(ctx context.Context, src, dst chain.Plugin) error {
 	events, err := src.SubscribeEvents(ctx, r.cfg.FromBlock)
 	if err != nil {
@@ -34,7 +39,6 @@ func (r *Runner) runSubmitter(ctx context.Context, src, dst chain.Plugin) error 
 				return nil
 			}
 			if err := r.handleEvent(ctx, src, dst, ev); err != nil {
-				// Log and continue — a single event failure must not crash the loop.
 				slog.Error("submitter: handleEvent failed",
 					"source", src.ChainID(), "dest", dst.ChainID(),
 					"nonce", ev.Nonce, "tx", ev.TxHash, "err", err)
@@ -43,29 +47,30 @@ func (r *Runner) runSubmitter(ctx context.Context, src, dst chain.Plugin) error 
 	}
 }
 
-// handleEvent processes a single cross-chain event through the full relay pipeline:
-//  1. VerifyConsensus — confirms the source block has sufficient validator consensus.
-//  2. FetchProof — retrieves the native inclusion proof from the source chain.
-//  3. TranslateProofTo — converts the proof to the TesseraProof wire format.
-//  4. SubmitMessage — submits the envelope + proof to the destination verifier.
+// handleEvent processes a single cross-chain event through the full relay pipeline.
 func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chain.Event) error {
 	slog.Info("handleEvent: received cross-chain event",
 		"source", src.ChainID(), "dest", dst.ChainID(),
 		"nonce", ev.Nonce, "tx", ev.TxHash, "height", ev.BlockHeight)
 
-	// Step 1: Verify consensus on the source block.
-	// For Tendermint this is a real Ed25519 2/3+ check; for EVM it trusts the RPC (R-54).
+	// Record raw event in DB.
+	r.dbAppendEvent(ctx, ev)
+
+	// Step 1: Write message row to DB (upsert so retries are idempotent).
+	msgDBID := r.dbUpsertMessage(ctx, ev)
+
+	// Step 2: Verify consensus on the source block.
 	if err := src.VerifyConsensus(ctx, ev.BlockHeight); err != nil {
 		return fmt.Errorf("handleEvent VerifyConsensus height=%d: %w", ev.BlockHeight, err)
 	}
 
-	// Step 2: Fetch the source inclusion proof.
+	// Step 3: Fetch the source inclusion proof.
 	proof, err := src.FetchProof(ctx, ev, ev.BlockHeight)
 	if err != nil {
 		return fmt.Errorf("handleEvent FetchProof: %w", err)
 	}
 
-	// Step 3: Build the canonical envelope and transform the proof to the destination format.
+	// Step 4: Build the canonical envelope and transform the proof.
 	env := chain.MessageEnvelope{
 		SourceChainID: ev.SourceChainID,
 		SourceApp:     ev.SourceApp,
@@ -88,19 +93,168 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		"transformed_root", fingerprint,
 		"proof_bytes", len(transformedProof.ProofBytes))
 
-	// Step 4: Submit to the destination verifier.
-	txHash, err := dst.SubmitMessage(ctx, env, transformedProof)
-	if err == chain.ErrNotImplemented {
-		// Expected until P-6 wires real contract submission.
-		slog.Info("handleEvent: SubmitMessage not implemented yet (P-6 will wire this)",
-			"dest", dst.ChainID(), "nonce", ev.Nonce)
-		return nil
-	}
+	// Update message status to "submitted".
+	r.dbUpdateMessageStatus(ctx, msgDBID, "submitted")
+
+	// Step 5: Submit to the destination verifier.
+	txHash, submissionID, err := dst.SubmitMessage(ctx, env, transformedProof)
 	if err != nil {
+		r.dbUpdateMessageStatus(ctx, msgDBID, "pending") // rollback optimistic status
 		return fmt.Errorf("handleEvent SubmitMessage: %w", err)
 	}
 
 	slog.Info("handleEvent: message submitted",
-		"dest", dst.ChainID(), "nonce", ev.Nonce, "tx_hash", txHash)
+		"dest", dst.ChainID(), "nonce", ev.Nonce,
+		"tx_hash", txHash,
+		"submission_id", hex.EncodeToString(submissionID[:]))
+
+	// Step 6: Write submission row + update message status.
+	subDBID := r.dbInsertSubmission(ctx, supabase.SubmissionRow{
+		MessageID:        msgDBID,
+		SubmitterAddress: r.cfg.RelayerAddr,
+		Fingerprint:      fingerprint,
+		DestTxHash:       txHash,
+		Status:           "pending",
+	})
+	r.dbUpdateMessageStatus(ctx, msgDBID, "challenge_window")
+
+	// Step 7: Register with challenger for the 60-second watch window.
+	ps := &pendingSubmission{
+		SubmissionID:   submissionID,
+		SubmissionDBID: subDBID,
+		MessageDBID:    msgDBID,
+		SourceChainID:  src.ChainID(),
+		BlockHeight:    ev.BlockHeight,
+		Nonce:          ev.Nonce,
+		Deadline:       time.Now().Add(60 * time.Second),
+		Env:            env,
+		Proof:          transformedProof,
+		DestPlugin:     dst,
+		TxHash:         txHash,
+	}
+	r.addPending(ps)
+
+	// Step 8: Schedule executeMessage after challenge window + buffer.
+	go r.scheduleExecuteMessage(ctx, ps)
+
 	return nil
+}
+
+// scheduleExecuteMessage waits for the challenge window to close, then calls
+// ExecuteMessage on the destination chain (Scenario S-1: honest delivery).
+func (r *Runner) scheduleExecuteMessage(ctx context.Context, ps *pendingSubmission) {
+	waitUntil := ps.Deadline.Add(5 * time.Second) // 5 s buffer past 60 s window
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(time.Until(waitUntil)):
+	}
+
+	// If the submission was already removed (challenged/slashed), skip.
+	r.mu.Lock()
+	_, stillPending := r.pending[ps.SubmissionID]
+	r.mu.Unlock()
+	if !stillPending {
+		slog.Info("scheduleExecuteMessage: submission no longer pending (challenged?)",
+			"submission_id", hex.EncodeToString(ps.SubmissionID[:]))
+		return
+	}
+
+	slog.Info("scheduleExecuteMessage: challenge window elapsed, executing",
+		"submission_id", hex.EncodeToString(ps.SubmissionID[:]),
+		"nonce", ps.Nonce)
+
+	execTxHash, err := ps.DestPlugin.ExecuteMessage(ctx, ps.SubmissionID, ps.Proof)
+	if err != nil {
+		slog.Error("scheduleExecuteMessage: ExecuteMessage failed",
+			"submission_id", hex.EncodeToString(ps.SubmissionID[:]),
+			"err", err)
+		return
+	}
+
+	slog.Info("scheduleExecuteMessage: message executed",
+		"exec_tx_hash", execTxHash,
+		"submission_id", hex.EncodeToString(ps.SubmissionID[:]))
+
+	r.removePending(ps.SubmissionID)
+	r.dbUpdateSubmissionStatus(ctx, ps.SubmissionDBID, "confirmed", execTxHash)
+	r.dbUpdateMessageStatus(ctx, ps.MessageDBID, "executed")
+}
+
+// ─── DB write helpers — all log on error, never crash the hot path ───────────
+
+func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
+	if r.cfg.DB == nil {
+		return 0
+	}
+	id, err := r.cfg.DB.UpsertMessage(ctx, supabase.MessageRow{
+		Nonce:              ev.Nonce,
+		SourceChainID:      ev.SourceChainID,
+		SourceApp:          ev.SourceApp,
+		DestinationChainID: ev.DestChainID,
+		DestinationApp:     ev.DestApp,
+		Action:             hex.EncodeToString(ev.Action[:]),
+		Payload:            ev.Payload,
+		Sender:             ev.Sender,
+		Recipient:          "", // filled by destination app on mint/release
+		Amount:             "0",
+		SourceTxHash:       ev.TxHash,
+		SourceBlock:        ev.BlockHeight,
+		Status:             "pending",
+	})
+	if err != nil {
+		slog.Error("db UpsertMessage failed", "nonce", ev.Nonce, "err", err)
+	}
+	return id
+}
+
+func (r *Runner) dbUpdateMessageStatus(ctx context.Context, id int64, status string) {
+	if r.cfg.DB == nil || id == 0 {
+		return
+	}
+	if err := r.cfg.DB.UpdateMessageStatus(ctx, id, status); err != nil {
+		slog.Error("db UpdateMessageStatus failed", "id", id, "status", status, "err", err)
+	}
+}
+
+func (r *Runner) dbInsertSubmission(ctx context.Context, sub supabase.SubmissionRow) int64 {
+	if r.cfg.DB == nil {
+		return 0
+	}
+	id, err := r.cfg.DB.InsertSubmission(ctx, sub)
+	if err != nil {
+		slog.Error("db InsertSubmission failed", "message_id", sub.MessageID, "err", err)
+	}
+	return id
+}
+
+func (r *Runner) dbUpdateSubmissionStatus(ctx context.Context, id int64, status, txHash string) {
+	if r.cfg.DB == nil || id == 0 {
+		return
+	}
+	if err := r.cfg.DB.UpdateSubmissionStatus(ctx, id, status, txHash); err != nil {
+		slog.Error("db UpdateSubmissionStatus failed", "id", id, "err", err)
+	}
+}
+
+func (r *Runner) dbAppendEvent(ctx context.Context, ev chain.Event) {
+	if r.cfg.DB == nil {
+		return
+	}
+	err := r.cfg.DB.AppendEvent(ctx, supabase.EventRow{
+		ChainID:         ev.SourceChainID,
+		BlockNumber:     ev.BlockHeight,
+		TxHash:          ev.TxHash,
+		EventType:       "Locked",
+		ContractAddress: ev.SourceApp,
+		RawData: map[string]any{
+			"nonce":    ev.Nonce,
+			"sender":   ev.Sender,
+			"dest":     ev.DestChainID,
+			"dest_app": ev.DestApp,
+		},
+	})
+	if err != nil {
+		slog.Error("db AppendEvent failed", "tx", ev.TxHash, "err", err)
+	}
 }
