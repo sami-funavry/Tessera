@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 	chainpkg "github.com/tessera-bridge/tessera/internal/chain"
 	"github.com/tessera-bridge/tessera/internal/config"
+	"github.com/tessera-bridge/tessera/internal/obs"
 	"github.com/tessera-bridge/tessera/internal/pipeline"
 	"github.com/tessera-bridge/tessera/internal/relayer"
 	"github.com/tessera-bridge/tessera/internal/scenario"
@@ -27,6 +28,10 @@ func NewRootCmd() *cobra.Command {
 			slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 				Level: slog.LevelInfo,
 			})))
+			obs.Init("tessera@v0.1.0")
+		},
+		PersistentPostRun: func(_ *cobra.Command, _ []string) {
+			obs.Flush()
 		},
 	}
 

@@ -73,6 +73,15 @@ contract BondTest is Test {
         assertEq(bond.balanceOf(alice), dereg);
     }
 
+    function test_requestWithdrawal_twiceBeforeWithdraw_reverts() public {
+        bond.deposit{ value: 0.5 ether }(alice);
+        vm.prank(alice);
+        bond.requestWithdrawal(0.005 ether); // first request succeeds
+        vm.prank(alice);
+        vm.expectRevert(Bond.PendingWithdrawalExists.selector);
+        bond.requestWithdrawal(0.005 ether); // second request must revert
+    }
+
     // ─── withdraw ─────────────────────────────────────────────────────────────
 
     function test_withdraw_beforeCooldown_reverts() public {

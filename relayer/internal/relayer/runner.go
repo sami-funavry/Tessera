@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/obs"
 	"github.com/tessera-bridge/tessera/internal/supabase"
 )
 
@@ -91,6 +92,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer wg.Done()
 		if err := r.runSubmitter(ctx, r.cfg.EthPlugin, r.cfg.TmPlugin); err != nil && ctx.Err() == nil {
 			slog.Error("submitter Sepolia→Neutron exited unexpectedly", "err", err)
+			obs.CaptureError(err, map[string]string{"goroutine": "submitter", "direction": "sepolia_to_neutron"})
 		}
 	}()
 
@@ -100,6 +102,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		defer wg.Done()
 		if err := r.runSubmitter(ctx, r.cfg.TmPlugin, r.cfg.EthPlugin); err != nil && ctx.Err() == nil {
 			slog.Error("submitter Neutron→Sepolia exited unexpectedly", "err", err)
+			obs.CaptureError(err, map[string]string{"goroutine": "submitter", "direction": "neutron_to_sepolia"})
 		}
 	}()
 

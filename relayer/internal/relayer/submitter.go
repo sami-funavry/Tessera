@@ -117,6 +117,14 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 	if err != nil {
 		return fmt.Errorf("handleEvent SubmitMessage: %w", err)
 	}
+	// Guard against a zero submissionID (e.g. stub returning [32]byte{}) which
+	// would collide with the zero value of any uninitialized pending entry.
+	if submissionID == ([32]byte{}) {
+		slog.Warn("handleEvent: SubmitMessage returned zero submissionID — skipping pending registration",
+			"dest", dst.ChainID(), "nonce", ev.Nonce, "tx_hash", txHash)
+		r.dbUpdateMessageStatus(ctx, msgDBID, "submitted")
+		return nil
+	}
 	// Update message status only after confirmed submission.
 	r.dbUpdateMessageStatus(ctx, msgDBID, "submitted")
 

@@ -49,6 +49,7 @@ contract Bond is IBond {
     error InsufficientBond();
     error CooldownNotElapsed(uint256 unlocksAt);
     error NoPendingWithdrawal();
+    error PendingWithdrawalExists();
     error TransferFailed();
     error InvalidBps();
 
@@ -92,15 +93,19 @@ contract Bond is IBond {
     /// @notice Request a withdrawal of `amount` ETH. Starts the 1-hour cooldown.
     ///         Balance is immediately locked (deducted from active balance).
     ///         The remaining active balance must stay at or above DEREGISTRATION_THRESHOLD.
+    ///         Only one pending withdrawal allowed at a time — withdraw() first to clear it.
     /// @param amount ETH amount in wei.
     function requestWithdrawal(uint256 amount) external {
         if (amount == 0) revert ZeroDeposit();
+        // Prevent cooldown-reset attack: caller must complete any existing pending
+        // withdrawal before starting a new one.
+        if (pendingWithdrawal[msg.sender] != 0) revert PendingWithdrawalExists();
         uint256 bal = _balance[msg.sender];
         if (bal < amount) revert InsufficientBond();
         uint256 remaining = bal - amount;
         if (remaining < DEREGISTRATION_THRESHOLD) revert InsufficientBond();
         _balance[msg.sender] = remaining;
-        pendingWithdrawal[msg.sender] += amount;
+        pendingWithdrawal[msg.sender] = amount;
         withdrawalRequestedAt[msg.sender] = block.timestamp;
         emit WithdrawalRequested(msg.sender, amount, block.timestamp + WITHDRAWAL_COOLDOWN);
     }

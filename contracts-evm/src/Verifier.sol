@@ -90,6 +90,7 @@ contract Verifier {
     error ChallengeWindowOpen();
     error ChallengeWindowClosed();
     error MessageAlreadyExecuted();
+    error DuplicateSubmission();
     error AbsenceAlreadyClaimed();
     error HandoverNotElapsed();
     error SubmitterWasOriginalAssignee();
@@ -127,6 +128,8 @@ contract Verifier {
         submissionId = keccak256(abi.encodePacked(msgId, msg.sender, block.timestamp));
 
         Submission storage sub = submissions[submissionId];
+        // Prevent same relayer from overwriting their own submission within the same block.
+        if (sub.submittedAt != 0) revert DuplicateSubmission();
         sub.msgId = msgId;
         sub.fingerprint = fingerprint;
         sub.submitter = msg.sender;
