@@ -32,13 +32,14 @@ func TestEthereumPluginStubConsensus(t *testing.T) {
 	assert.NoError(t, err, "VerifyConsensus stub must return nil without dialing (R-54: trusts RPC)")
 }
 
-// TestEthereumPluginStubTranslateProof verifies TranslateProofTo returns ErrNotImplemented.
-// This is a P-4 stub per the spec.
-func TestEthereumPluginStubTranslateProof(t *testing.T) {
+// TestEthereumPluginTranslateProof verifies TranslateProofTo succeeds (P-4 implemented).
+// A proof with no ProofBytes produces a valid depth-0 TesseraProof.
+func TestEthereumPluginTranslateProof(t *testing.T) {
 	p := ethereum.New("http://127.0.0.1:19999")
-	_, err := p.TranslateProofTo(chain.Proof{ChainID: "sepolia"}, "pion-1")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, chain.ErrNotImplemented, "TranslateProofTo must return ErrNotImplemented until P-4")
+	result, err := p.TranslateProofTo(chain.Proof{ChainID: "sepolia"}, "pion-1")
+	require.NoError(t, err, "TranslateProofTo must not error after P-4 implementation")
+	assert.Equal(t, "pion-1", result.ChainID, "translated proof must target pion-1")
+	assert.NotEmpty(t, result.ProofBytes, "translated proof must have wire bytes")
 }
 
 // TestEthereumPluginStubSubmitMessage verifies SubmitMessage returns ErrNotImplemented.

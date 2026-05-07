@@ -6,7 +6,9 @@
 /// S-4: Frivolous challenge — B files baseless challenge; B slashed 25%; message executes.
 use cosmwasm_std::{coins, testing::MockApi, to_json_binary, Addr, Uint128};
 use cw_multi_test::{App, AppBuilder, ContractWrapper, Executor};
+use sha2::{Digest, Sha256};
 use tessera_types::{BridgePayload, MessageEnvelope};
+// hex is a direct dep of the verifier crate — available in tests too.
 
 fn a(name: &str) -> Addr {
     MockApi::default().addr_make(name)
@@ -224,6 +226,40 @@ fn make_envelope(nonce: u64, dest_app: &Addr) -> MessageEnvelope {
     }
 }
 
+/// Build a depth-0 TesseraProof in SHA-256 / Neutron format (flags = 1).
+///
+/// Returns (proof_bytes, hex_fingerprint) where:
+///   proof_bytes is the canonical TesseraProof wire encoding
+///   hex_fingerprint is the expected fingerprint string to pass to SubmitMessage
+///
+/// The msg_id_str must match `tessera_types::message_id(&envelope)`.
+fn make_tessera_proof(msg_id_str: &str) -> (Vec<u8>, String) {
+    // msgId = sha256(msg_id_str)
+    let msg_id_bytes: [u8; 32] = Sha256::digest(msg_id_str.as_bytes()).into();
+    let leaf_key = [0u8; 32];
+    let leaf_value = [0u8; 32];
+    let depth: u32 = 0;
+
+    // Wire format: "TSSP" || flags(1 BE u32) || msgId || leafKey || leafValue || depth
+    let mut proof = Vec::with_capacity(108);
+    proof.extend_from_slice(b"TSSP");
+    proof.extend_from_slice(&1u32.to_be_bytes()); // flags = 1 (SHA-256)
+    proof.extend_from_slice(&msg_id_bytes);
+    proof.extend_from_slice(&leaf_key);
+    proof.extend_from_slice(&leaf_value);
+    proof.extend_from_slice(&depth.to_be_bytes());
+
+    // Root = sha256(0x00 || msgId || leafKey || leafValue) for depth 0
+    let mut hasher = Sha256::new();
+    hasher.update([0x00u8]);
+    hasher.update(msg_id_bytes);
+    hasher.update(leaf_key);
+    hasher.update(leaf_value);
+    let root = hasher.finalize();
+
+    (proof, hex::encode(root))
+}
+
 // ── S-1: Honest delivery (R-30) ───────────────────────────────────────────────
 
 #[test]
@@ -232,8 +268,8 @@ fn test_s1_honest_delivery() {
         build_setup();
 
     let env = make_envelope(0, &bridge_mint);
-    let fp = "true_fingerprint".to_string();
-    let proof = b"valid_proof_bytes".to_vec();
+    // nonce=0: msg_id = "msg:11155111:vault_on_sepolia:0"
+    let (proof_bytes, fp) = make_tessera_proof("msg:11155111:vault_on_sepolia:0");
     let event_ts = app.block_info().time.seconds();
 
     // nonce=0, 2 relayers: index = 0 % 2 = 0 → relayer_a is assigned.
@@ -260,7 +296,7 @@ fn test_s1_honest_delivery() {
         verifier.clone(),
         &VerifierExecute::ExecuteMessage {
             submission_id: sub_id,
-            proof: proof.into(),
+            proof: proof_bytes.into(),
         },
         &[],
     )
@@ -289,9 +325,10 @@ fn test_s2_lying_relayer() {
         build_setup();
 
     let env = make_envelope(0, &bridge_mint);
-    let true_fp = "true_fingerprint".to_string();
-    let lie_fp = "lie_fingerprint".to_string();
-    let evidence = b"valid_evidence".to_vec(); // non-empty → valid proof stub
+    // Correct proof and fingerprint for this message.
+    let (correct_proof, correct_fp) = make_tessera_proof("msg:11155111:vault_on_sepolia:0");
+    // lie_fp is any hex string that differs from correct_fp.
+    let lie_fp = "0".repeat(64);
     let event_ts = app.block_info().time.seconds();
 
     // relayer_a submits with wrong fingerprint.
@@ -315,14 +352,14 @@ fn test_s2_lying_relayer() {
         .unwrap();
     let b_native_before = app.wrap().query_balance(relayer_b.clone(), "untrn").unwrap().amount;
 
-    // relayer_b challenges with the true fingerprint + valid evidence.
+    // relayer_b challenges with the correct fingerprint and a valid proof.
     app.execute_contract(
         relayer_b.clone(),
         verifier.clone(),
         &VerifierExecute::Challenge {
             submission_id: sub_id,
-            correct_fingerprint: true_fp,
-            evidence_proof: evidence.into(),
+            correct_fingerprint: correct_fp,
+            evidence_proof: correct_proof.into(),
         },
         &[],
     )
@@ -350,8 +387,7 @@ fn test_s3_silent_relayer() {
 
     // nonce=0 → original assignee = relayer_a (index 0 % 2 = 0).
     let env = make_envelope(0, &bridge_mint);
-    let fp = "true_fingerprint".to_string();
-    let proof = b"valid_proof_s3".to_vec();
+    let (proof_bytes, fp) = make_tessera_proof("msg:11155111:vault_on_sepolia:0");
     let event_ts = app.block_info().time.seconds();
 
     // Advance past handover period (30 s) — relayer_a was silent.
@@ -381,7 +417,7 @@ fn test_s3_silent_relayer() {
         verifier.clone(),
         &VerifierExecute::ExecuteMessage {
             submission_id: sub_id.clone(),
-            proof: proof.into(),
+            proof: proof_bytes.into(),
         },
         &[],
     )
@@ -427,8 +463,7 @@ fn test_s4_frivolous_challenge() {
         build_setup();
 
     let env = make_envelope(0, &bridge_mint);
-    let true_fp = "true_fingerprint".to_string();
-    let proof = b"valid_proof_s4".to_vec();
+    let (proof_bytes, true_fp) = make_tessera_proof("msg:11155111:vault_on_sepolia:0");
     let event_ts = app.block_info().time.seconds();
 
     // relayer_a submits honestly.
@@ -490,7 +525,7 @@ fn test_s4_frivolous_challenge() {
         verifier.clone(),
         &VerifierExecute::ExecuteMessage {
             submission_id: sub_id,
-            proof: proof.into(),
+            proof: proof_bytes.into(),
         },
         &[],
     )
@@ -576,6 +611,7 @@ fn test_challenge_after_window_reverts() {
 fn test_double_execute_reverts() {
     let Setup { mut app, bridge_mint, verifier, relayer_a, .. } = build_setup();
     let env = make_envelope(0, &bridge_mint);
+    let (proof_bytes, fp) = make_tessera_proof("msg:11155111:vault_on_sepolia:0");
     let event_ts = app.block_info().time.seconds();
     let res = app
         .execute_contract(
@@ -583,7 +619,7 @@ fn test_double_execute_reverts() {
             verifier.clone(),
             &VerifierExecute::SubmitMessage {
                 envelope: env,
-                fingerprint: "fp".to_string(),
+                fingerprint: fp,
                 event_timestamp: event_ts,
             },
             &[],
@@ -596,7 +632,7 @@ fn test_double_execute_reverts() {
         verifier.clone(),
         &VerifierExecute::ExecuteMessage {
             submission_id: sub_id.clone(),
-            proof: b"proof".to_vec().into(),
+            proof: proof_bytes.into(),
         },
         &[],
     )
@@ -620,6 +656,7 @@ fn test_double_execute_reverts() {
 fn test_absence_slash_no_handover_reverts() {
     let Setup { mut app, bridge_mint, verifier, relayer_a, .. } = build_setup();
     let env = make_envelope(0, &bridge_mint);
+    let (proof_bytes, fp) = make_tessera_proof("msg:11155111:vault_on_sepolia:0");
     let event_ts = app.block_info().time.seconds();
     // relayer_a submits immediately (within handover period).
     let res = app
@@ -628,7 +665,7 @@ fn test_absence_slash_no_handover_reverts() {
             verifier.clone(),
             &VerifierExecute::SubmitMessage {
                 envelope: env,
-                fingerprint: "fp".to_string(),
+                fingerprint: fp,
                 event_timestamp: event_ts,
             },
             &[],
@@ -641,7 +678,7 @@ fn test_absence_slash_no_handover_reverts() {
         verifier.clone(),
         &VerifierExecute::ExecuteMessage {
             submission_id: sub_id.clone(),
-            proof: b"proof".to_vec().into(),
+            proof: proof_bytes.into(),
         },
         &[],
     )

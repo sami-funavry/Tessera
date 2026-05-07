@@ -22,11 +22,14 @@ func TestTendermintPluginChainID(t *testing.T) {
 	assert.Equal(t, "pion-1", p.ChainID())
 }
 
-// TestTendermintPluginStubTranslateProof verifies TranslateProofTo returns ErrNotImplemented.
-func TestTendermintPluginStubTranslateProof(t *testing.T) {
+// TestTendermintPluginTranslateProof verifies TranslateProofTo succeeds (P-4 implemented).
+// A proof with no ProofBytes produces a valid depth-0 TesseraProof.
+func TestTendermintPluginTranslateProof(t *testing.T) {
 	p := tendermint.New("http://127.0.0.1:26657", "pion-1")
-	_, err := p.TranslateProofTo(chain.Proof{ChainID: "pion-1"}, "sepolia")
-	assert.ErrorIs(t, err, chain.ErrNotImplemented, "TranslateProofTo must return ErrNotImplemented until P-4")
+	result, err := p.TranslateProofTo(chain.Proof{ChainID: "pion-1"}, "sepolia")
+	require.NoError(t, err, "TranslateProofTo must not error after P-4 implementation")
+	assert.Equal(t, "sepolia", result.ChainID, "translated proof must target sepolia")
+	assert.NotEmpty(t, result.ProofBytes, "translated proof must have wire bytes")
 }
 
 // TestTendermintPluginStubSubmitMessage verifies SubmitMessage returns ErrNotImplemented.

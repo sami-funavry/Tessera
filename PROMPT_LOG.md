@@ -118,3 +118,51 @@
 **Notes:** The Ed25519 bypass is fully wired and proven correct by the forged-signature rejection test. The critical invariant: validator slot index in Commit must align with sorted ValidatorSet order, not the order validators were passed to NewValidatorSet. The pipeline is wired end-to-end; P-4 plugs into the TranslateProofTo stubs; P-6 plugs into SubmitMessage.
 
 ---
+
+### [P-4] transform layer — TesseraProof wire format, PatriciaToIAVL, IAVLToPatricia, relayer runner — 2026-05-07 00:00
+
+**Prompt:** Implement Phase 4 in full: TesseraProof wire format (encode/decode/ComputeRoot/Verify), PatriciaToIAVL (SHA-256 + CosmWasm msgId), IAVLToPatricia (Keccak256 + Solidity ABI-encoded msgId), relayer runner with 4 goroutines (submitter×2, challenger, admin), admin HTTP server for fault injection, runner tests with mock plugins, CLI --transform flag, and tessera relayer command wired to real plugins.
+
+**Actions:**
+- Created `internal/transform/transform.go`: TesseraProof struct, Encode/Decode (108 + depth×32 wire format), ComputeRoot (H(0x00‖msgId‖leafKey‖leafValue) then chain-up), Verify, FingerprintHex, hashWith helper (sha256/keccak256 dispatch on flags bit 0).
+- Replaced `internal/transform/patricia_to_iavl.go`: parses JSON AccountResult (storageProof), sha256 each RLP node, msgId = sha256("msg:"+sourceChain+":"+sourceApp+":"+nonce), returns pion-1 chain.Proof with SHA-256 root.
+- Replaced `internal/transform/iavl_to_patricia.go`: parses tendermintProofJSON, keccak256 each op.Data, msgId = keccak256(abi.encode(srcChain, srcApp, dstChain, dstApp, action, payload, nonce)), returns sepolia chain.Proof with Keccak root.
+- Updated `plugins/tendermint/plugin.go` FetchProof: serialises all ABCI proof ops as `{value, proof_ops}` JSON instead of ops[0].Data only. Implemented TranslateProofTo via transform.IAVLToPatricia.
+- Updated `plugins/ethereum/plugin.go`: Implemented TranslateProofTo via transform.PatriciaToIAVL.
+- Created `internal/relayer/runner.go`, `submitter.go`, `challenger.go`, `admin.go`: 4-goroutine runner, handleEvent pipeline (VerifyConsensus→FetchProof→TranslateProofTo→SubmitMessage), 15s challenger ticker with scanForChallenges, VerifySubmission fraud detection, admin HTTP server (inject-fault/go-silent/status endpoints).
+- Created `internal/transform/transform_test.go`: 35 tests covering encode/decode round-trip, bad magic/depth rejection, determinism (100 runs each direction), fixture tests depth 0–5 both directions, manually computed root cross-check, Verify correct/tampered-fingerprint/wrong-msgId/tampered-node, cross-implementation parity, size budget (depth-16 < 2048B), empty proof bytes, hash function selection.
+- Created `internal/relayer/runner_test.go`: 6 tests — S1 honest delivery pipeline, S2 wrong-fingerprint fraud detection, transform determinism in relayer context, proof size budget, admin server init, runner construction.
+- Updated `internal/cli/root.go`: tessera relayer wired to relayer.Runner with --admin and --from-block flags; tessera fetch --transform flag prints transformed root + wire size.
+- Updated plugin_test.go files: changed ErrNotImplemented assertions on TranslateProofTo to positive success assertions.
+- Fixed bug: `fmt.Sprintf("msg:...:%d", strconv.FormatUint(...))` — wrong verb (%d vs %s), caught at compile time.
+
+**Outcome:** worked — `go build ./...` clean; `go test ./... -race` 44/44 PASS.
+
+**Files:** `internal/transform/transform.go`, `internal/transform/patricia_to_iavl.go`, `internal/transform/iavl_to_patricia.go`, `internal/transform/transform_test.go`, `internal/relayer/runner.go`, `internal/relayer/submitter.go`, `internal/relayer/challenger.go`, `internal/relayer/admin.go`, `internal/relayer/runner_test.go`, `internal/cli/root.go`, `plugins/ethereum/plugin.go`, `plugins/ethereum/plugin_test.go`, `plugins/tendermint/plugin.go`, `plugins/tendermint/plugin_test.go`
+
+**Tokens:** ~18,000
+
+**Notes:** The Tendermint plugin now stores all proof ops as JSON so IAVLToPatricia has access to the full proof path — previously storing only ops[0].Data would silently drop multi-op IAVL proofs. VerifySubmission in challenger.go intentionally re-uses the same TranslateProofTo path as the submitter — this is the R-52 determinism invariant. The ABI encoding for Solidity msgId uses `bytes32` for chain IDs (left-aligned UTF-8, matching Solidity `bytes32(abi.encodePacked("string"))`) — critical to match the on-chain Verifier._envelopeHash exactly.
+
+---
+
+### [P-4b] on-chain TesseraProof verification — Solidity + CosmWasm — 2026-05-07
+
+**Prompt:** Same P-4 prompt as above; this entry covers the on-chain verification work done in the main thread in parallel with the Go agent.
+
+**Actions:**
+- Replaced stub `_verifyProof` in `contracts-evm/src/Verifier.sol` with real TesseraProof verification: magic check ("TSSP"), flags bit0 == 0 (Keccak256/Sepolia), msgId comparison, depth-bounded proof length, leaf hash then chain-up with keccak256, compare to fingerprint.
+- Created `contracts-evm/test/integration/VerifierProof.t.sol`: 10 tests against the BASE Verifier (not TestableVerifier) — depth 0/3/8 happy paths, wrong magic / SHA256 flag / tampered node / wrong msgId / too-short rejections, determinism test, S-2 lying relayer scenario with real proofs. Fixed `abi.encodePacked(address)` → `abi.encode(address)` bug in `_makeEnv`.
+- Added `sha2 = "0.10"` and `hex = "0.4"` to `contracts-cosmwasm/contracts/verifier/Cargo.toml`.
+- Replaced stub `_verify_proof` in `contracts-cosmwasm/contracts/verifier/src/contract.rs` with SHA-256 TesseraProof verification: magic check, flags bit0 == 1 (SHA-256/Neutron), msgId = sha2_256(msg_id.as_bytes()), depth chain-up, hex::decode(fingerprint) comparison.
+- Updated `contracts-cosmwasm/contracts/verifier/src/tests/scenarios.rs`: added `make_tessera_proof(msg_id_str) → (Vec<u8>, String)` SHA-256 proof builder; updated all 8 tests (S-1 through S-4 + 4 edge cases) to use real TesseraProof bytes and hex fingerprints.
+
+**Outcome:** worked — forge test 87/87 PASS; cargo test 28/28 PASS; go test -race 44/44 PASS; cargo clippy -D warnings clean.
+
+**Files:** `contracts-evm/src/Verifier.sol`, `contracts-evm/test/integration/VerifierProof.t.sol`, `contracts-cosmwasm/contracts/verifier/Cargo.toml`, `contracts-cosmwasm/contracts/verifier/src/contract.rs`, `contracts-cosmwasm/contracts/verifier/src/tests/scenarios.rs`
+
+**Tokens:** ~25,000
+
+**Notes:** The symmetric design is the key invariant: Solidity verifier accepts flags=0 (Keccak256), CosmWasm verifier accepts flags=1 (SHA-256) — each rejects the other's format at the `flags & 1` check. The `make_tessera_proof` helper computes `sha256(msg_id_str.as_bytes())` for the msgId field; this must match `tessera_types::message_id(&envelope)` exactly. The `abi.encodePacked(address)` → `abi.encode(address)` fix was necessary because `abi.decode` requires 32-byte ABI-padded input, not 20-byte packed.
+
+---

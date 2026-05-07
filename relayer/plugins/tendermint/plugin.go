@@ -4,6 +4,7 @@ package tendermint
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -12,7 +13,9 @@ import (
 	rpcclient "github.com/cometbft/cometbft/rpc/client"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cometbft/cometbft/types"
+	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/transform"
 )
 
 // Plugin is the Neutron/Tendermint chain adapter.
@@ -120,18 +123,32 @@ func (p *Plugin) FetchProof(ctx context.Context, event chain.Event, height uint6
 		return chain.Proof{}, fmt.Errorf("tendermint FetchProof fingerprint: %w", err)
 	}
 
-	// Extract IAVL proof bytes from the first ProofOp if available.
-	// In P-3 the placeholder path returns no proof ops; P-5 will have real data.
-	var proofBytes []byte
-	if ops := result.Response.ProofOps.GetOps(); len(ops) > 0 {
-		proofBytes = ops[0].Data
+	// Serialise all proof ops as JSON so the transform layer can access every op.
+	// The tendermintProofJSON format is shared with the transform package.
+	type tendermintProofJSON struct {
+		Value    hexutil.Bytes   `json:"value"`
+		ProofOps []hexutil.Bytes `json:"proof_ops"`
+	}
+	var opData []hexutil.Bytes
+	if result.Response.ProofOps != nil {
+		for _, op := range result.Response.ProofOps.GetOps() {
+			opData = append(opData, op.Data)
+		}
+	}
+	tmProof := tendermintProofJSON{
+		Value:    result.Response.Value,
+		ProofOps: opData,
+	}
+	proofBytes, err := json.Marshal(tmProof)
+	if err != nil {
+		return chain.Proof{}, fmt.Errorf("tendermint FetchProof marshal proof: %w", err)
 	}
 
 	return chain.Proof{
 		ChainID:     p.chainID,
 		BlockNumber: height,
 		StateRoot:   fp.Root,
-		ProofBytes:  proofBytes, // IAVL proof bytes (P-5 fills this with real data)
+		ProofBytes:  proofBytes, // JSON-encoded all proof ops (P-5 fills with real data)
 		KeyPath:     key,
 		Value:       result.Response.Value,
 	}, nil
@@ -216,10 +233,16 @@ func (p *Plugin) SubscribeEvents(ctx context.Context, fromBlock uint64) (<-chan 
 	return ch, nil
 }
 
-// TranslateProofTo converts the IAVL proof to a format for destChainID.
-// Stub — implemented in P-4 (IAVLToPatricia).
+// TranslateProofTo converts the IAVL proof into a TesseraProof for destChainID.
+// Implemented in P-4 using IAVLToPatricia (Keccak256 hashing for Sepolia verifier).
+// The MessageEnvelope is partially constructed from the proof; P-6 will supply
+// the full envelope from the event.
 func (p *Plugin) TranslateProofTo(proof chain.Proof, destChainID string) (chain.Proof, error) {
-	return chain.Proof{}, chain.ErrNotImplemented
+	env := chain.MessageEnvelope{
+		SourceChainID: p.chainID, // "pion-1"
+		DestChainID:   destChainID,
+	}
+	return transform.IAVLToPatricia(proof, env)
 }
 
 // SubmitMessage submits a message and proof to the Sepolia verifier contract.

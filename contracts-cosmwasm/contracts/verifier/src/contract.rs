@@ -38,9 +38,80 @@ fn registry_is_active(deps: Deps, registry: &cosmwasm_std::Addr, addr: &str) -> 
         .query_wasm_smart(registry, &RegistryQuery::IsActive { addr: addr.to_string() })
 }
 
-/// Stub: any non-empty proof is considered valid (real IAVL verification in P-4).
-fn _verify_proof(_fingerprint: &str, _msg_id: &str, proof: &Binary) -> bool {
-    !proof.is_empty()
+/// Verifies a TesseraProof — the canonical cross-chain inclusion proof (R-50, R-51, P-4).
+///
+/// Wire format (big-endian):
+///   [0:4]     "TSSP" magic
+///   [4:8]     flags uint32; bit0: 1=SHA256 (Neutron), 0=Keccak256 (rejected here)
+///   [8:40]    msgId bytes32; must equal sha256(msg_id.as_bytes())
+///   [40:72]   leafKey bytes32
+///   [72:104]  leafValue bytes32
+///   [104:108] depth uint32
+///   [108+i*32 ..] nodeHashes[i]
+///
+/// Root: h = sha256(0x00 || msgId || leafKey || leafValue)
+///       for each node: h = sha256(0x01 || h || nodeHash)
+///       assert hex::decode(fingerprint) == h
+fn _verify_proof(fingerprint: &str, msg_id: &str, proof: &Binary) -> bool {
+    use sha2::{Digest, Sha256};
+
+    let data = proof.as_slice();
+    if data.len() < 108 {
+        return false;
+    }
+    if &data[0..4] != b"TSSP" {
+        return false;
+    }
+    let flags = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    // Neutron verifier requires SHA-256 format (bit0 == 1).
+    if (flags & 1) == 0 {
+        return false;
+    }
+
+    // msgId in proof must equal sha256(msg_id string).
+    let expected_msg_id: [u8; 32] = Sha256::digest(msg_id.as_bytes()).into();
+    if data[8..40] != expected_msg_id {
+        return false;
+    }
+
+    let leaf_key: [u8; 32] = match data[40..72].try_into() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let leaf_value: [u8; 32] = match data[72..104].try_into() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let depth = u32::from_be_bytes([data[104], data[105], data[106], data[107]]) as usize;
+
+    if data.len() != 108 + depth * 32 {
+        return false;
+    }
+
+    // Walk the hash chain.
+    let mut h: Vec<u8> = {
+        let mut hasher = Sha256::new();
+        hasher.update([0x00u8]);
+        hasher.update(expected_msg_id);
+        hasher.update(leaf_key);
+        hasher.update(leaf_value);
+        hasher.finalize().to_vec()
+    };
+
+    for i in 0..depth {
+        let off = 108 + i * 32;
+        let node = &data[off..off + 32];
+        let mut hasher = Sha256::new();
+        hasher.update([0x01u8]);
+        hasher.update(&h);
+        hasher.update(node);
+        h = hasher.finalize().to_vec();
+    }
+
+    match hex::decode(fingerprint) {
+        Ok(fp_bytes) => fp_bytes == h,
+        Err(_) => false,
+    }
 }
 
 fn slash_msg(bond: &cosmwasm_std::Addr, target: &str, recipient: &str, bps: u64) -> StdResult<CosmosMsg> {

@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/ethclient/gethclient"
 	"github.com/tessera-bridge/tessera/internal/chain"
+	"github.com/tessera-bridge/tessera/internal/transform"
 )
 
 // Plugin is the Sepolia/EVM chain adapter.
@@ -181,10 +182,16 @@ func ethereum_filterQuery(fromBlock uint64) interface{} {
 	}{FromBlock: fromBlock}
 }
 
-// TranslateProofTo converts the Patricia proof to a format for destChainID.
-// Stub — implemented in P-4 (PatriciaToIAVL).
+// TranslateProofTo converts the Patricia proof into a TesseraProof for destChainID.
+// Implemented in P-4 using PatriciaToIAVL (SHA-256 hashing for Neutron verifier).
+// The MessageEnvelope is partially constructed from proof metadata; P-6 will supply
+// the full envelope from the subscribed event.
 func (p *Plugin) TranslateProofTo(proof chain.Proof, destChainID string) (chain.Proof, error) {
-	return chain.Proof{}, chain.ErrNotImplemented
+	env := chain.MessageEnvelope{
+		SourceChainID: p.chainID, // "sepolia"
+		DestChainID:   destChainID,
+	}
+	return transform.PatriciaToIAVL(proof, env)
 }
 
 // SubmitMessage submits a message and proof to the Neutron verifier contract.

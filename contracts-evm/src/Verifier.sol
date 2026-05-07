@@ -254,21 +254,52 @@ contract Verifier {
         );
     }
 
-    /// @dev Proof verification stub for P-1 local tests.
-    ///      A non-empty proof is treated as valid — real Patricia trie verification added in P-4.
-    ///      Override this function in TestableVerifier for fine-grained test control.
-    /// @param fingerprint  Expected state root (transformed).
-    /// @param messageHash  keccak256 of the full message envelope.
-    /// @param proof        Merkle proof bytes.
+    /// @dev Verifies a TesseraProof — the canonical cross-chain inclusion proof (R-50, R-51, P-4).
+    ///
+    ///      Wire format (all big-endian):
+    ///        [0:4]    "TSSP" magic
+    ///        [4:8]    flags uint32; bit0: 0=Keccak256 (Sepolia), 1=SHA256 (Neutron)
+    ///        [8:40]   msgId bytes32; must equal messageHash
+    ///        [40:72]  leafKey bytes32
+    ///        [72:104] leafValue bytes32
+    ///        [104:108] depth uint32
+    ///        [108+i*32 : 140+i*32] nodeHashes[i]
+    ///
+    ///      Root: h = keccak256(0x00||msgId||leafKey||leafValue);
+    ///            for each node: h = keccak256(0x01||h||nodeHash)
+    ///            assert h == fingerprint
+    ///
+    ///      Override in TestableVerifier for test scenarios without real proofs.
+    /// @param fingerprint  Transformed state root claimed by the relayer.
+    /// @param messageHash  keccak256 of the full message envelope; must match proof.msgId.
+    /// @param proof        TesseraProof bytes.
     function _verifyProof(bytes32 fingerprint, bytes32 messageHash, bytes calldata proof)
         internal
         view
         virtual
         returns (bool)
     {
-        // Silence unused-variable warnings; real implementation uses all three.
-        fingerprint;
-        messageHash;
-        return proof.length > 0;
+        if (proof.length < 108) return false;
+        if (bytes4(proof[0:4]) != bytes4("TSSP")) return false;
+
+        // Sepolia verifier: bit0 must be 0 (Keccak256 format).
+        uint32 flags = uint32(bytes4(proof[4:8]));
+        if ((flags & 1) != 0) return false;
+
+        bytes32 msgId = bytes32(proof[8:40]);
+        if (msgId != messageHash) return false;
+
+        bytes32 leafKey   = bytes32(proof[40:72]);
+        bytes32 leafValue = bytes32(proof[72:104]);
+        uint32  depth     = uint32(bytes4(proof[104:108]));
+
+        if (proof.length != 108 + uint256(depth) * 32) return false;
+
+        bytes32 h = keccak256(abi.encodePacked(bytes1(0x00), msgId, leafKey, leafValue));
+        for (uint32 i = 0; i < depth; i++) {
+            uint256 off = 108 + uint256(i) * 32;
+            h = keccak256(abi.encodePacked(bytes1(0x01), h, bytes32(proof[off:off + 32])));
+        }
+        return h == fingerprint;
     }
 }

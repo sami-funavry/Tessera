@@ -15,6 +15,8 @@ schemars        = { workspace = true }
 serde           = { workspace = true }
 thiserror       = { workspace = true }
 tessera-types   = { workspace = true }
+sha2            = { version = "0.10", default-features = false }
+hex             = { version = "0.4", default-features = false }
 
 [dev-dependencies]
 cw-multi-test      = { workspace = true }

@@ -1,12 +1,162 @@
+// Package transform — IAVLToPatricia direction (Neutron → Sepolia).
 package transform
 
-import "github.com/tessera-bridge/tessera/internal/chain"
+import (
+	"encoding/json"
+	"fmt"
 
-// IAVLToPatricia converts a Neutron IAVL proof into a Patricia Merkle Trie
-// proof suitable for verification by the Sepolia Solidity verifier.
-// The Ed25519 Tendermint signatures are verified off-chain here before
-// transformation; the Solidity verifier sees only the Patricia walk (R-51).
-func IAVLToPatricia(proof chain.Proof) (chain.Proof, error) {
-	// TODO: implement in P-4
-	panic("IAVLToPatricia not yet implemented")
+	"github.com/ethereum/go-ethereum/accounts/abi"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/tessera-bridge/tessera/internal/chain"
+)
+
+// tendermintProofJSON is the JSON format used to store all ABCI proof ops.
+// The tendermint plugin serialises its proof data in this structure so that
+// the transform layer can access every op.Data without losing information.
+type tendermintProofJSON struct {
+	Value    hexutil.Bytes   `json:"value"`
+	ProofOps []hexutil.Bytes `json:"proof_ops"`
+}
+
+// IAVLToPatricia converts a Neutron IAVL proof into a TesseraProof using
+// Keccak256 hashing, ready for verification by the Sepolia Solidity verifier
+// (R-51, R-52).
+//
+// The Ed25519 Tendermint consensus is verified off-chain in Go (VerifyConsensus)
+// before this function is called. This function only performs the deterministic
+// hash transformation; the Solidity verifier sees only the Keccak walk (R-55).
+//
+// msgId derivation matches Solidity's _envelopeHash:
+//
+//	keccak256(abi.encode(srcChainId, srcApp, dstChainId, dstApp, action, payload, nonce))
+func IAVLToPatricia(proof chain.Proof, env chain.MessageEnvelope) (chain.Proof, error) {
+	msgID, err := computeSolidityMsgID(env)
+	if err != nil {
+		return chain.Proof{}, fmt.Errorf("IAVLToPatricia: compute msgId: %w", err)
+	}
+
+	// Parse the JSON blob stored by the tendermint plugin.
+	var tmProof tendermintProofJSON
+	if len(proof.ProofBytes) > 0 {
+		if err := json.Unmarshal(proof.ProofBytes, &tmProof); err != nil {
+			// Fall through — the proof may be raw bytes from a legacy format.
+			// We treat the entire ProofBytes as a single op.
+			tmProof.ProofOps = []hexutil.Bytes{proof.ProofBytes}
+			tmProof.Value = proof.Value
+		}
+	}
+
+	// Build leafKey from proof.KeyPath (zero-pad left to 32 bytes).
+	var leafKey [32]byte
+	if len(proof.KeyPath) > 0 {
+		kb := proof.KeyPath
+		if len(kb) > 32 {
+			kb = kb[len(kb)-32:]
+		}
+		copy(leafKey[32-len(kb):], kb)
+	}
+
+	// Build leafValue from proof.Value or the parsed JSON value.
+	var leafValue [32]byte
+	rawValue := proof.Value
+	if len(tmProof.Value) > 0 {
+		rawValue = tmProof.Value
+	}
+	if len(rawValue) > 0 {
+		vb := rawValue
+		if len(vb) > 32 {
+			vb = vb[len(vb)-32:]
+		}
+		copy(leafValue[32-len(vb):], vb)
+	}
+
+	// Build nodeHashes: Keccak256 of each raw ABCI proof op.
+	nodeHashes := make([][32]byte, len(tmProof.ProofOps))
+	for i, opData := range tmProof.ProofOps {
+		nodeHashes[i] = crypto.Keccak256Hash(opData)
+	}
+
+	tessera := &TesseraProof{
+		Flags:      FlagKeccak,
+		MsgID:      msgID,
+		LeafKey:    leafKey,
+		LeafValue:  leafValue,
+		NodeHashes: nodeHashes,
+	}
+
+	root := tessera.ComputeRoot()
+	encoded := tessera.Encode()
+
+	return chain.Proof{
+		ChainID:     "sepolia",
+		BlockNumber: proof.BlockNumber,
+		StateRoot:   root[:],
+		ProofBytes:  encoded,
+		KeyPath:     leafKey[:],
+		Value:       leafValue[:],
+	}, nil
+}
+
+// computeSolidityMsgID computes keccak256(abi.encode(...)) matching the
+// Solidity Verifier._envelopeHash function exactly.
+//
+// ABI-encode order: sourceChainId (bytes32), sourceApp (bytes), destChainId (bytes32),
+// destApp (bytes), action (bytes4), payload (bytes), nonce (uint64).
+func computeSolidityMsgID(env chain.MessageEnvelope) ([32]byte, error) {
+	bytes32T, err := abi.NewType("bytes32", "", nil)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("computeSolidityMsgID abi.NewType bytes32: %w", err)
+	}
+	bytesT, err := abi.NewType("bytes", "", nil)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("computeSolidityMsgID abi.NewType bytes: %w", err)
+	}
+	bytes4T, err := abi.NewType("bytes4", "", nil)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("computeSolidityMsgID abi.NewType bytes4: %w", err)
+	}
+	uint64T, err := abi.NewType("uint64", "", nil)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("computeSolidityMsgID abi.NewType uint64: %w", err)
+	}
+
+	args := abi.Arguments{
+		{Type: bytes32T}, // sourceChainId
+		{Type: bytesT},   // sourceApp
+		{Type: bytes32T}, // destChainId
+		{Type: bytesT},   // destApp
+		{Type: bytes4T},  // action
+		{Type: bytesT},   // payload
+		{Type: uint64T},  // nonce
+	}
+
+	srcChain := stringToBytes32(env.SourceChainID)
+	dstChain := stringToBytes32(env.DestChainID)
+
+	encoded, err := args.Pack(
+		srcChain,
+		[]byte(env.SourceApp),
+		dstChain,
+		[]byte(env.DestApp),
+		env.Action,
+		env.Payload,
+		env.Nonce,
+	)
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("computeSolidityMsgID abi.Pack: %w", err)
+	}
+	return crypto.Keccak256Hash(encoded), nil
+}
+
+// stringToBytes32 left-aligns a string into a [32]byte (matches Solidity
+// bytes32(abi.encodePacked("string"))). Strings longer than 32 bytes are truncated.
+func stringToBytes32(s string) [32]byte {
+	var b [32]byte
+	n := len(s)
+	if n > 32 {
+		n = 32
+	}
+	copy(b[:n], s[:n])
+	return b
 }
