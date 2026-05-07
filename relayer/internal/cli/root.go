@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	chainpkg "github.com/tessera-bridge/tessera/internal/chain"
 	"github.com/tessera-bridge/tessera/internal/config"
+	"github.com/tessera-bridge/tessera/internal/cosmwasm"
 	"github.com/tessera-bridge/tessera/internal/obs"
 	"github.com/tessera-bridge/tessera/internal/pipeline"
 	"github.com/tessera-bridge/tessera/internal/relayer"
@@ -122,14 +125,14 @@ func newBondCmd() *cobra.Command {
 		Use:   "bond",
 		Short: "Manage relayer bond (register / deposit / status)",
 	}
-	bond.AddCommand(newBondRegisterCmd(), newBondDepositCmd(), newBondStatusCmd())
+	bond.AddCommand(newBondRegisterCmd(), newBondDepositCmd(), newBondStatusCmd(), newBondFundNeutronCmd())
 	return bond
 }
 
 // newBondRegisterCmd registers this relayer's public key on both chains.
 func newBondRegisterCmd() *cobra.Command {
 	var chainName string
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "register",
 		Short: "Register this relayer's public key on-chain (sepolia | neutron | both)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -175,6 +178,8 @@ func newBondRegisterCmd() *cobra.Command {
 			}
 		},
 	}
+	cmd.Flags().StringVar(&chainName, "chain", "", "Chain to register on: sepolia, neutron, or both (default: both)")
+	return cmd
 }
 
 // newBondDepositCmd posts ETH/NTRN into the Bond contract on the specified chain.
@@ -234,6 +239,41 @@ func newBondStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// newBondFundNeutronCmd sends uNTRN from NEUTRON_DEPLOYER_PRIVATE_KEY to target addresses.
+// Used to bootstrap relayer Neutron accounts that haven't received tokens yet.
+func newBondFundNeutronCmd() *cobra.Command {
+	var toAddr string
+	var amount uint64
+	cmd := &cobra.Command{
+		Use:   "fund-neutron",
+		Short: "Send uNTRN from deployer to a Neutron address (bootstrap only)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			restURL := os.Getenv("NEUTRON_REST_URL")
+			chainID := os.Getenv("NEUTRON_CHAIN_ID")
+			deployerKey := os.Getenv("NEUTRON_DEPLOYER_PRIVATE_KEY")
+			deployerKey = strings.TrimPrefix(deployerKey, "0x")
+			if restURL == "" || chainID == "" || deployerKey == "" {
+				return fmt.Errorf("NEUTRON_REST_URL, NEUTRON_CHAIN_ID, NEUTRON_DEPLOYER_PRIVATE_KEY must be set")
+			}
+			cwc, err := cosmwasm.New(restURL, chainID, deployerKey)
+			if err != nil {
+				return fmt.Errorf("cosmwasm client: %w", err)
+			}
+			txHash, err := cwc.BankSend(cmd.Context(), toAddr, "untrn", amount)
+			if err != nil {
+				return fmt.Errorf("fund-neutron: %w", err)
+			}
+			slog.Info("fund-neutron success", "to", toAddr, "amount_untrn", strconv.FormatUint(amount, 10), "tx_hash", txHash)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&toAddr, "to", "", "Destination neutron1... address (required)")
+	cmd.Flags().Uint64Var(&amount, "amount", 0, "Amount in uNTRN (required)")
+	_ = cmd.MarkFlagRequired("to")
+	_ = cmd.MarkFlagRequired("amount")
+	return cmd
 }
 
 // newFetchCmd returns the fetch subcommand.

@@ -3,7 +3,7 @@
 #
 # Required env vars (from .env at repo root):
 #   DEPLOYER_PRIVATE_KEY    EVM hex private key for SEPOLIA_WALLET_ADDRESS
-#   ETHERUM_SEPOLIA_ENDPOINT  Alchemy / other RPC
+#   ETHEREUM_SEPOLIA_ENDPOINT  Alchemy / other RPC
 #   ETHERSCAN_API_KEY       For contract verification
 #
 # Usage:  bash scripts/deploy/sepolia.sh
@@ -18,22 +18,26 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
 fi
 
 : "${SEPOLIA_DEPLOYER_PRIVATE_KEY:?SEPOLIA_DEPLOYER_PRIVATE_KEY not set — add it to .env}"
-: "${ETHERUM_SEPOLIA_ENDPOINT:?ETHERUM_SEPOLIA_ENDPOINT not set}"
+: "${ETHEREUM_SEPOLIA_ENDPOINT:?ETHEREUM_SEPOLIA_ENDPOINT not set}"
 : "${ETHERSCAN_API_KEY:?ETHERSCAN_API_KEY not set}"
 
 FORGE="$HOME/.foundry/bin/forge"
 ADDR_FILE="$REPO_ROOT/scripts/addresses.json"
+EVM_ROOT="$REPO_ROOT/contracts-evm"
+
+# Forge must run with contracts-evm as root so foundry.toml and lib/ are found.
+cd "$EVM_ROOT"
 
 echo "==> [sepolia] Running dry-run first..."
-"$FORGE" script "$REPO_ROOT/contracts-evm/script/Deploy.s.sol:DeployTessera" \
-  --rpc-url "$ETHERUM_SEPOLIA_ENDPOINT" \
+"$FORGE" script "script/Deploy.s.sol:DeployTessera" \
+  --rpc-url "$ETHEREUM_SEPOLIA_ENDPOINT" \
   --private-key "$SEPOLIA_DEPLOYER_PRIVATE_KEY" \
   -vvv 2>&1
 
 echo ""
 echo "==> [sepolia] Broadcasting deployment..."
-FORGE_OUT=$("$FORGE" script "$REPO_ROOT/contracts-evm/script/Deploy.s.sol:DeployTessera" \
-  --rpc-url "$ETHERUM_SEPOLIA_ENDPOINT" \
+FORGE_OUT=$("$FORGE" script "script/Deploy.s.sol:DeployTessera" \
+  --rpc-url "$ETHEREUM_SEPOLIA_ENDPOINT" \
   --private-key "$SEPOLIA_DEPLOYER_PRIVATE_KEY" \
   --broadcast \
   --verify \

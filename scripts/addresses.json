@@ -1,18 +1,18 @@
 {
   "sepolia": {
-    "tusdc": "0xa355a4C216080B4CD1231e3De96F7ee06226d7c4",
-    "bond": "0xe651e39903F04444Af400d1F38BB10a3f89Ef97a",
-    "relayer_registry": "0xAc52aeDBf264320CC2F3BE1c26af72b0198E2Fad",
-    "verifier": "0x92532d563400ACF3D377e1891fE880e787d9A47b",
-    "bridge_vault": "0x8538da0D97bdCd07a38a8eE42826B0cA5e660174",
-    "bridge_mint": "0x276BaAdfE0f40799f3F15E142dB2fB23b6377EC8"
+    "tusdc": "0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0",
+    "bond": "0x8c7dc28559B75AF8c3d59B62C87309E65cb37912",
+    "relayer_registry": "0x43677d5Da5701E061Eefa65e36A4fF6D4BFC1109",
+    "verifier": "0x2EfAB8cC7ed7C11cfC23C215731aaFA2A602F72a",
+    "bridge_vault": "0x2C3544434185DD65F058494816bB816e5314a29E",
+    "bridge_mint": "0x61cab20856b16003b6a3FB213F86355515AD43cd"
   },
   "neutron": {
-    "tusdc": "neutron1m5ma9hh20y373zw6adf7rvcg32fupwtcjxpc9xunnl2kjnt4pejqlyw7wa",
-    "bond": "neutron1tzu97ujpa0fw6x5glsr9h6x9tfgwsulvxk4snwmvtqujdp5v9j6sgm05st",
-    "relayer_registry": "neutron10dll486zv7a4ps6ppvreqvgx0dwvruh2cxnv2p734t5m38ngx9gqcv677r",
-    "verifier": "neutron15nnzuqct22a9pthrywwhzdlcchyl74zyrry66eu3fadn5hdnqtgsmzd7qx",
-    "bridge_vault": "neutron1plylyr2zk022qdqska2wh87jsgjhwsgxx8mjw8h66qaf430m7uessvn7tx",
-    "bridge_mint": "neutron1yhl05vq5pw5a99puedk5dygdkazjn38d9raf80w78hyptp22ug6qpmmyh7"
+    "tusdc": "neutron16ket7npnkekn76nzhfjauwkwsea49rssp9fkn7fyxu35fwavfrxqxp5qnz",
+    "bond": "neutron1nnz9j6c3d25wnwj4h3jqkvazgawcmgjjk5unysvf6e0j90gavvsseunvg8",
+    "relayer_registry": "neutron1jq5kku3r0sxdkcxvkx7ke4dlcwq4my0m2gncrx4zf7g37hxtwj7qfrya5k",
+    "verifier": "neutron1sda4ucdq06de7h7lxg66n6sq29ft9hk76a5mpjwehk3a8wfga0eqf002f0",
+    "bridge_vault": "neutron12z7xqgwgp6vsk5s96z4n6vjupqjg3zmvv5v068vvy3n69gshvhaq8j7dam",
+    "bridge_mint": "neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7"
   }
 }

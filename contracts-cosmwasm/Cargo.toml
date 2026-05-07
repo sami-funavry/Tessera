@@ -11,8 +11,8 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-cosmwasm-std      = { version = "2.1", features = ["cosmwasm_2_0"] }
-cosmwasm-schema   = "2.1"
+cosmwasm-std      = { version = "=2.1.4", features = ["cosmwasm_2_0"] }
+cosmwasm-schema   = "=2.1.4"
 cw-storage-plus   = "2.0"
 cw2               = "2.0"
 cw20              = { version = "2.0", features = [] }

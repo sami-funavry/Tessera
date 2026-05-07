@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 // Addresses holds deployed contract addresses for both chains.
@@ -69,7 +70,7 @@ func Load() (*Config, error) {
 		SupabaseServiceKey: get("SUPABASE_SERVICE_ROLE_KEY"),
 		EtherscanAPIKey:    get("ETHERSCAN_API_KEY"),
 		EtherscanAPIURL:    get("ETHERSCAN_API_URL"),
-		RelayerPrivateKey:  get("RELAYER_PRIVATE_KEY"),
+		RelayerPrivateKey:  strings.TrimPrefix(get("RELAYER_PRIVATE_KEY"), "0x"),
 		Addrs: Addresses{
 			SepoliaTUSDC:           getOpt("SEPOLIA_TUSDC"),
 			SepoliaBond:            getOpt("SEPOLIA_BOND"),

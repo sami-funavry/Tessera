@@ -97,6 +97,53 @@ func (c *Client) Execute(ctx context.Context, contractAddr string, msgJSON []byt
 	return c.broadcast(ctx, txRaw)
 }
 
+// BankSend broadcasts a cosmos.bank.v1beta1.MsgSend from this client's address to toAddr.
+// amount is in uNTRN (or the specified denom).
+func (c *Client) BankSend(ctx context.Context, toAddr, denom string, amount uint64) (string, error) {
+	acctNum, seq, err := c.accountInfo(ctx)
+	if err != nil {
+		return "", fmt.Errorf("BankSend: account info: %w", err)
+	}
+
+	msgBytes := encodeMsgSend(c.address, toAddr, denom, amount)
+
+	var bodyBytes []byte
+	anyBytes := encodeAny("/cosmos.bank.v1beta1.MsgSend", msgBytes)
+	bodyBytes = appendField(bodyBytes, 1, anyBytes)
+
+	pubKeyAny := encodeAny(
+		"/cosmos.crypto.secp256k1.PubKey",
+		encodeSecp256k1PubKey(c.privKey.PubKey().SerializeCompressed()),
+	)
+	const gasLimit = 80_000
+	authInfoBytes := encodeAuthInfo(pubKeyAny, seq, gasLimit)
+
+	signDocBytes := encodeSignDoc(bodyBytes, authInfoBytes, c.chainID, acctNum, seq)
+	hash := sha256.Sum256(signDocBytes)
+	sig := btcecdsa.Sign(c.privKey, hash[:])
+	sigBytes := compactSig(sig)
+
+	txRaw := encodeTxRaw(bodyBytes, authInfoBytes, sigBytes)
+	txHash, err := c.broadcast(ctx, txRaw)
+	if err != nil {
+		return "", fmt.Errorf("BankSend: %w", err)
+	}
+	slog.Info("BankSend success", "to", toAddr, "amount", amount, "denom", denom, "txhash", txHash)
+	return txHash, nil
+}
+
+// encodeMsgSend encodes a cosmos.bank.v1beta1.MsgSend.
+func encodeMsgSend(fromAddr, toAddr, denom string, amount uint64) []byte {
+	var coin []byte
+	coin = appendField(coin, 1, []byte(denom))
+	coin = appendField(coin, 2, []byte(fmt.Sprintf("%d", amount)))
+	var b []byte
+	b = appendField(b, 1, []byte(fromAddr))
+	b = appendField(b, 2, []byte(toAddr))
+	b = appendField(b, 3, coin)
+	return b
+}
+
 // ─── Protobuf helpers ────────────────────────────────────────────────────────
 
 // appendField appends a length-delimited (bytes/string) field.
@@ -212,16 +259,15 @@ func encodeTxRaw(bodyBytes, authInfoBytes, sigBytes []byte) []byte {
 
 // compactSig converts a btcec ECDSA signature to 64-byte (R||S) compact form.
 // Cosmos uses raw 64-byte compact signatures, not DER encoding.
+// Uses R() and S() scalar accessors to avoid DER parsing edge-cases.
 func compactSig(sig *btcecdsa.Signature) []byte {
-	der := sig.Serialize()
-	// DER layout: 0x30 totalLen 0x02 rLen [r] 0x02 sLen [s]
-	rLen := int(der[3])
-	r := der[4 : 4+rLen]
-	sLen := int(der[4+rLen+1])
-	s := der[4+rLen+2 : 4+rLen+2+sLen]
+	r := sig.R()
+	s := sig.S()
+	rBytes := r.Bytes()
+	sBytes := s.Bytes()
 	out := make([]byte, 64)
-	copy(out[32-len(r):32], r) // right-align R in 32 bytes
-	copy(out[64-len(s):64], s) // right-align S in 32 bytes
+	copy(out[:32], rBytes[:])
+	copy(out[32:], sBytes[:])
 	return out
 }
 
