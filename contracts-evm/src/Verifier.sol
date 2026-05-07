@@ -194,7 +194,9 @@ contract Verifier {
         sub.status = SubmissionStatus.Executed;
         executedMessages[sub.msgId] = true;
 
-        // Dispatch to destination app (Option A pattern, R-12)
+        // Dispatch to destination app (Option A pattern, R-12).
+        // destinationApp is always ABI-encoded as address (32 bytes); reject malformed payloads.
+        if (sub.destinationApp.length != 32) revert InvalidProof();
         address destApp = abi.decode(sub.destinationApp, (address));
         IApp(destApp).onCrossChainMessage(
             sub.sourceChainId, sub.sourceApp, sub.action, sub.payload

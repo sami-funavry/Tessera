@@ -39,7 +39,10 @@ func New(restURL, chainID, privKeyHex string) (*Client, error) {
 		return nil, fmt.Errorf("cosmwasm: decode private key: %w", err)
 	}
 	privKey, pubKey := btcec.PrivKeyFromBytes(privBytes)
-	addr := cosmosAddress(pubKey.SerializeCompressed(), "neutron")
+	addr, err := cosmosAddress(pubKey.SerializeCompressed(), "neutron")
+	if err != nil {
+		return nil, fmt.Errorf("cosmwasm: derive address: %w", err)
+	}
 	slog.Info("cosmwasm client ready", "address", addr, "chain", chainID)
 	return &Client{
 		restURL:    restURL,
@@ -310,20 +313,21 @@ func (c *Client) broadcast(ctx context.Context, txRawBytes []byte) (string, erro
 
 // cosmosAddress derives a bech32 address from a compressed secp256k1 public key.
 // Algorithm: bech32(prefix, convertbits(ripemd160(sha256(pubkey)), 8→5)).
-func cosmosAddress(compressedPubKey []byte, prefix string) string {
+// Returns an error instead of panicking so callers can propagate it cleanly.
+func cosmosAddress(compressedPubKey []byte, prefix string) (string, error) {
 	sha := sha256.Sum256(compressedPubKey)
 	h := ripemd160.New()
 	h.Write(sha[:])
 	addrBytes := h.Sum(nil) // 20 bytes
 	converted, err := convertBits(addrBytes, 8, 5, true)
 	if err != nil {
-		panic(fmt.Sprintf("cosmosAddress convertBits: %v", err))
+		return "", fmt.Errorf("cosmosAddress convertBits: %w", err)
 	}
 	encoded, err := bech32Encode(prefix, converted)
 	if err != nil {
-		panic(fmt.Sprintf("cosmosAddress bech32Encode: %v", err))
+		return "", fmt.Errorf("cosmosAddress bech32Encode: %w", err)
 	}
-	return encoded
+	return encoded, nil
 }
 
 // ─── Minimal bech32 ─────────────────────────────────────────────────────────

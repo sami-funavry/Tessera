@@ -53,6 +53,13 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		"source", src.ChainID(), "dest", dst.ChainID(),
 		"nonce", ev.Nonce, "tx", ev.TxHash, "height", ev.BlockHeight)
 
+	// S-3: go-silent fault — skip this submission so the other relayer can take over.
+	if r.IsSilent() {
+		slog.Warn("handleEvent: SILENT FAULT active — skipping submission (S-3 scenario)",
+			"nonce", ev.Nonce, "source", src.ChainID())
+		return nil
+	}
+
 	// Record raw event in DB.
 	r.dbAppendEvent(ctx, ev)
 
@@ -86,6 +93,18 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		return fmt.Errorf("handleEvent TranslateProofTo: %w", err)
 	}
 
+	// S-2: wrong-fingerprint fault — tamper the transformed root before submission.
+	if r.HasWrongFingerprintFault() {
+		original := append([]byte(nil), transformedProof.StateRoot...)
+		for i := range transformedProof.StateRoot {
+			transformedProof.StateRoot[i] ^= 0xFF // flip all bits — guaranteed mismatch
+		}
+		slog.Warn("handleEvent: WRONG FINGERPRINT FAULT active — tampered root (S-2 scenario)",
+			"nonce", ev.Nonce,
+			"original_root", hex.EncodeToString(original),
+			"tampered_root", hex.EncodeToString(transformedProof.StateRoot))
+	}
+
 	fingerprint := transform.FingerprintHex(transformedProof)
 	slog.Info("handleEvent: proof transformed",
 		"source", src.ChainID(), "dest", dst.ChainID(),
@@ -93,15 +112,13 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		"transformed_root", fingerprint,
 		"proof_bytes", len(transformedProof.ProofBytes))
 
-	// Update message status to "submitted".
-	r.dbUpdateMessageStatus(ctx, msgDBID, "submitted")
-
 	// Step 5: Submit to the destination verifier.
 	txHash, submissionID, err := dst.SubmitMessage(ctx, env, transformedProof)
 	if err != nil {
-		r.dbUpdateMessageStatus(ctx, msgDBID, "pending") // rollback optimistic status
 		return fmt.Errorf("handleEvent SubmitMessage: %w", err)
 	}
+	// Update message status only after confirmed submission.
+	r.dbUpdateMessageStatus(ctx, msgDBID, "submitted")
 
 	slog.Info("handleEvent: message submitted",
 		"dest", dst.ChainID(), "nonce", ev.Nonce,
@@ -135,7 +152,11 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 	r.addPending(ps)
 
 	// Step 8: Schedule executeMessage after challenge window + buffer.
-	go r.scheduleExecuteMessage(ctx, ps)
+	r.execWg.Add(1)
+	go func() {
+		defer r.execWg.Done()
+		r.scheduleExecuteMessage(ctx, ps)
+	}()
 
 	return nil
 }

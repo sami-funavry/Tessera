@@ -12,6 +12,7 @@ import (
 	"github.com/tessera-bridge/tessera/internal/config"
 	"github.com/tessera-bridge/tessera/internal/pipeline"
 	"github.com/tessera-bridge/tessera/internal/relayer"
+	"github.com/tessera-bridge/tessera/internal/scenario"
 	"github.com/tessera-bridge/tessera/internal/supabase"
 	"github.com/tessera-bridge/tessera/internal/transform"
 	"github.com/tessera-bridge/tessera/plugins/ethereum"
@@ -326,25 +327,82 @@ func newFetchCmd() *cobra.Command {
 func newScenarioCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "test-scenario [mock|1|2|3|4]",
-		Short: "Run a demo scenario (mock: pipeline dry-run; 1-4: real scenarios in P-7)",
-		Args:  cobra.ExactArgs(1),
+		Short: "Run a demo scenario (mock: pipeline dry-run; 1-4: in-process simulations)",
+		Long: `Run one of the four Tessera demo scenarios as a self-contained simulation.
+
+  mock  — fetch fingerprints from both chains and run the transform pipeline
+  1     — S-1 Honest delivery: event → submit → execute (no fault)
+  2     — S-2 Lying relayer: submitter tampers root → challenger detects → challenge filed
+  3     — S-3 Silent relayer: submitter A skips → submitter B takes over
+  4     — S-4 Frivolous challenge: honest submission → baseless challenge → challenger slashed
+
+For real testnet runs use scripts/scenarios/0N-*.sh.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if args[0] == "mock" {
+			ctx := cmd.Context()
+
+			switch args[0] {
+			case "mock":
 				cfg, err := config.Load()
 				if err != nil {
 					return fmt.Errorf("load config: %w", err)
 				}
-				runner := &pipeline.Runner{
+				r := &pipeline.Runner{
 					EthPlugin: ethereum.New(cfg.SepoliaRPCURL, cfg.Addrs, ""),
 					TmPlugin:  tendermint.New(cfg.NeutronRPCURL, cfg.NeutronChainID, cfg.NeutronRESTURL, cfg.Addrs, ""),
 				}
-				if err := runner.RunMockSepoliaToNeutron(cmd.Context()); err != nil {
+				if err := r.RunMockSepoliaToNeutron(ctx); err != nil {
 					return fmt.Errorf("Sepolia→Neutron mock: %w", err)
 				}
-				return runner.RunMockNeutronToSepolia(cmd.Context())
+				return r.RunMockNeutronToSepolia(ctx)
+
+			case "1":
+				result, err := scenario.RunS1(ctx)
+				if err != nil {
+					return fmt.Errorf("S-1: %w", err)
+				}
+				scenario.PrintResult(result)
+				if !result.Passed {
+					return fmt.Errorf("S-1 FAILED: %s", result.Description)
+				}
+				return nil
+
+			case "2":
+				result, err := scenario.RunS2(ctx)
+				if err != nil {
+					return fmt.Errorf("S-2: %w", err)
+				}
+				scenario.PrintResult(result)
+				if !result.Passed {
+					return fmt.Errorf("S-2 FAILED: %s", result.Description)
+				}
+				return nil
+
+			case "3":
+				result, err := scenario.RunS3(ctx)
+				if err != nil {
+					return fmt.Errorf("S-3: %w", err)
+				}
+				scenario.PrintResult(result)
+				if !result.Passed {
+					return fmt.Errorf("S-3 FAILED: %s", result.Description)
+				}
+				return nil
+
+			case "4":
+				result, err := scenario.RunS4(ctx)
+				if err != nil {
+					return fmt.Errorf("S-4: %w", err)
+				}
+				scenario.PrintResult(result)
+				if !result.Passed {
+					return fmt.Errorf("S-4 FAILED: %s", result.Description)
+				}
+				return nil
+
+			default:
+				return fmt.Errorf("unknown scenario %q; use mock, 1, 2, 3, or 4", args[0])
 			}
-			slog.Info("test scenario 1-4 implemented in P-7", "id", args[0])
-			return nil
 		},
 	}
 }

@@ -60,7 +60,7 @@ func Load() (*Config, error) {
 	getOpt := func(key string) string { return os.Getenv(key) }
 
 	cfg := &Config{
-		SepoliaRPCURL:      get("ETHERUM_SEPOLIA_ENDPOINT"),
+		SepoliaRPCURL:      get("ETHEREUM_SEPOLIA_ENDPOINT"),
 		NeutronRPCURL:      get("NEUTRON_RPC_URL"),
 		NeutronGRPCURL:     get("NEUTRON_GRPC_URL"),
 		NeutronRESTURL:     get("NEUTRON_REST_URL"),

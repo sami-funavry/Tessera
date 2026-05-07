@@ -5,6 +5,7 @@
 //
 //	POST /admin/inject-fault?type=wrong_fingerprint&duration=1  — make next submission send wrong fingerprint
 //	POST /admin/go-silent?nonces=1                              — skip submission for N nonces
+//	POST /admin/force-frivolous?nonces=1                        — force challenger to file baseless dispute (S-4)
 //	POST /admin/status                                          — report current relayer state
 package relayer
 
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -20,21 +22,38 @@ import (
 // AdminState holds the current fault injection configuration.
 // All fields are guarded by mu.
 type AdminState struct {
-	mu                    sync.Mutex
-	wrongFingerprint      bool
-	wrongFingerprintUntil time.Time
-	silentNonces          int
+	mu                     sync.Mutex
+	wrongFingerprint       bool
+	wrongFingerprintUntil  time.Time
+	silentNonces           int
+	forceFrivolousNonces   int // S-4: challenger files baseless dispute for N pending submissions
 }
 
 // AdminServer returns an *http.Server for the admin API bound to addr.
-// The server shares state with the Runner so fault flags are visible to
-// the submission goroutines in P-7.
+// Requires the X-Admin-Secret header to match the TESSERA_ADMIN_SECRET env var
+// when that env var is set. Set TESSERA_ADMIN_SECRET before starting the relayer
+// in any non-localhost deployment.
 func (r *Runner) AdminServer(addr string) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/admin/inject-fault", r.handleInjectFault)
-	mux.HandleFunc("/admin/go-silent", r.handleGoSilent)
-	mux.HandleFunc("/admin/status", r.handleAdminStatus)
+	mux.HandleFunc("/admin/inject-fault", r.checkAdminSecret(r.handleInjectFault))
+	mux.HandleFunc("/admin/go-silent", r.checkAdminSecret(r.handleGoSilent))
+	mux.HandleFunc("/admin/force-frivolous", r.checkAdminSecret(r.handleForceFrivolous))
+	mux.HandleFunc("/admin/status", r.checkAdminSecret(r.handleAdminStatus))
 	return &http.Server{Addr: addr, Handler: mux}
+}
+
+// checkAdminSecret wraps a handler with a shared-secret check.
+// When TESSERA_ADMIN_SECRET is set, requests must supply the matching value in
+// the X-Admin-Secret header. Unset = no check (local dev / demo only).
+func (r *Runner) checkAdminSecret(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		secret := os.Getenv("TESSERA_ADMIN_SECRET")
+		if secret != "" && req.Header.Get("X-Admin-Secret") != secret {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		next(w, req)
+	}
 }
 
 // handleInjectFault enables wrong-fingerprint fault injection for `duration` messages.
@@ -120,4 +139,65 @@ func (r *Runner) HasWrongFingerprintFault() bool {
 		r.admin.wrongFingerprint = false
 	}
 	return r.admin.wrongFingerprint
+}
+
+// handleForceFrivolous instructs the challenger to file a baseless dispute for N pending submissions (S-4).
+//
+//	POST /admin/force-frivolous?nonces=1
+func (r *Runner) handleForceFrivolous(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	nonces, _ := strconv.Atoi(req.URL.Query().Get("nonces"))
+	if nonces <= 0 {
+		nonces = 1
+	}
+
+	r.admin.mu.Lock()
+	r.admin.forceFrivolousNonces = nonces
+	r.admin.mu.Unlock()
+
+	slog.Info("admin: force-frivolous activated", "nonces", nonces)
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"status":"ok","nonces":%d}`, nonces)
+}
+
+// IsForceFrivolous reports whether the challenger should file a baseless dispute (S-4).
+// Decrements the counter atomically — one-shot per call.
+func (r *Runner) IsForceFrivolous() bool {
+	r.admin.mu.Lock()
+	defer r.admin.mu.Unlock()
+	if r.admin.forceFrivolousNonces > 0 {
+		r.admin.forceFrivolousNonces--
+		return true
+	}
+	return false
+}
+
+// ─── Programmatic setters (used by tessera test-scenario and unit tests) ─────
+
+// SetWrongFingerprint enables or disables the wrong-fingerprint fault directly.
+func (r *Runner) SetWrongFingerprint(active bool) {
+	r.admin.mu.Lock()
+	defer r.admin.mu.Unlock()
+	r.admin.wrongFingerprint = active
+	if active {
+		r.admin.wrongFingerprintUntil = time.Now().Add(10 * time.Minute)
+	}
+}
+
+// SetSilentNonces sets the number of events to silently skip.
+func (r *Runner) SetSilentNonces(n int) {
+	r.admin.mu.Lock()
+	defer r.admin.mu.Unlock()
+	r.admin.silentNonces = n
+}
+
+// SetForceFrivolous sets the number of pending submissions for which the challenger
+// will file a baseless dispute.
+func (r *Runner) SetForceFrivolous(n int) {
+	r.admin.mu.Lock()
+	defer r.admin.mu.Unlock()
+	r.admin.forceFrivolousNonces = n
 }

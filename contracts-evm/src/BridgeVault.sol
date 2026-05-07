@@ -84,6 +84,12 @@ contract BridgeVault is IApp, ReentrancyGuard {
     ) external onlyVerifier nonReentrant {
         (address recipient, uint256 amount, uint64 nonce) = abi.decode(payload, (address, uint256, uint64));
         if (amount == 0) revert ZeroAmount();
+        // CEI: clear storage before external call to prevent double-release (H-6).
+        if (lockedAmount[nonce] == 0) revert UnknownNonce(nonce);
+        uint256 locked = lockedAmount[nonce];
+        lockedAmount[nonce] = 0;
+        lockedBy[nonce] = address(0);
+        if (amount > locked) revert ZeroAmount(); // amount must not exceed locked
         IERC20(token).safeTransfer(recipient, amount);
         emit Released(recipient, amount, nonce);
     }

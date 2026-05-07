@@ -49,18 +49,17 @@ func (r *Runner) runChallenger(ctx context.Context) {
 func (r *Runner) scanForChallenges(ctx context.Context) {
 	for _, ps := range r.pendingList() {
 		// Re-verify the submitted proof.
+		var claimedRoot [32]byte
+		copy(claimedRoot[:], ps.Proof.StateRoot) // safe: copy handles short slices
 		rec := ChallengeRecord{
 			SubmissionID:   hex.EncodeToString(ps.SubmissionID[:]),
 			SubmissionDBID: ps.SubmissionDBID,
 			SubmitterAddr:  r.cfg.RelayerAddr,
-			ClaimedRoot:    [32]byte(ps.Proof.StateRoot[:32]),
+			ClaimedRoot:    claimedRoot,
 			SourceChainID:  ps.SourceChainID,
 			BlockHeight:    ps.BlockHeight,
 			Nonce:          ps.Nonce,
 			Deadline:       ps.Deadline,
-		}
-		if n := copy(rec.ClaimedRoot[:], ps.Proof.StateRoot); n < 32 {
-			// proof StateRoot shorter than 32 bytes — keep remainder as zeros
 		}
 
 		matches, ourRoot, err := r.VerifySubmission(ctx, rec)
@@ -73,6 +72,18 @@ func (r *Runner) scanForChallenges(ctx context.Context) {
 		if !matches {
 			// S-2: fraud detected — file on-chain challenge.
 			r.handleFraud(ctx, ps, ourRoot)
+			continue
+		}
+
+		// S-4: force-frivolous fault — file a baseless challenge against an honest submission.
+		if r.IsForceFrivolous() {
+			var fakeWrongRoot [32]byte
+			for i := range fakeWrongRoot {
+				fakeWrongRoot[i] = byte(i + 1) // deterministic garbage root
+			}
+			slog.Warn("challenger: FORCE FRIVOLOUS active — filing baseless challenge (S-4 scenario)",
+				"submission_id", rec.SubmissionID, "nonce", ps.Nonce)
+			r.handleFraud(ctx, ps, fakeWrongRoot)
 			continue
 		}
 

@@ -28,26 +28,29 @@ import (
 
 // Plugin is the Sepolia/EVM chain adapter.
 type Plugin struct {
-	rpcURL     string
-	chainID    string
-	addrs      config.Addresses
-	privKeyHex string // hex, no 0x prefix
-	mu         sync.Mutex
-	client     *ethclient.Client
-	gethClient *gethclient.Client
+	rpcURL       string
+	chainID      string
+	chainIDBig   *big.Int // numeric chain ID for transaction signing
+	addrs        config.Addresses
+	privKeyHex   string // hex, no 0x prefix
+	mu           sync.Mutex
+	client       *ethclient.Client
+	gethClient   *gethclient.Client
 	// parsed ABI instances, initialised lazily
-	verifierABI  *abi.ABI
-	registryABI  *abi.ABI
-	bondABI      *abi.ABI
-	vaultABI     *abi.ABI
+	verifierABI   *abi.ABI
+	registryABI   *abi.ABI
+	bondABI       *abi.ABI
+	vaultABI      *abi.ABI
 	bridgeMintABI *abi.ABI
 }
 
 // New returns a new Ethereum plugin wired with deployed contract addresses and signer key.
+// chainNumericID is the EIP-155 chain ID for transaction signing (11155111 for Sepolia).
 func New(rpcURL string, addrs config.Addresses, privKeyHex string) *Plugin {
 	return &Plugin{
 		rpcURL:     rpcURL,
 		chainID:    "sepolia",
+		chainIDBig: big.NewInt(11155111), // Sepolia; updated from RPC in connect()
 		addrs:      addrs,
 		privKeyHex: privKeyHex,
 	}
@@ -66,6 +69,11 @@ func (p *Plugin) connect(ctx context.Context) error {
 	}
 	p.client = client
 	p.gethClient = gethclient.New(client.Client())
+
+	// Read the actual chain ID from the connected node; update the cached value.
+	if cid, cidErr := client.ChainID(ctx); cidErr == nil {
+		p.chainIDBig = cid
+	}
 
 	// Parse all ABIs once.
 	vABI, err := abi.JSON(strings.NewReader(verifierABIJSON))
@@ -548,9 +556,8 @@ func (p *Plugin) sendTx(ctx context.Context, toHex string, data []byte, value *b
 	if value == nil {
 		value = big.NewInt(0)
 	}
-	chainID := big.NewInt(11155111) // Sepolia
 	tx := types.NewTransaction(nonce, to, value, gasLimit, gasPrice, data)
-	signer := types.NewLondonSigner(chainID)
+	signer := types.NewLondonSigner(p.chainIDBig)
 	signed, err := types.SignTx(tx, signer, privKey)
 	if err != nil {
 		return "", fmt.Errorf("sendTx: sign: %w", err)

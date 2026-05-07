@@ -39,10 +39,11 @@ type pendingSubmission struct {
 
 // Runner runs all goroutines and coordinates the relayer loop.
 type Runner struct {
-	cfg     Config
-	admin   *AdminState
-	mu      sync.Mutex
-	pending map[[32]byte]*pendingSubmission // keyed by submissionID
+	cfg      Config
+	admin    *AdminState
+	mu       sync.Mutex
+	pending  map[[32]byte]*pendingSubmission // keyed by submissionID
+	execWg   sync.WaitGroup                 // tracks scheduleExecuteMessage goroutines
 }
 
 // New creates a new Runner.
@@ -116,6 +117,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		"tm_chain", r.cfg.TmPlugin.ChainID())
 
 	wg.Wait()
+	// Drain any in-flight scheduleExecuteMessage goroutines before returning.
+	r.execWg.Wait()
 	slog.Info("relayer runner stopped")
 	return nil
 }
