@@ -10,9 +10,12 @@ import {
   ArrowDown, Terminal, RefreshCw, CheckCircle2, CircleDot,
   Clock, ChevronDown, Copy, Check, ExternalLink,
 } from 'lucide-react';
+import { useWalletClient, usePublicClient, useReadContract } from 'wagmi';
+import { parseUnits, formatUnits, toHex, padHex } from 'viem';
 
-import { cn, truncateAddress, explorerTxUrl } from '@/lib/utils';
-import { BRIDGE_PARAMS } from '@/lib/config';
+import { cn, explorerTxUrl } from '@/lib/utils';
+import { BRIDGE_PARAMS, ADDRESSES } from '@/lib/config';
+import { ERC20_ABI, BRIDGE_VAULT_ABI } from '@/lib/bridgeAbis';
 import { useWalletContext } from '@/hooks/useWalletContext';
 import { useSystemStats } from '@/hooks/useMessages';
 import type { TxStage, BridgeFormValues } from '@/types';
@@ -536,13 +539,27 @@ function LiveTxSection({
   progress,
   amount,
   onReset,
+  liveLockHash,
+  nonce,
+  direction,
 }: {
   progress: number;
   amount: string;
   onReset: () => void;
+  liveLockHash?: string | null;
+  nonce?: bigint | null;
+  direction?: string;
 }) {
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const done = progress >= TX_STAGES.length;
+
+  // Build stages array with real tx hash injected into lock stage when available.
+  const stages: TxStage[] = TX_STAGES.map((s, i) => {
+    if (i === 0 && liveLockHash) return { ...s, txHash: liveLockHash };
+    return s;
+  });
+
+  const nonceLabel = nonce != null ? `#${(nonce % BigInt(100000)).toString()}` : '#—';
 
   return (
     <motion.div
@@ -569,11 +586,11 @@ function LiveTxSection({
                   done ? 'text-emerald-400' : 'text-orange-400'
                 )}
               >
-                {done ? 'Completed · #48' : 'In flight · #48'}
+                {done ? `Completed · ${nonceLabel}` : `In flight · ${nonceLabel}`}
               </span>
             </div>
             <p className="text-stone-300 text-sm">
-              {amount || '100'} tUSDC · Sepolia → Neutron
+              {amount || '—'} tUSDC · {direction ?? 'Sepolia → Neutron'}
             </p>
           </div>
           {done && (
@@ -634,11 +651,11 @@ function LiveTxSection({
                     Streaming · live
                   </div>
                   <span className="text-[10px] font-mono text-stone-500">
-                    tessera://tx/48
+                    tessera://tx/{nonceLabel}
                   </span>
                 </div>
 
-                {TX_STAGES.map((stage, i) => (
+                {stages.map((stage, i) => (
                   <ProofInspectorEntry
                     key={stage.id}
                     stage={stage}
@@ -694,10 +711,12 @@ function BridgeWidget({
   onSubmit,
   txActive,
   initialStats,
+  balance,
 }: {
   onSubmit: (data: BridgeFormValues) => void;
   txActive: boolean;
   initialStats: BridgeStats;
+  balance?: string | null;
 }) {
   const { isFullyConnected, isEvmConnected, isKeplrConnected, evmAddress, neutronAddress } =
     useWalletContext();
@@ -779,7 +798,9 @@ function BridgeWidget({
             <span className="text-xs text-stone-500">
               Balance:{' '}
               <span className="text-stone-300 font-mono">
-                {fromChain === 'sepolia' ? '1,000.00' : '500.00'}
+                {fromChain === 'sepolia'
+                  ? (balance != null ? balance : '—')
+                  : '—'}
               </span>
             </span>
           </div>
@@ -828,9 +849,7 @@ function BridgeWidget({
             </span>
             <span className="text-xs text-stone-500">
               Balance:{' '}
-              <span className="text-stone-300 font-mono">
-                {toChain === 'neutron' ? '0.00' : '100.00'}
-              </span>
+              <span className="text-stone-300 font-mono">—</span>
             </span>
           </div>
           <div className="flex items-center gap-3 mb-3">
@@ -941,9 +960,9 @@ function ChainPill({ chain }: { chain: 'sepolia' | 'neutron' }) {
 // ─── SystemStatus strip ────────────────────────────────────────────────────────
 
 const STATS_DEFAULTS = {
-  transfers: 127,
+  transfers: 0,
   activeRelayers: 2,
-  challengesThisWeek: 4,
+  challengesThisWeek: 0,
   successfulFrauds: 0,
   lastSync: new Date().toISOString(),
 };
@@ -1038,47 +1057,127 @@ export default function HomepageClient({
 }) {
   const [txActive, setTxActive] = useState(false);
   const [txProgress, setTxProgress] = useState(0);
-  const progressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [bridgeAmount, setBridgeAmount] = useState('');
+  const [bridgeDirection, setBridgeDirection] = useState<'Sepolia → Neutron' | 'Neutron → Sepolia'>('Sepolia → Neutron');
+  const [liveLockHash, setLiveLockHash] = useState<string | null>(null);
+  const [txNonce, setTxNonce] = useState<bigint | null>(null);
+  const [txError, setTxError] = useState<string | null>(null);
+  const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  const startProgress = useCallback(() => {
-    setTxProgress(0);
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
-    progressIntervalRef.current = setInterval(() => {
-      setTxProgress((p) => {
-        if (p >= TX_STAGES.length) {
-          if (progressIntervalRef.current)
-            clearInterval(progressIntervalRef.current);
-          return TX_STAGES.length;
-        }
-        return p + 1;
-      });
-    }, 1_500);
-  }, []);
+  const { evmAddress } = useWalletContext();
+  const { data: walletClient } = useWalletClient();
+  const publicClient = usePublicClient();
+  const { toast } = useWalletContext() as unknown as { toast?: (t: { type: string; message: string }) => void };
+
+  // Live tUSDC balance for connected wallet.
+  const { data: rawBalance } = useReadContract({
+    address: ADDRESSES.sepolia.tusdc as `0x${string}`,
+    abi: ERC20_ABI,
+    functionName: 'balanceOf',
+    args: evmAddress ? [evmAddress as `0x${string}`] : undefined,
+    query: { enabled: !!evmAddress, refetchInterval: 15_000 },
+  });
+  const tusdcBalance = rawBalance !== undefined
+    ? parseFloat(formatUnits(rawBalance as bigint, 18)).toFixed(2)
+    : null;
 
   const handleBridge = useCallback(
-    (_data: BridgeFormValues) => {
+    async (data: BridgeFormValues) => {
+      if (!walletClient || !publicClient) return;
+
+      setBridgeAmount(data.amount);
+      setBridgeDirection(
+        data.fromChain === 'sepolia' ? 'Sepolia → Neutron' : 'Neutron → Sepolia'
+      );
       setTxActive(true);
-      startProgress();
+      setTxProgress(0);
+      setLiveLockHash(null);
+      setTxError(null);
+      timeoutsRef.current.forEach(clearTimeout);
+      timeoutsRef.current = [];
+
+      if (data.fromChain !== 'sepolia') {
+        // Neutron → Sepolia: CosmWasm burn path — show educational animation only
+        setTxActive(true);
+        const ids = [
+          setTimeout(() => setTxProgress(1), 1500),
+          setTimeout(() => setTxProgress(2), 4000),
+          setTimeout(() => setTxProgress(3), 8000),
+          setTimeout(() => setTxProgress(4), 15000),
+          setTimeout(() => setTxProgress(5), 25000),
+          setTimeout(() => setTxProgress(6), 40000),
+        ];
+        timeoutsRef.current = ids;
+        return;
+      }
+
+      try {
+        const amountWei = parseUnits(data.amount, 18);
+
+        // Step 1 — Approve tUSDC to BridgeVault
+        const approveHash = await walletClient.writeContract({
+          address: ADDRESSES.sepolia.tusdc as `0x${string}`,
+          abi: ERC20_ABI,
+          functionName: 'approve',
+          args: [ADDRESSES.sepolia.bridgeVault as `0x${string}`, amountWei],
+        });
+        await publicClient.waitForTransactionReceipt({ hash: approveHash });
+
+        // Step 2 — Lock in BridgeVault
+        const nonce = BigInt(Date.now());
+        setTxNonce(nonce);
+        const destChainId32 = padHex(toHex('pion-1'), { size: 32, dir: 'right' }) as `0x${string}`;
+        const destAppHex = toHex(new TextEncoder().encode(ADDRESSES.neutron.bridgeMint)) as `0x${string}`;
+
+        const lockHash = await walletClient.writeContract({
+          address: ADDRESSES.sepolia.bridgeVault as `0x${string}`,
+          abi: BRIDGE_VAULT_ABI,
+          functionName: 'lock',
+          args: [amountWei, nonce as unknown as bigint, destChainId32, destAppHex],
+        });
+
+        setLiveLockHash(lockHash);
+        setTxProgress(1); // lock confirmed on-chain
+
+        await publicClient.waitForTransactionReceipt({ hash: lockHash });
+        setTxProgress(1);
+
+        // Relayer picks up the event and handles proof/submit/execute.
+        // Advance stages on an optimistic timeline (relayer ~90s total).
+        const ids = [
+          setTimeout(() => setTxProgress(2), 5_000),   // proof fetched
+          setTimeout(() => setTxProgress(3), 15_000),  // proof transformed
+          setTimeout(() => setTxProgress(4), 30_000),  // submitted to Neutron
+          setTimeout(() => setTxProgress(5), 90_000),  // challenge window closed
+          setTimeout(() => setTxProgress(6), 100_000), // executed + minted
+        ];
+        timeoutsRef.current = ids;
+      } catch (err: unknown) {
+        const msg = err instanceof Error
+          ? (err.message.includes('User rejected') ? 'Transaction rejected' : err.message.slice(0, 120))
+          : 'Transaction failed';
+        setTxError(msg);
+        setTxActive(false);
+        setTxProgress(0);
+      }
     },
-    [startProgress]
+    [walletClient, publicClient]
   );
 
   const handleReset = useCallback(() => {
     setTxActive(false);
     setTxProgress(0);
-    if (progressIntervalRef.current) clearInterval(progressIntervalRef.current);
+    setLiveLockHash(null);
+    setTxNonce(null);
+    setTxError(null);
+    timeoutsRef.current.forEach(clearTimeout);
+    timeoutsRef.current = [];
   }, []);
 
-  // Clean up interval on unmount.
+  // Clean up timeouts on unmount.
   useEffect(() => {
-    return () => {
-      if (progressIntervalRef.current)
-        clearInterval(progressIntervalRef.current);
-    };
+    return () => { timeoutsRef.current.forEach(clearTimeout); };
   }, []);
-
-  const { watch } = useForm<BridgeFormValues>({ defaultValues: { amount: '' } });
-  const amountDisplay = watch('amount');
 
   // Motion variants for staggered hero entrance.
   // ease uses string form to satisfy Framer Motion v12 Easing type.
@@ -1150,39 +1249,25 @@ export default function HomepageClient({
           by bonded relayers and permissionless challengers — not a trusted committee.
         </motion.p>
 
-        {/* Widget row with side pills */}
+        {/* Feature pills row — above the bridge widget */}
         <motion.div
           variants={item}
-          className="grid lg:grid-cols-[1fr_auto_1fr] items-center gap-8 max-w-5xl mx-auto"
+          className="flex flex-wrap justify-center gap-3 mb-8 max-w-3xl mx-auto"
         >
-          {/* Left pills — desktop only */}
-          <div className="hidden lg:flex flex-col items-end gap-5 pr-4">
-            {SIDE_PILLS_LEFT.map((p) => (
-              <Pill key={p.label} icon={p.icon} label={p.label} align="right" />
-            ))}
-          </div>
+          {[...SIDE_PILLS_LEFT, ...SIDE_PILLS_RIGHT].map((p) => (
+            <Pill key={p.label} icon={p.icon} label={p.label} />
+          ))}
+        </motion.div>
 
-          {/* Bridge widget */}
+        {/* Bridge widget — centered */}
+        <motion.div variants={item}>
           <BridgeWidget
             onSubmit={handleBridge}
             txActive={txActive}
             initialStats={bridgeStats}
+            balance={tusdcBalance}
           />
-
-          {/* Right pills — desktop only */}
-          <div className="hidden lg:flex flex-col items-start gap-5 pl-4">
-            {SIDE_PILLS_RIGHT.map((p) => (
-              <Pill key={p.label} icon={p.icon} label={p.label} align="left" />
-            ))}
-          </div>
         </motion.div>
-
-        {/* Mobile pills — shown below widget at smaller breakpoints */}
-        <div className="lg:hidden mt-6 flex flex-wrap justify-center gap-3">
-          {[...SIDE_PILLS_LEFT, ...SIDE_PILLS_RIGHT].map((p) => (
-            <Pill key={p.label} icon={p.icon} label={p.label} />
-          ))}
-        </div>
       </motion.div>
 
       {/* ── Live transaction (shown when bridge in progress) ── */}
@@ -1191,8 +1276,11 @@ export default function HomepageClient({
           {txActive && (
             <LiveTxSection
               progress={txProgress}
-              amount={amountDisplay}
+              amount={bridgeAmount}
               onReset={handleReset}
+              liveLockHash={liveLockHash}
+              nonce={txNonce}
+              direction={bridgeDirection}
             />
           )}
         </AnimatePresence>

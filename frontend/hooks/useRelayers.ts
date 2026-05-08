@@ -197,17 +197,14 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
           activityType,
           bond: {
             sepolia: {
-              /*
-               * bond column is stored as a string (numeric) to avoid JS
-               * BigInt/float precision loss. Parse to Number for display.
-               * Gas cost for bond operations is not stored; default to 0.
-               */
               gas: 0,
-              bond: sepoliaBond ? Number(sepoliaBond.balance) : 0,
+              // balance is stored in wei (10^18 per ETH)
+              bond: sepoliaBond ? Number(sepoliaBond.balance) / 1e18 : 0,
             },
             neutron: {
               gas: 0,
-              bond: neutronBond ? Number(neutronBond.balance) : 0,
+              // balance is stored in uNTRN (10^6 per NTRN)
+              bond: neutronBond ? Number(neutronBond.balance) / 1e6 : 0,
             },
           },
           earned: 0,   // Placeholder — fee accounting not yet in DB schema.

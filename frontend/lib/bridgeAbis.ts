@@ -1,0 +1,53 @@
+// Minimal ABIs used by the bridge form. Only include functions actually called.
+
+export const ERC20_ABI = [
+  {
+    type: 'function',
+    name: 'approve',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'decimals',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint8' }],
+  },
+] as const;
+
+export const BRIDGE_VAULT_ABI = [
+  {
+    type: 'function',
+    name: 'lock',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'amount', type: 'uint256' },
+      { name: 'nonce', type: 'uint64' },
+      { name: 'destinationChainId', type: 'bytes32' },
+      { name: 'destinationApp', type: 'bytes' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+export const BOND_ABI = [
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'relayer', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;

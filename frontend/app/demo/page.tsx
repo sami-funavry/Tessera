@@ -20,20 +20,19 @@ import { useToast } from '@/hooks/useToast';
 import { RELAYER_ADDRESSES } from '@/lib/config';
 import type { EventLogEntry, RelayerInfo, ScenarioType } from '@/types';
 
-// ---------- static fallback data ----------
-
+// Correct on-chain bond amounts (0.02 ETH / 80 000 uNTRN = 0.08 NTRN per relayer)
 const STATIC_RELAYERS: RelayerInfo[] = [
   {
     id: 'A',
     name: 'Relayer A',
     sepoliaAddress: RELAYER_ADDRESSES.A.sepolia,
     neutronAddress: RELAYER_ADDRESSES.A.neutron,
-    activity: 'Submitting',
-    activityType: 'busy',
-    bond: { sepolia: { gas: 0.052, bond: 0.45 }, neutron: { gas: 12.4, bond: 92.0 } },
-    earned: 0.01243,
+    activity: 'Watching',
+    activityType: 'idle',
+    bond: { sepolia: { gas: 0, bond: 0.02 }, neutron: { gas: 0, bond: 0.08 } },
+    earned: 0,
     slashed: 0,
-    submissions: 47,
+    submissions: 0,
     successRate: 100,
   },
   {
@@ -43,22 +42,15 @@ const STATIC_RELAYERS: RelayerInfo[] = [
     neutronAddress: RELAYER_ADDRESSES.B.neutron,
     activity: 'Watching',
     activityType: 'idle',
-    bond: { sepolia: { gas: 0.041, bond: 0.5 }, neutron: { gas: 15.2, bond: 100.0 } },
-    earned: 0.00863,
+    bond: { sepolia: { gas: 0, bond: 0.02 }, neutron: { gas: 0, bond: 0.08 } },
+    earned: 0,
     slashed: 0,
-    submissions: 31,
+    submissions: 0,
     successRate: 100,
   },
 ];
 
-const STATIC_EVENTS: EventLogEntry[] = [
-  { t: '14:23:01', tag: 'submit', actor: 'Relayer A', msg: 'Submitted checkpoint for Sepolia block 12,345' },
-  { t: '14:23:03', tag: 'window', actor: 'System', msg: 'Challenge window opened (60s)' },
-  { t: '14:23:09', tag: 'verify', actor: 'Relayer B', msg: 'Verified submission · root matches · standing down' },
-  { t: '14:24:03', tag: 'finalize', actor: 'System', msg: 'Window closed — submission finalized' },
-  { t: '14:24:05', tag: 'execute', actor: 'Relayer A', msg: 'Executed message · 100 tUSDC minted to neutron1q4f…' },
-  { t: '14:24:06', tag: 'reward', actor: 'System', msg: 'Fee 0.001 ETH paid to Relayer A' },
-];
+const STATIC_EVENTS: EventLogEntry[] = [];
 
 const SCENARIOS: ScenarioType[] = [
   {
@@ -135,9 +127,9 @@ function BondCell({
   unit: string;
 }) {
   const total = gas + bond;
-  /* Flag bond as low relative to the demo operating threshold. */
-  const isLow = unit === 'ETH' ? bond < 0.3 : bond < 60;
-  const maxForBar = unit === 'ETH' ? 0.5 : 100;
+  // Demo operating threshold: Sepolia 0.01 ETH / Neutron 0.04 NTRN (50% of initial)
+  const isLow = unit === 'ETH' ? bond < 0.01 : bond < 0.04;
+  const maxForBar = unit === 'ETH' ? 0.02 : 0.08;
 
   return (
     <div className="bg-stone-950 px-4 py-3">
@@ -265,6 +257,11 @@ export default function DemoPage() {
   const [activeScenario, setActiveScenario] = useState<string | null>(null);
   const [runningScenario, setRunningScenario] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
+
+  // Scroll to top on mount so the page opens from the beginning.
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'instant' });
+  }, []);
 
   const { toast } = useToast();
   const relayerStats = useRelayerStats();

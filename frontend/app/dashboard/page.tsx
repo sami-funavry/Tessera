@@ -10,25 +10,25 @@ import SkeletonLoader from '@/components/SkeletonLoader';
 import StatusBadge from '@/components/StatusBadge';
 import { useMessagesRealtime, useSystemStats } from '@/hooks/useMessages';
 import { useRelayerStats } from '@/hooks/useRelayers';
+import { useBenchmarkStats } from '@/hooks/useBenchmarks';
 import { RELAYER_ADDRESSES } from '@/lib/config';
 import type { Database, RelayerInfo } from '@/types';
 
 type MessageRow = Database['public']['Tables']['messages']['Row'];
 
-// ---------- static fallback data ----------
-
+// Correct on-chain bond amounts (0.02 ETH / 80 000 uNTRN = 0.08 NTRN per relayer)
 const STATIC_RELAYERS: RelayerInfo[] = [
   {
     id: 'A',
     name: 'Relayer A',
     sepoliaAddress: RELAYER_ADDRESSES.A.sepolia,
     neutronAddress: RELAYER_ADDRESSES.A.neutron,
-    activity: 'Submitting',
-    activityType: 'busy',
-    bond: { sepolia: { gas: 0.052, bond: 0.45 }, neutron: { gas: 12.4, bond: 92.0 } },
-    earned: 0.01243,
+    activity: 'Watching',
+    activityType: 'idle',
+    bond: { sepolia: { gas: 0, bond: 0.02 }, neutron: { gas: 0, bond: 0.08 } },
+    earned: 0,
     slashed: 0,
-    submissions: 47,
+    submissions: 0,
     successRate: 100,
   },
   {
@@ -38,10 +38,10 @@ const STATIC_RELAYERS: RelayerInfo[] = [
     neutronAddress: RELAYER_ADDRESSES.B.neutron,
     activity: 'Watching',
     activityType: 'idle',
-    bond: { sepolia: { gas: 0.041, bond: 0.5 }, neutron: { gas: 15.2, bond: 100.0 } },
-    earned: 0.00863,
+    bond: { sepolia: { gas: 0, bond: 0.02 }, neutron: { gas: 0, bond: 0.08 } },
+    earned: 0,
     slashed: 0,
-    submissions: 31,
+    submissions: 0,
     successRate: 100,
   },
 ];
@@ -133,6 +133,7 @@ export default function DashboardPage() {
   const systemStats = useSystemStats();
   const relayerStats = useRelayerStats();
   const messagesData = useMessagesRealtime(10);
+  const benchStats = useBenchmarkStats();
 
   /* Resolve display data — real or static fallback. */
   const relayers: RelayerInfo[] =
@@ -142,16 +143,21 @@ export default function DashboardPage() {
 
   const messages: MessageRow[] = messagesData.data ?? [];
 
-  /*
-   * Derive metric values.  When real systemStats are loading, show skeleton
-   * text; once loaded (or error) display the value or a fallback.
-   */
+  /* Total bridged volume — sum real messages or show 0. */
   const totalVolume =
     systemStats.loading
       ? null
       : messages.length > 0
-        ? `${messages.reduce((acc, m) => acc + parseFloat(m.amount || '0'), 0).toLocaleString()} tUSDC`
-        : '42,180 tUSDC';
+        ? `${messages.reduce((acc, m) => acc + parseFloat(String(m.amount || '0')), 0).toLocaleString()} tUSDC`
+        : '0 tUSDC';
+
+  /* Avg bridge time — from benchmark runs or "--" */
+  const avgBridgeTime =
+    benchStats.loading
+      ? null
+      : benchStats.data && benchStats.data.count > 0 && benchStats.data.avgLatencyMs
+        ? `${Math.round(benchStats.data.avgLatencyMs / 1000)}s`
+        : '—';
 
   const activeRelayerCount =
     relayers.filter((r) => r.activityType !== 'deregistered').length;
@@ -173,19 +179,18 @@ export default function DashboardPage() {
         <Metric
           label="Total volume bridged"
           value={totalVolume ?? '—'}
-          delta="+12.4% (24h)"
           index={0}
         />
         <Metric
           label="Active relayers"
-          value={String(activeRelayerCount)}
-          sub="Both healthy"
+          value={relayerStats.loading ? '—' : String(activeRelayerCount)}
+          sub={activeRelayerCount > 0 ? 'Both healthy' : 'Waiting for activity'}
           index={1}
         />
         <Metric
           label="Avg. bridge time"
-          value="78s"
-          sub="Median 74s"
+          value={avgBridgeTime ?? '—'}
+          sub={benchStats.data && benchStats.data.count > 0 ? `${benchStats.data.count} tx sample` : 'No data yet'}
           index={2}
         />
         <Metric
@@ -251,7 +256,7 @@ export default function DashboardPage() {
                       {r.bond.sepolia.bond.toFixed(3)} ETH
                     </td>
                     <td className="px-5 py-3.5 font-mono text-stone-300">
-                      {r.bond.neutron.bond.toFixed(1)} NTRN
+                      {r.bond.neutron.bond.toFixed(2)} NTRN
                     </td>
                     <td className="px-5 py-3.5 font-mono text-stone-300">
                       {r.submissions}
