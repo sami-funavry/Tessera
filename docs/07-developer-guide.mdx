@@ -83,7 +83,7 @@ forge coverage
 forge snapshot
 ```
 
-Expected: 77 tests, 91% line coverage.
+Expected: 88 tests, ~91% line coverage.
 
 ### CosmWasm
 
@@ -100,7 +100,7 @@ cargo clippy -- -D warnings
 cargo wasm
 ```
 
-Expected: 28 tests pass, clippy clean.
+Expected: full workspace passes, clippy clean.
 
 ### Go Relayer
 
@@ -164,7 +164,7 @@ The matching shell scripts at `scripts/scenarios/01-honest.sh`, `02-lying.sh`, `
 ## Adding a New Chain Plugin
 
 1. Create `relayer/plugins/<chain-name>/plugin.go`.
-2. Implement the `chain.Plugin` interface — every method is required. The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/tessera-bridge/tessera/blob/main/relayer/internal/chain/plugin.go); read it before writing any plugin code. The 13 methods are:
+2. Implement the `chain.Plugin` interface — every method is required. The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/sami-funavry/Tessera/blob/main/relayer/internal/chain/plugin.go); read it before writing any plugin code. The 13 methods are:
 
    ```go
    type Plugin interface {

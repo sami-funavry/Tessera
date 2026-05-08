@@ -134,16 +134,24 @@ When a challenge is filed, the Bond contract resolves it on-chain. No off-chain 
 
 **Filing a challenge (automated — relayer does this):**
 
-```
-1. Challenger independently fetches source proof
-2. Runs same deterministic transformation
-3. Computes expected transformed root
-4. If expected_root != submitted_root:
-   → Verifier.challenge(submissionId, expected_root, evidence_proof)
-5. Bond contract:
-   → Verifies evidence_proof against source state
-   → Correct party identified on-chain
-   → Incorrect party slashed
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User / observer
+    participant C as Challenger<br/>(relayer)
+    participant V as Verifier
+    participant Bd as Bond
+
+    U-->>C: notices suspect submission
+    Note over C: independently fetches source proof<br/>re-runs deterministic transform<br/>computes expected_root
+    alt expected_root ≠ submitted_root
+        C->>V: challenge(submissionId, expected_root, evidence_proof)
+        V->>Bd: verify evidence_proof vs source state
+        Bd-->>Bd: identify correct party on-chain
+        Bd-->>V: slash incorrect party
+    else roots match
+        C-->>C: stand down
+    end
 ```
 
 **Challenging a challenge (S-4 scenario):**

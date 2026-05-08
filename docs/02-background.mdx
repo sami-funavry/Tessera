@@ -39,7 +39,7 @@ Tessera occupies the **economic enforcement + native proof** corner. This combin
 | Relayer trust | Full | Minority honest assumed | None | None (bonded economic) |
 | Proof verification | Oracle attestation | Dispute game | ZK verifier on-chain | Native Merkle proof in destination VM format |
 | Ed25519 on EVM | N/A or skipped | N/A or skipped | ZK circuit | Off-chain in Go (bypass) |
-| Latency | ~30s | 7 days | ~10 min (proof gen) | 75–90s (challenge window) |
+| Latency | ~30s | 7 days | minutes (proof gen) | 75–90s (challenge window) |
 | New chain cost | Config change | Config change | New ZK circuit | New Go plugin module |
 | New app cost | N/A | N/A | N/A | Implement `IApp`, no contract change |
 | On-chain gas | Low | Low | High (verifier) | Medium (Merkle walk) |

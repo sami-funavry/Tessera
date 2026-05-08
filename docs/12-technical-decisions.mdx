@@ -138,7 +138,7 @@ slug: "technical-decisions"
 **Consequences.**
 
 - This is a hackathon-scope shortcut. **`docs/audit-findings.md` SEC-03 to SEC-15 cover the production gaps this introduces** (private key in env, no signature verification on the relay endpoint, no rate limiting, etc.).
-- The proof flow is fully implemented and tested in the contract layer (`forge test` 88 passing, `cargo test` 28 passing) and in the Go relayer (`go test -race ./...` clean across 5 packages, including 35 transform fixture tests). The demo scenarios in `relayer/internal/scenario/` exercise the full path through mock plugins. The gap is specifically the *user-facing* widget invoking the Go relayer rather than the Node.js helper.
+- The proof flow is fully implemented and tested in the contract layer (`forge test` — 88 passing, `cargo test --workspace` — green) and in the Go relayer (`go test -race ./...` clean, including the 35 transform fixture tests). The demo scenarios in `relayer/internal/scenario/` exercise the full path through mock plugins. The gap is specifically the *user-facing* widget invoking the Go relayer rather than the Node.js helper.
 - Mainnet path: replace `frontend/lib/relay-helper.ts` with an HTTP call to the deployed Go relayer's submission queue. The frontend doesn't change beyond the URL.
 
 ---

@@ -150,7 +150,7 @@ Each scenario reads on-chain rotation state at runtime — roles are not hardcod
 
 ## Documentation
 
-- **In-app docs** (this repo): [`docs/`](docs/) — 13 sections, MDX format (PM brief, Overview, Architecture, Economics, Demo scenarios, Repo structure, Developer guide, Protocol user guide, tUSDC bridge, Limitations, Future work, Technical decisions)
+- **In-app docs** (this repo): [`docs/`](docs/) — 16 sections, MDX format with Mermaid diagrams (PM brief, Overview, Background & Comparison, Architecture, Economics, Demo scenarios, Repo structure, Developer guide, Protocol user guide, tUSDC bridge, Limitations, Future work, Technical decisions, **State & Database**, **Scripts & Tests**, **Cryptography Deep-Dive**)
 - **Notion submission deliverable** (PM brief + Architecture + Technical decisions + Post-hackathon roadmap): [`docs/notion-export.md`](docs/notion-export.md) — copy/paste import to Notion
 - **Audit findings** (Phase 10 gating doc): [`docs/audit-findings.md`](docs/audit-findings.md)
 - **Reflection** (Form-2 deliverable): [`docs/reflection.md`](docs/reflection.md)
@@ -180,10 +180,12 @@ supabase/            Schema migrations
 
 Both relayers registered and bonded on both chains.
 
-| Relayer | Sepolia address | Neutron address | Bond |
-|---------|----------------|-----------------|------|
-| A | `0x211416Aa416Bfbd103AfB68bFD120Ef48cD26c37` | `neutron1sas8u8rl69pvkyv3eka035jlgrm2vsq94725d9` | 0.02 ETH / 80k uNTRN |
-| B | `0xdFac507Cee79D909af53EC89b981DD9C431264C2` | `neutron16cpjlg5x70ahp8wvvmrnjslzw3kqzvatmqp933` | 0.02 ETH / 80k uNTRN |
+| Relayer | Sepolia address | Neutron address | Bond (testnet) |
+|---------|----------------|-----------------|----------------|
+| A | `0x211416Aa416Bfbd103AfB68bFD120Ef48cD26c37` | `neutron1sas8u8rl69pvkyv3eka035jlgrm2vsq94725d9` | 0.02 ETH / 80,000 uNTRN |
+| B | `0xdFac507Cee79D909af53EC89b981DD9C431264C2` | `neutron16cpjlg5x70ahp8wvvmrnjslzw3kqzvatmqp933` | 0.02 ETH / 80,000 uNTRN |
+
+> Bond thresholds shown are testnet-tuned for faucet limits. Production deployments would use significantly higher thresholds — see [`docs/04-economics.mdx`](docs/04-economics.mdx) and [`docs/12-technical-decisions.mdx`](docs/12-technical-decisions.mdx).
 
 ---
 

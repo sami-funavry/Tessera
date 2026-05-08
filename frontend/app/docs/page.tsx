@@ -18,10 +18,15 @@ import {
   AlertTriangle,
   Power,
   Gavel,
+  Database,
+  Wallet,
+  Terminal,
+  ExternalLink,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Card from '@/components/Card';
 import SectionLabel from '@/components/SectionLabel';
+import Mermaid from '@/components/Mermaid';
 import { cn } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -35,10 +40,12 @@ type SectionId =
   | 'trust'
   | 'crypto'
   | 'architecture'
+  | 'database'
   | 'scenarios'
   | 'wallets'
   | 'relayer'
   | 'addchain'
+  | 'scripts'
   | 'risks'
   | 'roadmap';
 
@@ -50,18 +57,26 @@ interface DocSection {
 
 const DOC_SECTIONS: DocSection[] = [
   { id: 'overview', icon: Compass, title: 'Overview' },
-  { id: 'what', icon: BookOpen, title: 'What is Tessera' },
+  { id: 'what', icon: BookOpen, title: 'What it solves' },
   { id: 'how', icon: Workflow, title: 'How it works' },
   { id: 'trust', icon: ShieldCheck, title: 'Trust model' },
   { id: 'crypto', icon: Cpu, title: 'Cryptography' },
   { id: 'architecture', icon: Network, title: 'Architecture' },
+  { id: 'database', icon: Database, title: 'State & database' },
   { id: 'scenarios', icon: Play, title: 'Demo scenarios' },
-  { id: 'wallets', icon: CheckCircle2, title: 'Wallet setup & tUSDC' },
+  { id: 'wallets', icon: Wallet, title: 'Wallet setup & tUSDC' },
   { id: 'relayer', icon: FileCog, title: 'Run a relayer' },
   { id: 'addchain', icon: Plus, title: 'Add a chain' },
+  { id: 'scripts', icon: Terminal, title: 'Scripts & tests' },
   { id: 'risks', icon: AlertCircle, title: 'Limitations & risks' },
   { id: 'roadmap', icon: Map, title: 'Roadmap' },
 ];
+
+// ---------------------------------------------------------------------------
+// Notion link (Form-2 deliverable)
+// ---------------------------------------------------------------------------
+
+const NOTION_DOC_URL = 'https://www.notion.so/Tessera-35a23e3815fc81a08b60c8fd039ba123';
 
 // ---------------------------------------------------------------------------
 // Shared prose helpers
@@ -133,10 +148,11 @@ function OverviewContent() {
         Tessera, end to end.
       </h1>
       <p className="text-stone-400 text-lg leading-relaxed mb-8">
-        A trust-minimized cross-chain framework for moving assets and messages between EVM and
-        Cosmos chains. This documentation covers what the project is, how it works, the trust
-        model, the cryptography, the architecture, and the path from research prototype to
-        production.
+        Tessera moves assets and arbitrary messages between EVM and Cosmos chains without trusting
+        any relay operator, running any ZK prover, or doing on-chain Ed25519 verification. This
+        documentation walks the system from the user&apos;s wallet down to the Patricia↔IAVL byte
+        manipulation that makes the whole thing work — and back up to the database powering the
+        dashboard you&apos;re reading this in.
       </p>
       <Card className="p-6 mb-8">
         <div className="text-[10px] font-mono uppercase tracking-wider text-stone-500 mb-3">
@@ -157,26 +173,79 @@ function OverviewContent() {
           })}
         </div>
       </Card>
-      <ProseSection label="At a glance">
+      <ProseSection label="System at a glance">
         <p className="text-stone-400 leading-relaxed mb-4">
-          Tessera is a trust-minimized cross-chain infrastructure layer. It moves assets and
-          arbitrary messages between EVM and Cosmos chains without trusting any relay operator,
-          running any ZK prover, or doing on-chain Ed25519 verification.
-        </p>
-        <p className="text-stone-400 leading-relaxed mb-4">
-          The first reference application is a bidirectional{' '}
+          The reference application is a bidirectional{' '}
           <span className="text-stone-200 font-medium">tUSDC bridge</span> between Sepolia
-          (Ethereum testnet) and Neutron (Cosmos / CosmWasm testnet).
+          (Ethereum testnet) and Neutron (Cosmos / CosmWasm testnet). Two Go relayer instances
+          observe both chains, transform proofs between Patricia and IAVL, and bond against fraud.
+          The diagram below shows the resting state — every arrow is a real on-chain or off-chain
+          call you can trace in the codebase.
         </p>
-        <CodeBlock>{`Sepolia (EVM)                    Go Relayer × 2               Neutron (CosmWasm)
-─────────────────                ──────────────               ──────────────────
-BridgeVault.lock()  ──Locked──▶  fetch Patricia proof         Verifier.submitMessage()
-                                 transform → IAVL             BridgeMint.mint()
-                                 verify Ed25519 ✓
-                                 submit to Neutron ──────────▶
+        <Mermaid
+          caption="System topology. Both chains run an identical six-contract suite. The relayer is the only off-chain component; it never holds user funds."
+          chart={`flowchart LR
+    classDef chain fill:#0c0a09,stroke:#fb923c,stroke-width:1px,color:#e7e5e4
+    classDef relayer fill:#1c1917,stroke:#57534e,color:#e7e5e4
+    classDef contract fill:#0f0d0c,stroke:#44403c,color:#a8a29e
 
-BridgeVault.release() ◀──────── transform → Patricia         BridgeMint.burn() ──Burned──▶
-                                 submit to Sepolia ◀──────────`}</CodeBlock>
+    subgraph SEP["Sepolia (EVM)"]
+        SV["BridgeVault<br/>(lock/release)"]
+        SR["Verifier"]
+        ST["tUSDC ERC-20"]
+        SB["Bond + Registry"]
+    end
+
+    subgraph REL["Go Relayer × 2"]
+        EP["EthereumPlugin"]
+        XF["transform layer<br/>Patricia ↔ IAVL"]
+        TP["TendermintPlugin"]
+        DB[("Supabase<br/>state/realtime")]
+    end
+
+    subgraph NEU["Neutron (CosmWasm)"]
+        NV["Verifier"]
+        NM["BridgeMint<br/>(mint/burn)"]
+        NT["tUSDC CW20"]
+        NB["Bond + Registry"]
+    end
+
+    SV -- Locked --> EP
+    NM -- Burned --> TP
+    EP <--> XF
+    TP <--> XF
+    EP -- submitMessage --> SR
+    TP -- submitMessage --> NV
+    SR --> SV
+    NV --> NM
+    EP --> DB
+    TP --> DB
+
+    class SEP,NEU chain
+    class REL relayer
+    class SV,SR,ST,SB,NV,NM,NT,NB contract`}
+        />
+      </ProseSection>
+      <ProseSection label="External documentation">
+        <a
+          href={NOTION_DOC_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 px-4 py-3 bg-stone-950 border border-stone-800 rounded-sm hover:border-orange-400/40 hover:bg-stone-900/60 transition-colors text-sm text-stone-300"
+        >
+          <ExternalLink size={14} className="text-orange-400" strokeWidth={1.5} />
+          <span>
+            Open the full Notion documentation
+            <span className="text-stone-500 ml-2 font-mono text-xs">
+              tessera-35a23e3815fc81a08b60c8fd039ba123
+            </span>
+          </span>
+        </a>
+        <p className="text-xs text-stone-500 mt-3 leading-relaxed">
+          The Notion document mirrors this in-app guide with additional PM brief, technical
+          decisions, and post-hackathon roadmap. It is the canonical Form-2 hackathon submission
+          doc; this in-app version is the operator-friendly subset.
+        </p>
       </ProseSection>
     </div>
   );
@@ -268,58 +337,67 @@ function HowContent() {
       </h1>
       <p className="text-stone-400 leading-relaxed mb-8">
         Tessera&apos;s proof pipeline runs in two directions. Sepolia to Neutron uses Patricia
-        proofs transformed into IAVL format. Neutron to Sepolia verifies Ed25519 off-chain and
-        transforms IAVL to Patricia. The same bonded challenge mechanism protects both
-        directions.
+        proofs transformed into IAVL format. Neutron to Sepolia verifies Ed25519 off-chain in Go
+        and then transforms IAVL to Patricia for the EVM verifier. The same bonded challenge
+        mechanism protects both directions. Each diagram below is one full message lifecycle —
+        the numbered ticks correspond to the calls in <code className="font-mono text-stone-300">relayer/internal/pipeline</code>.
       </p>
+
       <ProseSection label="Sepolia → Neutron">
-        <CodeBlock>{`1. User calls BridgeVault.lock() on Sepolia
-       ↓
-2. Relayer observes Locked event
-       ↓
-3. EthereumPlugin.FetchProof()
-   → eth_getProof (storage proof, Patricia / Keccak-256 / RLP)
-       ↓
-4. VerifyConsensus() — RPC trust (documented limitation)
-       ↓
-5. TranslateProofTo(targetChainType=Tendermint)
-   Patricia (Keccak-256/RLP) → IAVL (SHA-256/Protobuf)
-   Deterministic. Byte-identical for same input.
-       ↓
-6. TendermintPlugin.SubmitMessage()
-   → Verifier.submitMessage(envelope, transformedRoot, IAVLproof)
-       ↓
-7. Challenge window: 60s
-   Challenger independently replicates steps 3–5.
-   On mismatch → challenge(). On match → stand down.
-       ↓
-8. executeMessage() — walks IAVL proof with SHA-256
-   On valid → IApp(destinationApp).onCrossChainMessage(...)
-       ↓
-9. BridgeMint.mint() → user receives tUSDC on Neutron`}</CodeBlock>
+        <Mermaid
+          caption="Sepolia→Neutron sequence. Steps 3–5 are pure off-chain Go; only steps 6 and 8 hit Neutron."
+          chart={`sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault<br/>(Sepolia)
+    participant R as Relayer<br/>(Go)
+    participant NV as Verifier<br/>(Neutron)
+    participant NM as BridgeMint<br/>(Neutron)
+
+    U->>SV: lock(amount, recipient, dest)
+    SV-->>R: Locked event
+    Note over R: eth_getProof<br/>Patricia / Keccak-256 / RLP
+    Note over R: VerifyConsensus<br/>(RPC trust — limitation L-1)
+    Note over R: TranslateProofTo(Tendermint)<br/>deterministic — byte-identical replay
+    R->>NV: submitMessage(envelope, root, IAVL proof)
+    Note over NV: 60s challenge window<br/>any relayer can dispute
+    NV->>NM: executeMessage → onCrossChainMessage
+    NM-->>U: tUSDC minted (6 decimals)`}
+        />
       </ProseSection>
+
       <ProseSection label="Neutron → Sepolia (Ed25519 bypass)">
-        <CodeBlock>{`1. User calls BridgeMint.burn() on Neutron
-       ↓
-2. Relayer observes Burned event
-       ↓
-3. TendermintPlugin.FetchProof()
-   → ABCI query (IAVL proof, SHA-256/Protobuf)
-       ↓
-4. VerifyConsensus()
-   → cometbft.NewValidatorSet.VerifyCommit()
-   → validates 2/3+ Ed25519 validator signatures off-chain in Go
-   ← EVM never sees Ed25519
-       ↓
-5. TranslateProofTo(targetChainType=EVM)
-   IAVL (SHA-256/Protobuf) → Patricia (Keccak-256/RLP)
-       ↓
-6. EthereumPlugin.SubmitMessage()
-   → Verifier.submitMessage(envelope, transformedRoot, patriciaProof)
-       ↓
-7–9. Same challenge + execute flow (Solidity Verifier walks Patricia proof)
-       ↓
-9. BridgeVault.release() → user receives tUSDC on Sepolia`}</CodeBlock>
+        <Mermaid
+          caption="Neutron→Sepolia sequence. Step 3 is the load-bearing piece: 2/3+ Ed25519 sigs are verified in Go before any EVM call. Sepolia never sees an Ed25519 signature."
+          chart={`sequenceDiagram
+    autonumber
+    actor U as User
+    participant NM as BridgeMint<br/>(Neutron)
+    participant R as Relayer<br/>(Go)
+    participant SR as Verifier<br/>(Sepolia)
+    participant SV as BridgeVault<br/>(Sepolia)
+
+    U->>NM: burn(amount, recipient)
+    NM-->>R: Burned event
+    Note over R: ABCI query<br/>IAVL / SHA-256 / Protobuf
+    Note over R: VerifyConsensus<br/>cometbft.NewValidatorSet.VerifyCommit()<br/>2/3+ Ed25519 sigs validated in Go
+    Note over R: TranslateProofTo(EVM)<br/>IAVL → Patricia (deterministic)
+    R->>SR: submitMessage(envelope, root, Patricia proof)
+    Note over SR: 60s challenge window<br/>EVM walks Patricia (Keccak-256)
+    SR->>SV: executeMessage → onCrossChainMessage
+    SV-->>U: tUSDC released (18 decimals)`}
+        />
+      </ProseSection>
+
+      <ProseSection label="Why two pipelines, not one">
+        <p className="text-stone-400 leading-relaxed">
+          Each chain has its own native proof format and its own consensus to verify. Forcing one
+          chain to understand the other&apos;s format would either require generic ZK circuits
+          (expensive, slow) or a brittle stateless light client. Instead, the relayer does the
+          work in commodity Go: it reads in the source format, transforms deterministically into
+          the destination format, and submits. The destination chain only ever needs to
+          understand its <em>own</em> proof format.
+        </p>
       </ProseSection>
     </div>
   );
@@ -389,6 +467,26 @@ function TrustContent() {
           corner — the combination that makes fraud detectable, punishable on-chain, and
           economically irrational without ZK hardware.
         </p>
+        <Mermaid
+          caption="Trust layers per message. Three are cryptographic, one is RPC-trust (documented L-1), one is economic. Liveness assumes ≥1 honest relayer."
+          chart={`flowchart TB
+    M["one cross-chain message"]
+    M --> L1["Source consensus: Neutron"]
+    M --> L2["Source consensus: Sepolia"]
+    M --> L3["Proof transformation"]
+    M --> L4["Destination verification"]
+    M --> L5["Economic enforcement"]
+    L1 --> L1V["✓ cryptographic<br/>2/3+ Ed25519 verified off-chain"]
+    L2 --> L2V["⚠ RPC trust (L-1)<br/>future: sync committee"]
+    L3 --> L3V["✓ deterministic<br/>any party can replay → fraud detectable"]
+    L4 --> L4V["✓ trustless<br/>native Merkle walk on destination"]
+    L5 --> L5V["✓ punishment > gain<br/>50% slash on bad submission"]
+
+    classDef ok fill:#0c0a09,stroke:#10b981,color:#86efac
+    classDef warn fill:#0c0a09,stroke:#f59e0b,color:#fcd34d
+    class L1V,L3V,L4V,L5V ok
+    class L2V warn`}
+        />
       </ProseSection>
     </div>
   );
@@ -405,57 +503,258 @@ function CryptoContent() {
       </h1>
       <p className="text-stone-400 leading-relaxed mb-8">
         The core cryptographic problem Tessera solves: Ethereum and Cosmos use fundamentally
-        different data structures for their state proofs. Tessera&apos;s deterministic
-        transformation layer bridges them without requiring either chain to understand the
-        other&apos;s format.
+        different data structures for their state proofs, and use different hash functions to
+        anchor them. The transformation layer bridges them deterministically — without requiring
+        either chain to understand the other&apos;s format and without a trusted oracle. This
+        section walks through every cryptographic primitive in the system, what it commits to,
+        and how each piece is verified.
       </p>
-      <ProseSection label="Patricia Merkle Trie (Ethereum)">
-        <p className="text-stone-400 leading-relaxed mb-4">
-          Ethereum state is stored in a Modified Merkle Patricia Trie. Proofs are structured as
-          a sequence of RLP-encoded nodes (Branch, Extension, Leaf) hashed with Keccak-256.
-          The root of the trie is committed to every block header.
-        </p>
-        <CodeBlock>{`Patricia Merkle Trie
-├─ Branch (depth 0) — 16 children
-├─ Extension (depth 1) — nibbles 0x4f23
-├─ Branch (depth 2) — 16 children
-└─ Leaf (depth 3) — value 0x...64
 
-Hash function: Keccak-256
-Encoding:      RLP
-Root:          committed in block header`}</CodeBlock>
+      <ProseSection label="The four cryptographic primitives in play">
+        <ComparisonTable
+          headers={['Primitive', 'Used by', 'Where verified', 'Why it matters']}
+          rows={[
+            [
+              <span key="kw" className="font-mono text-stone-200">Keccak-256</span>,
+              'Ethereum (Patricia node hashing)',
+              <span key="kwv" className="text-stone-300">On-chain in Solidity Verifier (~36 gas/byte)</span>,
+              'Anchors Ethereum state root',
+            ],
+            [
+              <span key="sw" className="font-mono text-stone-200">SHA-256</span>,
+              'Cosmos (IAVL node hashing, Tendermint hashing)',
+              <span key="swv" className="text-stone-300">On-chain in CosmWasm Verifier (precompile)</span>,
+              'Anchors Tendermint app state root',
+            ],
+            [
+              <span key="rw" className="font-mono text-stone-200">RLP</span>,
+              'Ethereum (proof node encoding)',
+              <span key="rwv" className="text-stone-300">Solidity Verifier walks Patricia nodes</span>,
+              'Deterministic byte encoding for Patricia',
+            ],
+            [
+              <span key="ew" className="font-mono text-stone-200">Ed25519</span>,
+              'Tendermint (block validator signatures)',
+              <span key="ewv" className="text-amber-300">Off-chain in Go (verify-then-bypass)</span>,
+              'EVM cost for on-chain Ed25519: prohibitive',
+            ],
+          ]}
+        />
       </ProseSection>
-      <ProseSection label="IAVL Tree (Cosmos / Tendermint)">
-        <p className="text-stone-400 leading-relaxed mb-4">
-          Cosmos chains use an IAVL+ tree (a self-balancing Merkle tree) for module store
-          proofs. Nodes are encoded with Protobuf and hashed with SHA-256. The root is
-          committed in each Tendermint block header.
-        </p>
-        <CodeBlock>{`IAVL Tree
-├─ Inner (height 4)
-├─ Inner (height 3)
-├─ Inner (height 2)
-└─ Leaf — value 0x...64
 
-Hash function: SHA-256
-Encoding:      Protobuf
-Root:          committed in block header`}</CodeBlock>
-      </ProseSection>
-      <ProseSection label="Deterministic transformation">
+      <ProseSection label="Patricia Merkle Trie — Ethereum side">
         <p className="text-stone-400 leading-relaxed mb-4">
-          The transformation from Patricia to IAVL (or vice versa) is a pure function of the
-          input proof. Given the same source proof, every honest relayer will produce the same
-          transformed root — a property called{' '}
-          <span className="text-stone-200">determinism</span>. This is what makes fraud
-          detectable: a challenger who re-runs the transformation and gets a different root knows
-          the submitter lied.
+          Ethereum state is stored in a Modified Merkle Patricia Trie. Proofs are a sequence of
+          RLP-encoded nodes — Branch (16 children + value), Extension (compressed nibble path),
+          and Leaf (terminal value). Every node is hashed with Keccak-256. The root is committed
+          in each block header.
         </p>
-        <div className="p-4 bg-orange-400/5 border border-orange-400/20 rounded-sm text-sm text-stone-300">
+        <Mermaid
+          caption="Patricia proof structure. The verifier walks the path from leaf to root, hashing each step with Keccak-256, and asserts the final hash equals the on-chain block.stateRoot."
+          chart={`flowchart TD
+    R["block.stateRoot<br/>(in Sepolia block header)"]
+    R --> A["account proof (Patricia)<br/>RLP nodes, Keccak-256"]
+    A --> AccLeaf["Account leaf<br/>balance | nonce | codeHash | storageRoot"]
+    AccLeaf --> SR["account.storageRoot"]
+    SR --> S["storage proof (Patricia)<br/>RLP nodes, Keccak-256"]
+    S --> SLeaf["Storage leaf<br/>(slot, value)"]
+
+    classDef hdr fill:#0c0a09,stroke:#fb923c,color:#e7e5e4
+    classDef leaf fill:#1c1917,stroke:#57534e,color:#e7e5e4
+    class R,AccLeaf,SLeaf hdr
+    class A,SR,S leaf`}
+        />
+      </ProseSection>
+
+      <ProseSection label="IAVL Tree — Cosmos side">
+        <p className="text-stone-400 leading-relaxed mb-4">
+          Cosmos chains use an IAVL+ tree (a self-balancing AVL Merkle tree) for module-store
+          proofs. Nodes are encoded with Protobuf and hashed with SHA-256. The IAVL root is
+          included in the Tendermint commit hash, which is signed by the validator set.
+        </p>
+        <Mermaid
+          caption="IAVL proof structure. The verifier reconstructs the path from leaf to root, hashing with SHA-256, and asserts the final hash matches the AppHash committed in the block."
+          chart={`flowchart TD
+    H["block.AppHash<br/>(in Tendermint header)"]
+    H --> M["multi-store commit hash<br/>SHA-256"]
+    M --> S["wasm module store root<br/>SHA-256"]
+    S --> I["IAVL inner nodes<br/>(Protobuf)"]
+    I --> L["IAVL leaf<br/>(key, value)"]
+
+    classDef hdr fill:#0c0a09,stroke:#fb923c,color:#e7e5e4
+    classDef leaf fill:#1c1917,stroke:#57534e,color:#e7e5e4
+    class H,L hdr
+    class M,S,I leaf`}
+        />
+      </ProseSection>
+
+      <ProseSection label="Deterministic transformation — the byte-identity claim">
+        <p className="text-stone-400 leading-relaxed mb-4">
+          The transformation between Patricia and IAVL is a <em>pure function of the input proof
+          and the input fingerprint</em>. The same input always produces the same output
+          byte-for-byte — a property called <span className="text-stone-200">determinism</span>.
+          This is the load-bearing security claim: it&apos;s what makes fraud detectable.
+        </p>
+        <Mermaid
+          caption="Transformation pipeline. The relayer parses the source proof into a chain-neutral canonical AST, then re-encodes it for the target. Any party can replay this — that's the security property."
+          chart={`flowchart LR
+    SP["source proof<br/>e.g. Patricia / RLP / Keccak-256"]
+    PARSE["parse → canonical AST<br/>(no hash function)"]
+    BUILD["re-encode → target format<br/>e.g. IAVL / Protobuf / SHA-256"]
+    DP["destination proof<br/>+ transformedRoot"]
+    SP --> PARSE
+    PARSE --> BUILD
+    BUILD --> DP
+
+    CHK["challenger replays<br/>same input → same bytes"]
+    SP -.->|same input| CHK
+    DP -.->|byte-equal| CHK
+
+    classDef ok fill:#0c0a09,stroke:#10b981,color:#86efac
+    class CHK ok`}
+        />
+        <p className="text-stone-400 leading-relaxed mb-4">
+          The acceptance test for the transform layer is exactly this: 100 independent runs on
+          the same input produce 100 byte-identical outputs. The test fixture lives in{' '}
+          <code className="font-mono text-stone-300 text-xs">relayer/internal/transform/transform_test.go</code>{' '}
+          (35 fixtures, including cross-implementation parity at 100×).
+        </p>
+        <div className="p-4 bg-orange-400/5 border border-orange-400/20 rounded-sm text-sm text-stone-300 mb-4">
           Both proofs commit to the same logical claim:{' '}
           <span className="font-mono text-orange-300">
             &ldquo;Vault contract storage slot 0x4 has value 100,000,000 at block N&rdquo;
           </span>{' '}
           — anchored differently for each chain&apos;s native verification path.
+        </div>
+        <div className="text-stone-400 text-sm leading-relaxed mb-2">
+          <span className="text-stone-200 font-medium">Why this enables challenge:</span> the
+          submitter posts <code className="font-mono text-stone-300">(envelope, transformedRoot, destinationProof)</code>.
+          Any other relayer can fetch the source proof, re-run the transform, and check whether
+          the submitter&apos;s <code className="font-mono text-stone-300">transformedRoot</code>{' '}
+          matches. If it does, the submission stands. If it doesn&apos;t, anyone can call{' '}
+          <code className="font-mono text-stone-300">challenge(...)</code> with the correct
+          fingerprint and slash 50% of the submitter&apos;s bond.
+        </div>
+      </ProseSection>
+
+      <ProseSection label="Ed25519 bypass — the off-chain verification path">
+        <p className="text-stone-400 leading-relaxed mb-4">
+          Tendermint validators sign block commits with Ed25519. Verifying one Ed25519 signature
+          on the EVM costs roughly 500k gas; verifying 2/3+ of a typical Cosmos validator set
+          (Neutron pion-1 runs dozens; Cosmos Hub mainnet runs ~150) is not economically viable.
+          Tessera sidesteps this by verifying the entire validator set off-chain in Go, using the
+          production cometbft library, before submitting anything to Sepolia.
+        </p>
+        <Mermaid
+          caption="Ed25519 bypass. The Go relayer is the only place Ed25519 is touched. Sepolia only ever sees Patricia (Keccak-256) — a primitive its precompile already supports."
+          chart={`sequenceDiagram
+    autonumber
+    participant TM as Tendermint block<br/>(Neutron)
+    participant R as Go Relayer<br/>(off-chain)
+    participant SR as Verifier<br/>(Sepolia)
+
+    TM->>R: header + commit + ValidatorSet
+    Note over R: cometbft.NewValidatorSet(vals)<br/>.VerifyCommit(chainID, blockID, height, commit)
+    Note over R: validates ≥ 2/3 voting-power Ed25519 signatures
+    alt all sigs valid
+        R->>R: TranslateProofTo(EVM) — IAVL → Patricia
+        R->>SR: submitMessage(envelope, transformedRoot, Patricia proof)
+        Note over SR: walks Patricia with Keccak-256<br/>NEVER touches Ed25519
+    else any sig invalid
+        R-->>R: drop submission
+    end`}
+        />
+        <p className="text-stone-400 leading-relaxed mb-4">
+          The hostile-input test for this lives in{' '}
+          <code className="font-mono text-stone-300 text-xs">relayer/plugins/tendermint/plugin_test.go</code>{' '}
+          (function <code className="font-mono text-stone-300 text-xs">TestVerifyConsensusUnit</code>):
+          a forged signature reordered to the exact slot a legitimate validator occupies is{' '}
+          <em>still rejected</em> because cometbft&apos;s{' '}
+          <code className="font-mono text-stone-300 text-xs">NewValidatorSet</code> sorts by
+          (voting power desc, address asc) before <code className="font-mono text-stone-300 text-xs">VerifyCommit</code>{' '}
+          runs. This is the subtle bug class the test prevents.
+        </p>
+      </ProseSection>
+
+      <ProseSection label="Message ID derivation">
+        <p className="text-stone-400 leading-relaxed mb-4">
+          Every cross-chain message has a stable ID — the{' '}
+          <code className="font-mono text-stone-300">msgId</code> — that&apos;s the same on both
+          chains. It&apos;s derived from the canonical envelope so that <em>both</em> chains
+          compute the identical 32-byte ID without any cross-chain lookup. The Solidity Verifier
+          and the CosmWasm Verifier each compute it independently and check equality on
+          execution.
+        </p>
+        <CodeBlock>{`msgId = keccak256(
+    abi.encode(
+        envelope.sourceChainId,
+        envelope.sourceApp,
+        envelope.destinationChainId,
+        envelope.destinationApp,
+        envelope.action,
+        envelope.payload,
+        envelope.nonce
+    )
+)
+
+// Sepolia: Verifier._envelopeHash() — same encoding
+// Neutron: cosmwasm verifier::msg_id() — same encoding
+// Test:    relayer/internal/transform/transform_test.go
+//          (TestVerify_WrongMsgID + cross-impl parity fixtures)`}</CodeBlock>
+        <p className="text-stone-400 text-sm leading-relaxed">
+          The nonce is monotonic per (sourceChain, sourceApp), preventing replay across messages.
+          Replay against a different destinationApp is impossible: the destinationApp field is
+          inside the hash. Replay across chains is impossible: chain IDs are inside the hash.
+        </p>
+      </ProseSection>
+
+      <ProseSection label="Verification claim — what we actually prove">
+        <div className="space-y-3 text-sm text-stone-300 leading-relaxed">
+          <div className="flex gap-3 items-start">
+            <span className="text-orange-400 font-mono shrink-0">1.</span>
+            <div>
+              <span className="text-stone-200 font-medium">Source-event integrity.</span>{' '}
+              The destination chain only executes a message after Merkle-walking a proof against
+              its own native commitment. If the source event didn&apos;t happen, the proof
+              doesn&apos;t exist and the walk fails.
+            </div>
+          </div>
+          <div className="flex gap-3 items-start">
+            <span className="text-orange-400 font-mono shrink-0">2.</span>
+            <div>
+              <span className="text-stone-200 font-medium">Validator-set authenticity (Cosmos→EVM).</span>{' '}
+              The Go relayer verifies 2/3+ of the validator set signed the block before the
+              relayer is willing to vouch for the source root. Forged or reordered signatures are
+              rejected by cometbft&apos;s reference VerifyCommit.
+            </div>
+          </div>
+          <div className="flex gap-3 items-start">
+            <span className="text-orange-400 font-mono shrink-0">3.</span>
+            <div>
+              <span className="text-stone-200 font-medium">Transform integrity.</span>{' '}
+              Determinism makes the transform a verifiable computation: any honest relayer can
+              re-run it and reach byte-identical output. A wrong{' '}
+              <code className="font-mono">transformedRoot</code> is a publicly slashable event.
+            </div>
+          </div>
+          <div className="flex gap-3 items-start">
+            <span className="text-orange-400 font-mono shrink-0">4.</span>
+            <div>
+              <span className="text-stone-200 font-medium">Replay resistance.</span>{' '}
+              The msgId binds chain IDs, app addresses, action selector, payload, and nonce.
+              The Verifier rejects an already-executed msgId. Cross-chain and within-chain replay
+              both fail.
+            </div>
+          </div>
+          <div className="flex gap-3 items-start">
+            <span className="text-amber-400 font-mono shrink-0">5.</span>
+            <div>
+              <span className="text-stone-200 font-medium">Source consensus on Sepolia (limitation L-1).</span>{' '}
+              For Sepolia→Neutron, the relayer trusts its configured Sepolia RPC. Mitigation:
+              integrate sync committee verification (Beacon BLS aggregation). Pure off-chain Go
+              change; documented in the roadmap.
+            </div>
+          </div>
         </div>
       </ProseSection>
     </div>
@@ -474,8 +773,46 @@ function ArchitectureContent() {
       <p className="text-stone-400 leading-relaxed mb-8">
         Tessera has six contracts per chain, two running Go relayers, and a Next.js frontend
         reading from Supabase. The six contracts are logically identical across EVM and CosmWasm
-        — deployed code differs, logic is the same.
+        — deployed code differs, logic is the same. Below: the per-process layout of the relayer
+        and which goroutines own which responsibility.
       </p>
+      <ProseSection label="Relayer process layout">
+        <Mermaid
+          caption="One relayer process. The plugin layer is the only thing that knows about chain-specific RPC; everything else is chain-neutral."
+          chart={`flowchart TB
+    subgraph PROC["one relayer process (Go)"]
+        D["cmd/tessera daemon"]
+        OBS["chain observers<br/>per chain · goroutine"]
+        Q["submission queue<br/>(in-memory + DB)"]
+        XF["transform engine<br/>Patricia ↔ IAVL"]
+        SUB["submitter goroutine"]
+        WATCH["watcher goroutine<br/>(challenge logic)"]
+        BNDM["bond monitor<br/>(threshold alerts)"]
+        SUP["supabase sync<br/>(state + benchmarks)"]
+    end
+
+    subgraph PLUGINS["chain plugins (replaceable)"]
+        EP["EthereumPlugin<br/>go-ethereum"]
+        TP["TendermintPlugin<br/>cometbft"]
+    end
+
+    D --> OBS
+    OBS --> EP
+    OBS --> TP
+    OBS --> Q
+    Q --> XF
+    XF --> SUB
+    SUB --> EP
+    SUB --> TP
+    OBS --> WATCH
+    WATCH --> SUB
+    SUB --> SUP
+    WATCH --> SUP
+    BNDM --> SUP
+    EP --> BNDM
+    TP --> BNDM`}
+        />
+      </ProseSection>
       <ProseSection label="Contract layout">
         <ComparisonTable
           headers={['Contract', 'Role', 'Key entry points']}
@@ -508,24 +845,197 @@ function ArchitectureContent() {
         </p>
       </ProseSection>
       <ProseSection label="Plugin interface">
-        <CodeBlock>{`type ChainPlugin interface {
+        <CodeBlock>{`// relayer/internal/chain/plugin.go
+type Plugin interface {
     ChainID() string
-    ChainType() ChainType           // EVM | Tendermint
+    LatestBlock(ctx context.Context) (uint64, error)
+    FetchBlockFingerprint(ctx context.Context, height uint64) (Fingerprint, error)
+    FetchProof(ctx context.Context, event Event, height uint64) (Proof, error)
+    VerifyConsensus(ctx context.Context, height uint64) error
+    SubscribeEvents(ctx context.Context, fromBlock uint64) (<-chan Event, error)
+    TranslateProofTo(proof Proof, destChainID string) (Proof, error)
 
-    FetchBlockFingerprint(ctx, height) (Fingerprint, error)
-    FetchProof(ctx, txHash, eventIdx, proofKind) (RawProof, error)
-    VerifyConsensus(ctx, blockHeader, validatorSet) error
-    TranslateProofTo(rawProof, fingerprint, targetChainType) (CanonicalProof, Fingerprint, error)
+    SubmitMessage(ctx context.Context, env MessageEnvelope, proof Proof) (txHash string, submissionID [32]byte, err error)
+    ExecuteMessage(ctx context.Context, submissionID [32]byte, proof Proof) (string, error)
+    SubmitChallenge(ctx context.Context, submissionID [32]byte, counterProof Proof) (string, error)
+    ClaimAbsenceSlash(ctx context.Context, submissionID [32]byte) (string, error)
 
-    SubmitMessage(ctx, envelope, proof, fingerprint, bondRef) (TxHash, error)
-    SubmitChallenge(ctx, submissionId, correctFingerprint, evidenceProof) (TxHash, error)
-    SubscribeEvents(ctx, contractAddrs, fromBlock) (<-chan Event, error)
-    GetBondStatus(ctx, relayer) (BondStatus, error)
+    Register(ctx context.Context, pubKeyBytes []byte) (string, error)
+    DepositBond(ctx context.Context, amount string) (string, error)
 }`}</CodeBlock>
         <p className="text-stone-400 text-sm leading-relaxed">
           Adding a new source chain means implementing this interface in one Go file. Nothing
-          else in the repository changes.
+          else in the repository changes. This is the verbatim signature in{' '}
+          <code className="font-mono text-stone-300 text-xs">relayer/internal/chain/plugin.go</code>.
         </p>
+      </ProseSection>
+    </div>
+  );
+}
+
+function DatabaseContent() {
+  return (
+    <div>
+      <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-stone-500 mb-3">
+        State &amp; database
+      </div>
+      <h1 className="font-display text-4xl sm:text-5xl text-stone-100 mb-6">
+        Where state lives.
+      </h1>
+      <p className="text-stone-400 leading-relaxed mb-8">
+        Tessera has two state stores, with a strict separation of concerns. <strong className="text-stone-200">On-chain</strong>{' '}
+        contracts hold the authoritative state — bonds, submission status, executed msgIds.{' '}
+        <strong className="text-stone-200">Supabase</strong> is the operator-facing mirror used
+        by the dashboard, indexed off chain events, and never relied on for security decisions.
+        If Supabase disappears, the bridge keeps working. If a chain disappears, that direction
+        stalls — exactly as you&apos;d want.
+      </p>
+
+      <ProseSection label="Entity-relationship diagram (Supabase)">
+        <Mermaid
+          caption="Six tables. messages is the parent; submissions and benchmark_runs hang off it. disputes hang off submissions. bonds and events are independent of any specific message."
+          chart={`erDiagram
+    messages ||--o{ submissions : "has"
+    messages ||--o| benchmark_runs : "measured by"
+    submissions ||--o{ disputes : "may be challenged by"
+
+    messages {
+        bigserial id PK
+        bigint nonce
+        text source_chain_id
+        text source_app
+        text destination_chain_id
+        text destination_app
+        text action
+        bytea payload
+        text sender
+        text recipient
+        numeric amount
+        text source_tx_hash
+        bigint source_block
+        text status
+    }
+    submissions {
+        bigserial id PK
+        bigint message_id FK
+        text submitter_address
+        text fingerprint
+        text dest_tx_hash
+        text status
+    }
+    disputes {
+        bigserial id PK
+        bigint submission_id FK
+        text challenger_address
+        text correct_fingerprint
+        text outcome
+    }
+    bonds {
+        bigserial id PK
+        text relayer_address
+        text chain_id
+        numeric balance
+        text threshold_status
+    }
+    events {
+        bigserial id PK
+        text chain_id
+        bigint block_number
+        text tx_hash
+        text event_type
+        jsonb raw_data
+    }
+    benchmark_runs {
+        bigserial id PK
+        bigint message_id FK
+        text direction
+        bigint total_latency_ms
+        bigint source_gas_used
+        bigint dest_gas_used
+        bigint proof_transform_ms
+    }`}
+        />
+      </ProseSection>
+
+      <ProseSection label="Tables">
+        <ComparisonTable
+          headers={['Table', 'Granularity', 'Purpose']}
+          rows={[
+            ['messages', 'one row / cross-chain message', 'Lifecycle FSM — pending → submitted → challenge_window → executed | reverted'],
+            ['submissions', 'one row / relayer attempt', 'Tracks who submitted, what fingerprint, and dest tx outcome'],
+            ['disputes', 'one row / challenge filed', 'Outcome: upheld (submitter slashed) or rejected (challenger slashed)'],
+            ['bonds', 'one row / relayer / chain', 'Periodically synced from on-chain Bond contract; powers dashboard'],
+            ['events', 'one row / raw chain event', 'Source-of-truth for the live dashboard event log; deduplicated by (chain_id, tx_hash, event_type)'],
+            ['benchmark_runs', 'one row / completed message', 'Per-direction latency + gas; powers the benchmark page'],
+          ]}
+        />
+      </ProseSection>
+
+      <ProseSection label="Message status FSM">
+        <p className="text-stone-400 leading-relaxed mb-4">
+          The <code className="font-mono text-stone-300">messages.status</code> column is a finite
+          state machine driven by chain events. The relayer only writes from a small set of
+          allowed transitions — these are enforced in code (<code className="font-mono text-stone-300 text-xs">relayer/internal/state/transitions.go</code>),
+          not by the database, because the database is a mirror, not the authority.
+        </p>
+        <Mermaid
+          caption="messages.status FSM. Only two terminal states: executed (success) and reverted (challenge upheld). Both clear the challenge window for downstream consumers."
+          chart={`stateDiagram-v2
+    [*] --> pending: source event observed
+    pending --> submitted: relayer submits
+    submitted --> challenge_window: included on dest
+    challenge_window --> executed: 60s expires<br/>uncontested
+    challenge_window --> challenged: challenge filed
+    challenged --> reverted: challenge upheld<br/>submitter -50%
+    challenged --> executed: challenge rejected<br/>challenger -25%
+    executed --> [*]
+    reverted --> [*]`}
+        />
+      </ProseSection>
+
+      <ProseSection label="Why two state stores">
+        <ComparisonTable
+          headers={['Question', 'Answer']}
+          rows={[
+            [
+              'Where is the authoritative bond balance?',
+              <span key="b1" className="text-stone-300">On chain. The <code className="font-mono">bonds</code> Supabase table is a periodically-synced cache.</span>,
+            ],
+            [
+              'Where is the authoritative msgId-executed flag?',
+              <span key="b2" className="text-stone-300">On chain. The Verifier rejects a duplicate msgId regardless of what Supabase says.</span>,
+            ],
+            [
+              'What if Supabase is wrong?',
+              <span key="b3" className="text-stone-300">The dashboard shows stale data; the bridge still works. Operator backfill replays events.</span>,
+            ],
+            [
+              'What if the chain RPC is wrong?',
+              <span key="b4" className="text-stone-300">L-1 limitation. Future work: sync committee for Sepolia.</span>,
+            ],
+          ]}
+        />
+      </ProseSection>
+
+      <ProseSection label="Realtime + RLS">
+        <p className="text-stone-400 leading-relaxed mb-4">
+          The frontend subscribes to <code className="font-mono text-stone-300">messages</code>,{' '}
+          <code className="font-mono text-stone-300">submissions</code>,{' '}
+          <code className="font-mono text-stone-300">disputes</code>, and{' '}
+          <code className="font-mono text-stone-300">events</code> via Supabase realtime
+          (Postgres logical replication). All six tables are RLS-enabled with{' '}
+          <code className="font-mono text-stone-300">SELECT</code> public; writes require the
+          service-role key, which only the relayer holds.
+        </p>
+        <CodeBlock>{`-- supabase/migrations/001_initial_schema.sql
+ALTER TABLE messages    ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public read messages" ON messages FOR SELECT USING (true);
+-- Writes: service-role key only (relayer)
+
+ALTER PUBLICATION supabase_realtime ADD TABLE messages;
+ALTER PUBLICATION supabase_realtime ADD TABLE submissions;
+ALTER PUBLICATION supabase_realtime ADD TABLE disputes;
+ALTER PUBLICATION supabase_realtime ADD TABLE events;`}</CodeBlock>
       </ProseSection>
     </div>
   );
@@ -640,9 +1150,51 @@ function WalletsContent() {
         Get tUSDC, bridge it.
       </h1>
       <p className="text-stone-400 leading-relaxed mb-8">
-        tUSDC is Tessera's testnet token. It is freely claimable (1 000 tUSDC per wallet every 24 hours)
+        tUSDC is Tessera&apos;s testnet token. It is freely claimable (1 000 tUSDC per wallet every 24 hours)
         on both Sepolia and Neutron. You need both wallets connected to initiate a transfer.
       </p>
+
+      <ProseSection label="End-to-end flow">
+        <Mermaid
+          caption="Wallet → claim → bridge. The two claim steps are independent; you can do them in parallel. The bridge submission requires the source-chain wallet only — the destination is the recipient address, not a signer."
+          chart={`sequenceDiagram
+    autonumber
+    actor U as User
+    participant FE as Tessera UI
+    participant MM as MetaMask
+    participant K as Keplr
+    participant SEP as Sepolia
+    participant R as Relayer
+    participant NEU as Neutron
+
+    U->>FE: open homepage
+    U->>MM: connect (Sepolia)
+    MM-->>FE: address
+    U->>K: connect (pion-1)
+    K-->>FE: address
+
+    par Claim on Sepolia
+        U->>FE: click claim
+        FE->>MM: tUSDC.claim()
+        MM->>SEP: signed tx
+        SEP-->>MM: 1 000 tUSDC (18 dec)
+    and Claim on Neutron
+        U->>FE: click claim
+        FE->>K: tUSDC.Claim{}
+        K->>NEU: signed tx
+        NEU-->>K: 1 000 tUSDC (6 dec)
+    end
+
+    U->>FE: bridge X tUSDC, Sepolia → Neutron
+    FE->>MM: BridgeVault.lock(amount, recipient)
+    MM->>SEP: signed tx
+    SEP-->>R: Locked event
+    Note over R: fetch + transform proof + submit
+    R->>NEU: Verifier.submitMessage(...)
+    Note over NEU: 60s window, then BridgeMint.mint()
+    NEU-->>K: tUSDC arrives`}
+        />
+      </ProseSection>
 
       <ProseSection label="1 — MetaMask (Sepolia)">
         <div className="space-y-3 text-stone-400 text-sm leading-relaxed">
@@ -742,20 +1294,16 @@ function RelayerContent() {
         submitting proofs, watching other submissions, and challenging fraud.
       </p>
       <ProseSection label="Lifecycle">
-        <CodeBlock>{`Register (post initial bond: 0.02 ETH / 80,000 uNTRN)
-       ↓
-Active — can submit and challenge
-       ↓
-[after one slash]
-Benched — bond at operating threshold (50%)
-→ cannot submit new messages
-→ pending submissions still settle
-→ can topUpBond() to return to Active
-       ↓
-[after second slash]
-Deregistered — bond at deregistration threshold (25%)
-→ fully removed from registry
-→ 1-hour cooldown before re-registration`}</CodeBlock>
+        <Mermaid
+          caption="Relayer lifecycle. Each state transition is an on-chain event in the RelayerRegistry — no off-chain coordination needed."
+          chart={`stateDiagram-v2
+    [*] --> Active: register +<br/>initial bond
+    Active --> Active: submit /<br/>challenge / cycle
+    Active --> Benched: bond < 50%<br/>(after slash)
+    Benched --> Active: topUpBond()
+    Benched --> Deregistered: bond < 25%<br/>(after 2nd slash)
+    Deregistered --> [*]: 1h cooldown<br/>then re-register`}
+        />
       </ProseSection>
       <ProseSection label="Bond thresholds (testnet)">
         <ComparisonTable
@@ -773,16 +1321,27 @@ Deregistered — bond at deregistration threshold (25%)
       </ProseSection>
       <ProseSection label="Role assignment">
         <p className="text-stone-400 leading-relaxed mb-4">
-          Per-message role assignment is deterministic and on-chain:
+          Per-message role assignment is deterministic and on-chain. Both relayers compute the
+          same answer from public inputs, so there&apos;s no coordination protocol — just math.
         </p>
-        <CodeBlock>{`assigned_index = (nonce + floor(elapsed_since_event / handover_period)) % registered_relayer_count
+        <Mermaid
+          caption="Role-assignment formula. Inputs are all on chain; output is the relayer index that should submit at this moment."
+          chart={`flowchart LR
+    NONCE["nonce<br/>(envelope field)"] --> SUM
+    EL["elapsed since event<br/>(now − sourceBlockTime)"] --> DIV["÷ handover_period<br/>(30s testnet)"]
+    DIV --> SUM["+"]
+    SUM --> MOD["mod registered_count"]
+    MOD --> AI["assigned index"]
 
-// handover_period = 30 seconds (testnet)
-// With 2 relayers: message #1 → relayer[0] submits, message #2 → relayer[1] submits`}</CodeBlock>
+    classDef in fill:#0c0a09,stroke:#fb923c,color:#e7e5e4
+    classDef out fill:#0c0a09,stroke:#10b981,color:#86efac
+    class NONCE,EL in
+    class AI out`}
+        />
         <p className="text-stone-400 text-sm leading-relaxed">
-          If the assigned relayer doesn&apos;t act within 30 seconds, assignment rotates to the
-          next. The original is slashed for absence. Every non-assigned relayer independently
-          verifies and challenges if wrong.
+          If the assigned relayer doesn&apos;t act within 30 seconds, the assignment rotates to
+          the next index. The original is slashed for absence (S-3 demo scenario). Every
+          non-assigned relayer independently verifies and challenges if wrong (S-2 demo).
         </p>
       </ProseSection>
     </div>
@@ -803,6 +1362,29 @@ function AddChainContent() {
         single Go interface. No existing code changes. No new contracts needed if the chain
         shares a VM with an existing deployment.
       </p>
+      <ProseSection label="Plugin pattern">
+        <Mermaid
+          caption="The chain-plugin boundary. Everything inside the dashed box is chain-neutral and reused across chains. A new chain only requires implementing the plugin interface."
+          chart={`flowchart TB
+    subgraph CORE["Tessera relayer core (chain-neutral)"]
+        DAEMON["daemon · rotation · queue · retry"]
+        XF["transform engine<br/>Patricia ↔ IAVL ↔ canonical AST"]
+        BOND["bond CLI"]
+        STATE["Supabase state sync"]
+    end
+
+    EP["EthereumPlugin<br/>(go-ethereum)"]
+    TP["TendermintPlugin<br/>(cometbft)"]
+    NEW["YourChainPlugin<br/>← plug in here"]
+
+    EP -->|implements ChainPlugin| CORE
+    TP -->|implements ChainPlugin| CORE
+    NEW -. plug in .-> CORE
+
+    classDef new stroke-dasharray: 4 4,stroke:#fb923c,color:#fb923c
+    class NEW new`}
+        />
+      </ProseSection>
       <ProseSection label="What to implement">
         <CodeBlock>{`// New file: relayer/plugins/your-chain/plugin.go
 
@@ -846,6 +1428,219 @@ type YourChainPlugin struct {
             ['Cosmos Hub', 'TendermintPlugin variant', 'Highest Cosmos TVL'],
           ]}
         />
+      </ProseSection>
+    </div>
+  );
+}
+
+function ScriptsContent() {
+  return (
+    <div>
+      <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-stone-500 mb-3">
+        Scripts &amp; tests
+      </div>
+      <h1 className="font-display text-4xl sm:text-5xl text-stone-100 mb-6">
+        Every script, what it does.
+      </h1>
+      <p className="text-stone-400 leading-relaxed mb-8">
+        Tessera ships with three families of scripts: <strong className="text-stone-200">tests</strong>{' '}
+        (CI gates), <strong className="text-stone-200">deploys</strong> (one-shot, idempotent),
+        and <strong className="text-stone-200">scenarios</strong> (the four hackathon demos).
+        Every file in this section is real and pinned to its path; CI runs the test commands on
+        every push.
+      </p>
+
+      <ProseSection label="Test commands">
+        <ComparisonTable
+          headers={['Layer', 'Command', 'What it covers']}
+          rows={[
+            [
+              <code key="t1" className="font-mono text-xs">cd contracts-evm && forge test</code>,
+              <span key="t1c" className="font-mono text-xs">88 tests</span>,
+              'Solidity contracts: unit + integration + scenarios + proof verification fixtures',
+            ],
+            [
+              <code key="t2" className="font-mono text-xs">cd contracts-evm && forge coverage</code>,
+              <span key="t2c" className="font-mono text-xs">~91% line coverage</span>,
+              'Coverage report; gating value pre-merge',
+            ],
+            [
+              <code key="t3" className="font-mono text-xs">cd contracts-cosmwasm && cargo test --workspace</code>,
+              <span key="t3c" className="font-mono text-xs">full workspace</span>,
+              'CosmWasm contracts via cw-multi-test, including the four demo scenarios',
+            ],
+            [
+              <code key="t4" className="font-mono text-xs">cd contracts-cosmwasm && cargo clippy -- -D warnings</code>,
+              <span key="t4c" className="font-mono text-xs">zero warnings</span>,
+              'Lint gate',
+            ],
+            [
+              <code key="t5" className="font-mono text-xs">cd relayer && go test -race ./...</code>,
+              <span key="t5c" className="font-mono text-xs">all packages</span>,
+              'Includes 100× determinism tests on transform layer + Ed25519 forgery test',
+            ],
+          ]}
+        />
+      </ProseSection>
+
+      <ProseSection label="Test file map">
+        <ComparisonTable
+          headers={['File', 'What it tests']}
+          rows={[
+            [
+              <code key="f1" className="font-mono text-xs">contracts-evm/test/unit/Verifier.t.sol</code>,
+              'submitMessage / challenge / executeMessage state machine; custom errors; access control',
+            ],
+            [
+              <code key="f2" className="font-mono text-xs">contracts-evm/test/unit/Bond.t.sol</code>,
+              'deposit / slash / withdraw; threshold ladder (50% / 25%); CEI compliance',
+            ],
+            [
+              <code key="f3" className="font-mono text-xs">contracts-evm/test/integration/VerifierProof.t.sol</code>,
+              'Real proof bytes (TesseraProof wire format); flags=0 accept, flags=1 reject',
+            ],
+            [
+              <code key="f4" className="font-mono text-xs">contracts-evm/test/integration/BridgeScenarios.t.sol</code>,
+              'S-1 through S-4 end-to-end on a forked Foundry harness',
+            ],
+            [
+              <code key="f5" className="font-mono text-xs">contracts-cosmwasm/contracts/verifier/src/tests/scenarios.rs</code>,
+              'CosmWasm side of the four scenarios (mirror of Solidity)',
+            ],
+            [
+              <code key="f6" className="font-mono text-xs">relayer/internal/transform/transform_test.go</code>,
+              '35 fixtures · cross-impl parity · 100× byte-identical determinism · msgId derivation',
+            ],
+            [
+              <code key="f7" className="font-mono text-xs">relayer/plugins/tendermint/plugin_test.go</code>,
+              'Ed25519 verify-then-bypass; forged signature reordered to legitimate slot — still rejected',
+            ],
+            [
+              <code key="f8" className="font-mono text-xs">relayer/internal/scenario/runner_test.go</code>,
+              'In-process scenario runner used by `go run ./cmd/tessera test-scenario [1..4]`',
+            ],
+          ]}
+        />
+      </ProseSection>
+
+      <ProseSection label="Deployment scripts">
+        <ComparisonTable
+          headers={['Script', 'Chain', 'Purpose']}
+          rows={[
+            [
+              <code key="d1" className="font-mono text-xs">contracts-evm/script/Deploy.s.sol</code>,
+              'Sepolia',
+              'Foundry script — deploys all 6 EVM contracts with circular-dep break (Verifier setVerifier)',
+            ],
+            [
+              <code key="d2" className="font-mono text-xs">scripts/deploy/sepolia.sh</code>,
+              'Sepolia',
+              'Wrapper that runs Deploy.s.sol with broadcast + verifies on Etherscan',
+            ],
+            [
+              <code key="d3" className="font-mono text-xs">scripts/deploy/neutron.js</code>,
+              'Neutron pion-1',
+              'CosmJS script — uploads + instantiates all 6 CosmWasm contracts; updates addresses.json',
+            ],
+            [
+              <code key="d4" className="font-mono text-xs">scripts/register-sepolia-relayers.sh</code>,
+              'Sepolia',
+              'Registers + funds bond for Relayer A and B (post-deploy bootstrap)',
+            ],
+            [
+              <code key="d5" className="font-mono text-xs">scripts/register-neutron-relayers.js</code>,
+              'Neutron',
+              'Registers + funds bond on Neutron side',
+            ],
+            [
+              <code key="d6" className="font-mono text-xs">scripts/fund-all-neutron-v2.js</code>,
+              'Neutron',
+              'One-pass funding for all Neutron wallets (relayers + dev wallets) with tUSDC + uNTRN',
+            ],
+            [
+              <code key="d7" className="font-mono text-xs">scripts/claim-neutron-tusdc.js</code>,
+              'Neutron',
+              'CLI claim helper for tUSDC.Claim{} — used during onboarding/QA',
+            ],
+            [
+              <code key="d8" className="font-mono text-xs">scripts/smoke-test.sh</code>,
+              'both',
+              'End-to-end smoke: register both relayers, post bond, run honest scenario, verify execution',
+            ],
+            [
+              <code key="d9" className="font-mono text-xs">scripts/addresses.json</code>,
+              'both',
+              'Machine-readable contract address registry; updated by every deploy script',
+            ],
+          ]}
+        />
+      </ProseSection>
+
+      <ProseSection label="Scenario scripts (live testnet)">
+        <p className="text-stone-400 leading-relaxed mb-4">
+          The four hackathon scenarios run against real testnet contracts. Each script is
+          idempotent — it re-uses bonded relayers and produces a unique nonce. They mirror the
+          in-process integration tests under <code className="font-mono text-stone-300 text-xs">relayer/internal/scenario</code>.
+        </p>
+        <ComparisonTable
+          headers={['Script', 'Scenario', 'What it proves']}
+          rows={[
+            [
+              <code key="s1" className="font-mono text-xs">scripts/scenarios/01-honest.sh</code>,
+              'S-1 Honest delivery',
+              'Cryptographic verification path is wired correctly end-to-end',
+            ],
+            [
+              <code key="s2" className="font-mono text-xs">scripts/scenarios/02-lying.sh</code>,
+              'S-2 Lying relayer',
+              'Challenger detects bad fingerprint → 50% slash to challenger',
+            ],
+            [
+              <code key="s3" className="font-mono text-xs">scripts/scenarios/03-silent.sh</code>,
+              'S-3 Silent relayer',
+              'Handover triggers next relayer; original slashed for absence',
+            ],
+            [
+              <code key="s4" className="font-mono text-xs">scripts/scenarios/04-frivolous.sh</code>,
+              'S-4 Frivolous challenge',
+              '25% deposit forfeited; original tx proceeds normally',
+            ],
+          ]}
+        />
+        <p className="text-stone-500 text-xs mt-3">
+          The in-process equivalent (no testnet funds required) is{' '}
+          <code className="font-mono text-stone-300">go run ./cmd/tessera test-scenario [1..4]</code>.
+        </p>
+      </ProseSection>
+
+      <ProseSection label="Verification suite (Playwright)">
+        <p className="text-stone-400 leading-relaxed mb-2">
+          Three end-to-end UI suites guard the demo path. They live under{' '}
+          <code className="font-mono text-stone-300 text-xs">scripts/verify/</code> and require
+          the dev server running on <code className="font-mono">:3000</code>:
+        </p>
+        <ul className="list-disc list-inside space-y-2 pl-2 text-sm text-stone-300">
+          <li>
+            <code className="font-mono text-xs">scripts/verify/ui-verify.py</code> — homepage,
+            dashboard, demo, submission detail, and explorer-link format checks. Includes
+            SEC-02 same-origin guard (deny no-Origin POST → 403).
+          </li>
+          <li>
+            <code className="font-mono text-xs">scripts/verify/demo-verify.py</code> — demo
+            page UX: page-load scroll position, log-container scroll behavior, Clear-Log
+            button, run separators.
+          </li>
+          <li>
+            <code className="font-mono text-xs">scripts/verify/docs-mermaid-verify.py</code>{' '}
+            — every section in <code className="font-mono">/docs</code> renders its expected
+            Mermaid diagrams without parse errors.
+          </li>
+        </ul>
+        <p className="text-stone-500 text-xs mt-3">
+          UI + demo suites pass 11/11 as of P-10 audit gate close; the docs suite passes 9/9 as
+          of the documentation overhaul. They are check-in suites, not replacements for unit
+          tests.
+        </p>
       </ProseSection>
     </div>
   );
@@ -1017,10 +1812,12 @@ function DocContent({ section }: { section: SectionId }) {
     case 'trust': return <TrustContent />;
     case 'crypto': return <CryptoContent />;
     case 'architecture': return <ArchitectureContent />;
+    case 'database': return <DatabaseContent />;
     case 'scenarios': return <ScenariosContent />;
     case 'wallets': return <WalletsContent />;
     case 'relayer': return <RelayerContent />;
     case 'addchain': return <AddChainContent />;
+    case 'scripts': return <ScriptsContent />;
     case 'risks': return <RisksContent />;
     case 'roadmap': return <RoadmapContent />;
     default: return null;

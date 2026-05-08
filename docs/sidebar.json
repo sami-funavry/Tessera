@@ -83,6 +83,34 @@
       "slug": "future-work",
       "file": "11-future-work.mdx",
       "description": "New chains, new apps, sync committee, production tightening, and the validator reward mechanism."
+    },
+    {
+      "section": 12,
+      "title": "Technical Decisions",
+      "slug": "technical-decisions",
+      "file": "12-technical-decisions.mdx",
+      "description": "Ten ADRs (DEC-01 through DEC-10) — load-bearing trade-offs and why each was chosen."
+    },
+    {
+      "section": 13,
+      "title": "State & Database",
+      "slug": "database",
+      "file": "13-database.mdx",
+      "description": "Where state lives — on-chain authority versus the Supabase operator-facing mirror."
+    },
+    {
+      "section": 14,
+      "title": "Scripts & Tests",
+      "slug": "scripts",
+      "file": "14-scripts.mdx",
+      "description": "Every script, what it does."
+    },
+    {
+      "section": 15,
+      "title": "Cryptography Deep-Dive",
+      "slug": "cryptography",
+      "file": "15-cryptography.mdx",
+      "description": "Two proof formats, one claim."
     }
   ]
 }

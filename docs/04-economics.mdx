@@ -73,23 +73,14 @@ The bond is the financial guarantee. Slashing is the enforcement mechanism.
 
 ## Relayer Lifecycle
 
-```
-Register (post initial bond)
-        ↓
-Active — can submit and challenge
-        ↓
-[after one slash]
-Benched — bond at operating threshold (50%)
-→ cannot submit new messages
-→ pending submissions still settle
-→ can topUpBond() to return to Active
-        ↓
-[after second slash]
-Deregistered — bond at deregistration threshold (25%)
-→ fully removed from registry
-→ 1-hour cooldown (testnet) before re-registration
-        ↓
-Re-register (post new initial bond after cooldown)
+```mermaid
+stateDiagram-v2
+    [*] --> Active: register +<br/>initial bond
+    Active --> Active: submit /<br/>challenge / cycle
+    Active --> Benched: bond < 50%<br/>(after slash)
+    Benched --> Active: topUpBond()
+    Benched --> Deregistered: bond < 25%<br/>(after 2nd slash)
+    Deregistered --> [*]: 1h cooldown<br/>then re-register
 ```
 
 **Voluntary exit:** call `withdrawBond()` after 1-hour idle period (no pending submissions).

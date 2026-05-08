@@ -1,0 +1,84 @@
+---
+title: "Scripts & Tests"
+description: "Every script, what it does."
+section: 14
+slug: "scripts"
+---
+
+# Scripts & Tests
+
+Tessera ships with three families of scripts: **tests** (CI gates), **deploys** (one-shot, idempotent), and **scenarios** (the four hackathon demos). Every file in this section is real and pinned to its path; CI runs the test commands on every push.
+
+---
+
+## Test Commands
+
+| Layer | Command | What it covers |
+|-------|---------|----------------|
+| Solidity | `cd contracts-evm && forge test` (88 tests) | Solidity contracts: unit + integration + scenarios + proof verification fixtures |
+| Solidity coverage | `cd contracts-evm && forge coverage` (~91% line coverage) | Coverage report; gating value pre-merge |
+| CosmWasm | `cd contracts-cosmwasm && cargo test --workspace` (full workspace) | CosmWasm contracts via cw-multi-test, including the four demo scenarios |
+| CosmWasm lint | `cd contracts-cosmwasm && cargo clippy -- -D warnings` (zero warnings) | Lint gate |
+| Go relayer | `cd relayer && go test -race ./...` (all packages) | Includes 100× determinism tests on transform layer + Ed25519 forgery test |
+
+---
+
+## Test File Map
+
+| File | What it tests |
+|------|---------------|
+| `contracts-evm/test/unit/Verifier.t.sol` | submitMessage / challenge / executeMessage state machine; custom errors; access control |
+| `contracts-evm/test/unit/Bond.t.sol` | deposit / slash / withdraw; threshold ladder (50% / 25%); CEI compliance |
+| `contracts-evm/test/integration/VerifierProof.t.sol` | Real proof bytes (TesseraProof wire format); flags=0 accept, flags=1 reject |
+| `contracts-evm/test/integration/BridgeScenarios.t.sol` | S-1 through S-4 end-to-end on a forked Foundry harness |
+| `contracts-cosmwasm/contracts/verifier/src/tests/scenarios.rs` | CosmWasm side of the four scenarios (mirror of Solidity) |
+| `relayer/internal/transform/transform_test.go` | 35 fixtures · cross-impl parity · 100× byte-identical determinism · msgId derivation |
+| `relayer/plugins/tendermint/plugin_test.go` | Ed25519 verify-then-bypass; forged signature reordered to legitimate slot — still rejected |
+| `relayer/internal/scenario/runner_test.go` | In-process scenario runner used by `go run ./cmd/tessera test-scenario [1..4]` |
+
+---
+
+## Deployment Scripts
+
+| Script | Chain | Purpose |
+|--------|-------|---------|
+| `contracts-evm/script/Deploy.s.sol` | Sepolia | Foundry script — deploys all 6 EVM contracts with circular-dep break (Verifier setVerifier) |
+| `scripts/deploy/sepolia.sh` | Sepolia | Wrapper that runs Deploy.s.sol with broadcast + verifies on Etherscan |
+| `scripts/deploy/neutron.js` | Neutron pion-1 | CosmJS script — uploads + instantiates all 6 CosmWasm contracts; updates addresses.json |
+| `scripts/register-sepolia-relayers.sh` | Sepolia | Registers + funds bond for Relayer A and B (post-deploy bootstrap) |
+| `scripts/register-neutron-relayers.js` | Neutron | Registers + funds bond on Neutron side |
+| `scripts/fund-all-neutron-v2.js` | Neutron | One-pass funding for all Neutron wallets (relayers + dev wallets) with tUSDC + uNTRN |
+| `scripts/claim-neutron-tusdc.js` | Neutron | CLI claim helper for `tUSDC.Claim{}` — used during onboarding/QA |
+| `scripts/smoke-test.sh` | both | End-to-end smoke: register both relayers, post bond, run honest scenario, verify execution |
+| `scripts/addresses.json` | both | Machine-readable contract address registry; updated by every deploy script |
+
+---
+
+## Scenario Scripts (Live Testnet)
+
+The four hackathon scenarios run against real testnet contracts. Each script is idempotent — it re-uses bonded relayers and produces a unique nonce. They mirror the in-process integration tests under `relayer/internal/scenario`.
+
+| Script | Scenario | What it proves |
+|--------|----------|----------------|
+| `scripts/scenarios/01-honest.sh` | S-1 Honest delivery | Cryptographic verification path is wired correctly end-to-end |
+| `scripts/scenarios/02-lying.sh` | S-2 Lying relayer | Challenger detects bad fingerprint → 50% slash to challenger |
+| `scripts/scenarios/03-silent.sh` | S-3 Silent relayer | Handover triggers next relayer; original slashed for absence |
+| `scripts/scenarios/04-frivolous.sh` | S-4 Frivolous challenge | 25% deposit forfeited; original tx proceeds normally |
+
+> The in-process equivalent (no testnet funds required) is `go run ./cmd/tessera test-scenario [1..4]`.
+
+---
+
+## Verification Suite (Playwright)
+
+Three end-to-end UI suites guard the demo path. They live under `scripts/verify/` and require the dev server running on `:3000`:
+
+- `scripts/verify/ui-verify.py` — homepage, dashboard, demo, submission detail, and explorer-link format checks. Includes SEC-02 same-origin guard (deny no-Origin POST → 403).
+- `scripts/verify/demo-verify.py` — demo page UX: page-load scroll position, log-container scroll behavior, Clear-Log button, run separators.
+- `scripts/verify/docs-mermaid-verify.py` — every section in `/docs` renders its expected Mermaid diagrams without parse errors.
+
+UI + demo suites pass 11/11 as of P-10 audit gate close; the docs suite passes 9/9 as of the documentation overhaul. They are check-in suites, not replacements for unit tests.
+
+---
+
+> Related: [Demo Scenarios](./05-demo-scenarios) · [Developer Guide](./07-developer-guide) · [Repo Structure](./06-repo-structure)

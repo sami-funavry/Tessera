@@ -1,0 +1,155 @@
+---
+title: "State & Database"
+description: "Where state lives — on-chain authority versus the Supabase operator-facing mirror."
+section: 13
+slug: "database"
+---
+
+# State & Database
+
+Tessera has two state stores, with a strict separation of concerns. **On-chain** contracts hold the authoritative state — bonds, submission status, executed msgIds. **Supabase** is the operator-facing mirror used by the dashboard, indexed off chain events, and never relied on for security decisions. If Supabase disappears, the bridge keeps working. If a chain disappears, that direction stalls — exactly as you'd want.
+
+---
+
+## Where State Lives
+
+| Store | Authority | Consumed by | Failure mode |
+|-------|-----------|-------------|--------------|
+| Sepolia + Neutron contracts | Authoritative — on-chain truth | Relayer + Verifier dispatch | Chain outage stalls that direction |
+| Supabase (Postgres) | Mirror only | Frontend, benchmark page, demo log | Stale dashboard; bridge unaffected |
+
+---
+
+## Entity-Relationship Diagram
+
+Six tables. `messages` is the parent; `submissions` and `benchmark_runs` hang off it. `disputes` hang off submissions. `bonds` and `events` are independent of any specific message.
+
+```mermaid
+erDiagram
+    messages ||--o{ submissions : "has"
+    messages ||--o| benchmark_runs : "measured by"
+    submissions ||--o{ disputes : "may be challenged by"
+
+    messages {
+        bigserial id PK
+        bigint nonce
+        text source_chain_id
+        text source_app
+        text destination_chain_id
+        text destination_app
+        text action
+        bytea payload
+        text sender
+        text recipient
+        numeric amount
+        text source_tx_hash
+        bigint source_block
+        text status
+    }
+    submissions {
+        bigserial id PK
+        bigint message_id FK
+        text submitter_address
+        text fingerprint
+        text dest_tx_hash
+        text status
+    }
+    disputes {
+        bigserial id PK
+        bigint submission_id FK
+        text challenger_address
+        text correct_fingerprint
+        text outcome
+    }
+    bonds {
+        bigserial id PK
+        text relayer_address
+        text chain_id
+        numeric balance
+        text threshold_status
+    }
+    events {
+        bigserial id PK
+        text chain_id
+        bigint block_number
+        text tx_hash
+        text event_type
+        jsonb raw_data
+    }
+    benchmark_runs {
+        bigserial id PK
+        bigint message_id FK
+        text direction
+        bigint total_latency_ms
+        bigint source_gas_used
+        bigint dest_gas_used
+        bigint proof_transform_ms
+    }
+```
+
+---
+
+## Tables
+
+| Table | Granularity | Purpose |
+|-------|-------------|---------|
+| `messages` | one row / cross-chain message | Lifecycle FSM — `pending → submitted → challenge_window → executed \| reverted` |
+| `submissions` | one row / relayer attempt | Tracks who submitted, what fingerprint, and dest tx outcome |
+| `disputes` | one row / challenge filed | Outcome: `upheld` (submitter slashed) or `rejected` (challenger slashed) |
+| `bonds` | one row / relayer / chain | Periodically synced from on-chain Bond contract; powers dashboard |
+| `events` | one row / raw chain event | Source-of-truth for the live dashboard event log; deduplicated by `(chain_id, tx_hash, event_type)` |
+| `benchmark_runs` | one row / completed message | Per-direction latency + gas; powers the benchmark page |
+
+---
+
+## Message Status FSM
+
+The `messages.status` column is a finite state machine driven by chain events. The relayer only writes from a small set of allowed transitions — these are enforced in code (`relayer/internal/state/transitions.go`), not by the database, because the database is a mirror, not the authority.
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: source event observed
+    pending --> submitted: relayer submits
+    submitted --> challenge_window: included on dest
+    challenge_window --> executed: 60s expires<br/>uncontested
+    challenge_window --> challenged: challenge filed
+    challenged --> reverted: challenge upheld<br/>submitter -50%
+    challenged --> executed: challenge rejected<br/>challenger -25%
+    executed --> [*]
+    reverted --> [*]
+```
+
+Only two terminal states: `executed` (success) and `reverted` (challenge upheld). Both clear the challenge window for downstream consumers.
+
+---
+
+## Why Two State Stores
+
+| Question | Answer |
+|----------|--------|
+| Where is the authoritative bond balance? | On chain. The `bonds` Supabase table is a periodically-synced cache. |
+| Where is the authoritative msgId-executed flag? | On chain. The Verifier rejects a duplicate msgId regardless of what Supabase says. |
+| What if Supabase is wrong? | The dashboard shows stale data; the bridge still works. Operator backfill replays events. |
+| What if the chain RPC is wrong? | L-1 limitation. Future work: sync committee for Sepolia. |
+
+---
+
+## Realtime + RLS
+
+The frontend subscribes to `messages`, `submissions`, `disputes`, and `events` via Supabase realtime (Postgres logical replication). All six tables are RLS-enabled with `SELECT` public; writes require the service-role key, which only the relayer holds.
+
+```sql
+-- supabase/migrations/001_initial_schema.sql
+ALTER TABLE messages    ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public read messages" ON messages FOR SELECT USING (true);
+-- Writes: service-role key only (relayer)
+
+ALTER PUBLICATION supabase_realtime ADD TABLE messages;
+ALTER PUBLICATION supabase_realtime ADD TABLE submissions;
+ALTER PUBLICATION supabase_realtime ADD TABLE disputes;
+ALTER PUBLICATION supabase_realtime ADD TABLE events;
+```
+
+---
+
+> Related: [Architecture](./03-architecture) · [Scripts & Tests](./14-scripts) · [Limitations](./10-limitations)

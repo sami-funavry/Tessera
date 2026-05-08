@@ -30,58 +30,48 @@ The bridge exists to prove that the Tessera infrastructure works end-to-end. Eve
 
 ## Sepolia → Neutron Flow
 
-```
-User (Sepolia)
-  │
-  ├─ tUSDC.approve(BridgeVault, amount)
-  └─ BridgeVault.lock(amount, "pion-1", neutronRecipient)
-       │
-       └─ emits Locked(user, recipient, amount, nonce, destinationChainId)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault<br/>(Sepolia)
+    participant R as Relayer<br/>(Go)
+    participant NV as Verifier<br/>(Neutron)
+    participant NM as BridgeMint<br/>(Neutron)
 
-Relayer (Go)
-  │
-  ├─ Observes Locked event
-  ├─ EthereumPlugin.FetchProof(tx) → Patricia/Keccak proof
-  ├─ VerifyConsensus (RPC trust — see Limitations)
-  ├─ TranslateProofTo(Tendermint) → IAVL/SHA-256 proof
-  └─ TendermintPlugin.SubmitMessage(envelope, transformedRoot, proof)
-       │
-       └─ Neutron: Verifier.submitMessage(...)
-           → challenge window: 60s
-           → Verifier.executeMessage(submissionId)
-           → IApp(BridgeMint).onCrossChainMessage(...)
-           → BridgeMint.mint(recipient, amount)
-
-User (Neutron)
-  └─ +amount tUSDC in Keplr wallet
+    U->>SV: lock(amount, recipient, dest)
+    SV-->>R: Locked event
+    Note over R: eth_getProof<br/>Patricia / Keccak-256 / RLP
+    Note over R: VerifyConsensus<br/>(RPC trust — limitation L-1)
+    Note over R: TranslateProofTo(Tendermint)<br/>deterministic — byte-identical replay
+    R->>NV: submitMessage(envelope, root, IAVL proof)
+    Note over NV: 60s challenge window<br/>any relayer can dispute
+    NV->>NM: executeMessage → onCrossChainMessage
+    NM-->>U: tUSDC minted (6 decimals)
 ```
 
 ---
 
 ## Neutron → Sepolia Flow
 
-```
-User (Neutron)
-  └─ BridgeMint.burn(amount, "sepolia", sepoliaRecipient)
-       └─ emits Burned(user, recipient, amount, nonce, destinationChainId)
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant NM as BridgeMint<br/>(Neutron)
+    participant R as Relayer<br/>(Go)
+    participant SR as Verifier<br/>(Sepolia)
+    participant SV as BridgeVault<br/>(Sepolia)
 
-Relayer (Go)
-  │
-  ├─ Observes Burned event
-  ├─ TendermintPlugin.FetchProof(tx) → IAVL/SHA-256 proof
-  ├─ VerifyConsensus → cometbft.NewValidatorSet.VerifyCommit()
-  │    └─ validates 2/3+ Ed25519 validator signatures in Go
-  ├─ TranslateProofTo(EVM) → Patricia/Keccak proof
-  └─ EthereumPlugin.SubmitMessage(envelope, transformedRoot, proof)
-       │
-       └─ Sepolia: Verifier.submitMessage(...)
-           → challenge window: 60s
-           → Verifier.executeMessage(submissionId)
-           → IApp(BridgeVault).onCrossChainMessage(...)
-           → BridgeVault.release(recipient, amount)
-
-User (Sepolia)
-  └─ +amount tUSDC in MetaMask wallet
+    U->>NM: burn(amount, recipient)
+    NM-->>R: Burned event
+    Note over R: ABCI query<br/>IAVL / SHA-256 / Protobuf
+    Note over R: VerifyConsensus<br/>cometbft.NewValidatorSet.VerifyCommit()<br/>2/3+ Ed25519 sigs validated in Go
+    Note over R: TranslateProofTo(EVM)<br/>IAVL → Patricia (deterministic)
+    R->>SR: submitMessage(envelope, root, Patricia proof)
+    Note over SR: 60s challenge window<br/>EVM walks Patricia (Keccak-256)
+    SR->>SV: executeMessage → onCrossChainMessage
+    SV-->>U: tUSDC released (18 decimals)
 ```
 
 ---

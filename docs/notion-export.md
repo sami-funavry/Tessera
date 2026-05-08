@@ -1,18 +1,25 @@
 # Tessera — Notion Documentation
 
-> Single-page export targeted at Notion paste-import. The four required Form-2 sections are level-2 headings: PM Brief, Architecture Overview, Technical Decisions, Post-Hackathon Roadmap. The Reflection appendix and screenshot gallery follow.
+> Trust-minimized cross-chain infrastructure, Sepolia ↔ Neutron.
+> Built for the **ChainGPT Let's AI Hackathon** (May 7–9, 2026).
+> This file is the canonical Notion paste-import. It is rebuilt from `docs/*.mdx` after every doc change — do not hand-edit.
 
-> Auto-generated from `docs/00-pm-brief.mdx`, `docs/03-architecture.mdx`, `docs/12-technical-decisions.mdx`, `docs/post-hackathon-roadmap.md`, `docs/reflection.md`. Source-of-truth for content lives in those files; this file is the publish-ready consolidation. Re-run the consolidation script (`docs/build-notion-export.py` or the equivalent prompt) to refresh after edits.
+---
 
-## Cover
+## Resources
 
-| Item | Value |
-|------|-------|
-| Project | **Tessera** — trust-minimized cross-chain framework |
-| Demo URL | `<LIVE_URL>` |
-| GitHub | https://github.com/sami-funavry/Tessera |
-| Audit | [`docs/audit-findings.md`](audit-findings.md) |
-| Phase | P-10 (audit gate) closed 2026-05-08 → P-11 polish |
+| Asset | Link |
+|-------|------|
+| Live demo | `<LIVE_URL>` (operator: replace once Vercel deploy lands) |
+| GitHub repo | https://github.com/sami-funavry/Tessera |
+| Notion doc | https://www.notion.so/Tessera-35a23e3815fc81a08b60c8fd039ba123 |
+| Audit findings | [`docs/audit-findings.md`](./audit-findings.md) |
+| Reflection | [`docs/reflection.md`](./reflection.md) |
+| Post-hackathon roadmap | [`docs/post-hackathon-roadmap.md`](./post-hackathon-roadmap.md) |
+| Cost log | [`docs/cost-log.md`](./cost-log.md) |
+| Prompt-log highlights (5 best + 3 worst) | [`docs/prompt-log-highlights.md`](./prompt-log-highlights.md) |
+
+---
 
 ## PM Brief
 
@@ -20,7 +27,7 @@ A one-page product framing for Tessera. For technical depth, see [Overview](./01
 
 ---
 
-### Who is this for?
+## Who is this for?
 
 **Builders launching cross-chain apps who don't want to trust a relayer or pay ZK costs.** A team building a cross-chain swap, a cross-chain governance app, or a cross-chain NFT mint can integrate Tessera by deploying one contract that implements the `IApp` interface. They get bonded relay security without running their own validator network or paying a ZK prover per message.
 
@@ -35,7 +42,7 @@ A one-page product framing for Tessera. For technical depth, see [Overview](./01
 
 ---
 
-### What problem does it solve?
+## What problem does it solve?
 
 Cross-chain bridges have a trust problem. Users either trust a multisig that can be compromised (Ronin, Multichain, Nomad — collectively over $2B lost in the past three years), or they pay the cost and latency of ZK proofs. Tessera replaces both with a third option: bond the relayer, slash on fraud, prove inclusion natively in each chain's own format.
 
@@ -47,7 +54,7 @@ Three concrete pain points it removes:
 
 ---
 
-### Why now?
+## Why now?
 
 Three converging forces:
 
@@ -59,7 +66,7 @@ Tessera is that alternative. Bonded-economic security, deterministic native proo
 
 ---
 
-### Success metrics
+## Success metrics
 
 **For the demo (today):**
 
@@ -77,7 +84,7 @@ Tessera is that alternative. Bonded-economic security, deterministic native proo
 
 ---
 
-### Scope today vs scope tomorrow
+## Scope today vs scope tomorrow
 
 Mirrors SPEC.md §1.12. The hackathon ships the left column; the right column is deferred work.
 
@@ -98,34 +105,218 @@ The architecture was built so that "tomorrow" never requires changing what's dep
 
 > Related: [Overview](./01-overview) · [Architecture](./03-architecture) · [Limitations](./10-limitations) · [Future Work](./11-future-work) · [Technical Decisions](./12-technical-decisions)
 
-## Architecture Overview
+---
+
+## Overview
+
+![Tessera homepage showing the bridge widget, hero copy, and live system status.](./images/01-home-desktop.png)
+
+Tessera is a trust-minimized cross-chain infrastructure layer. It moves assets and arbitrary messages between EVM and Cosmos chains without trusting any relay operator, running any ZK prover, or doing on-chain Ed25519 verification.
+
+The first reference application is a bidirectional **tUSDC bridge** between Sepolia (Ethereum testnet) and Neutron (Cosmos / CosmWasm testnet).
 
 ---
 
-### System Components
+## Three Problems Solved
 
+| Problem | How most bridges handle it | How Tessera handles it |
+|---------|---------------------------|------------------------|
+| Relayer trust | Trust the operator, or use a multisig | Bond the relayer; slash on fraud. No trust required. |
+| Cross-chain proof verification | ZK provers (expensive, slow, GPU-dependent) | Native proof verification in each VM's own format — no ZK. |
+| Ed25519 on EVM | On-chain verify (~500k gas, impractical) | Off-chain verify in Go (commodity hardware); EVM never sees Tendermint signatures. |
+
+---
+
+## Novel Contributions
+
+**Deterministic Patricia ↔ IAVL proof transformation.**
+Ethereum uses Patricia Merkle Tries (Keccak-256 / RLP). Cosmos uses IAVL trees (SHA-256 / Protobuf). Tessera's relayer transforms proofs deterministically between these formats. Because the transformation is deterministic, any honest party can replicate it — making fraud detectable without a trusted oracle.
+
+**Ed25519 bypass.**
+Tendermint validator signatures are Ed25519. Verifying them on EVM costs ~500k gas per signature, making it unusable in practice. Tessera's Go relayer verifies the 2/3+ validator set off-chain, then submits the already-verified proof transformed to Patricia format. Sepolia never sees Ed25519.
+
+**Bonded economic enforcement.**
+Relayers post bonds. A relayer who submits a fraudulent proof loses 50% of their bond to the challenger who caught them. Punishment strictly exceeds any realistic gain from fraud — the network stays honest by economic design, not by social trust.
+
+**VM-agnostic dispatch.**
+Every cross-chain message uses a canonical envelope with a `destinationApp` field. After proof verification, the Verifier contract dispatches to that address via `onCrossChainMessage(...)`. New applications plug in without touching the Verifier.
+
+---
+
+## At a Glance
+
+```mermaid
+flowchart LR
+    subgraph SEP["Sepolia (EVM)"]
+        SV["BridgeVault<br/>(lock/release)"]
+        SR["Verifier"]
+        ST["tUSDC ERC-20"]
+        SB["Bond + Registry"]
+    end
+    subgraph REL["Go Relayer × 2"]
+        EP["EthereumPlugin"]
+        XF["transform layer<br/>Patricia ↔ IAVL"]
+        TP["TendermintPlugin"]
+        DB[("Supabase<br/>state/realtime")]
+    end
+    subgraph NEU["Neutron (CosmWasm)"]
+        NV["Verifier"]
+        NM["BridgeMint<br/>(mint/burn)"]
+        NT["tUSDC CW20"]
+        NB["Bond + Registry"]
+    end
+    SV -- "Locked" --> EP
+    NM -- "Burned" --> TP
+    EP <--> XF
+    TP <--> XF
+    EP -- "submitMessage" --> SR
+    TP -- "submitMessage" --> NV
+    SR --> SV
+    NV --> NM
+    EP --> DB
+    TP --> DB
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Tessera System                              │
-│                                                                     │
-│  Sepolia (EVM)            Go Relayer × 2        Neutron (CosmWasm) │
-│  ──────────────           ─────────────         ────────────────── │
-│  RelayerRegistry   ◀────  bond / register ────▶  RelayerRegistry   │
-│  Bond              ◀────  deposit / slash  ────▶  Bond              │
-│  Verifier          ◀────  submit / challenge ──▶  Verifier          │
-│  BridgeVault             EthereumPlugin           BridgeVault       │
-│  BridgeMint              TendermintPlugin         BridgeMint        │
-│  tUSDC (ERC20)           Transform Layer          tUSDC (CW20)      │
-│                          Supabase (state)                           │
-│                                                                     │
-│                        Next.js Frontend                             │
-│                        (reads Supabase)                             │
-└─────────────────────────────────────────────────────────────────────┘
+
+> **Deep dive:** [Architecture](./03-architecture) covers the full component map, proof pipeline, and message envelope format.
+
+---
+
+## External Documentation
+
+The full Notion submission doc lives at: **https://www.notion.so/Tessera-35a23e3815fc81a08b60c8fd039ba123**
+
+It mirrors this in-app guide and adds the PM brief, technical decisions, post-hackathon roadmap, and Form-2 reflection.
+
+---
+
+## Quick Start
+
+```bash
+cp .env.example .env             # then fill in keys
+cd contracts-evm && forge install && forge test
+cd ../relayer && go build ./...
+go run ./cmd/tessera test-scenario mock   # in-process dry run, no funds needed
+# Live demo: <LIVE_URL>
+```
+
+Operator: replace `<LIVE_URL>` with the deployed frontend URL before submission.
+
+The bridge widget is the primary user-facing surface, designed to work identically on desktop and mobile:
+
+![Bridge widget on mobile (iPhone 11) — direction selector, amount, recipient, single primary action.](./images/09-bridge-widget-mobile.png)
+
+---
+
+## Background & Comparison
+
+Cross-chain infrastructure is a solved problem in many ways — dozens of bridges exist. Tessera is not competing with them. It makes different trade-offs, and those trade-offs are the point.
+
+---
+
+## The Design Space
+
+Every bridge sits somewhere on two axes:
+
+**Trust axis:** who do you trust to relay the message?
+- **Trusted relay:** operator promises not to lie. Fast, cheap, fragile.
+- **Multisig / MPC:** N-of-M committee. More robust, still requires honesty of a majority.
+- **Economic enforcement (Tessera):** operators are bonded. Lying costs more than it can gain.
+- **ZK proof:** cryptographic correctness, no trust. Expensive, slow, hardware-dependent.
+- **Light client / sync committee:** trustless on-chain consensus verification. Requires native support on destination chain.
+
+**Verification axis:** how does the destination know the source event really happened?
+- **Oracle attestation:** authorized signers attest to the event. Off-chain trust.
+- **Optimistic:** assume correct, dispute if wrong. Cheap but slow (7-day windows).
+- **ZK proof:** verifiable computation. Trustless but resource-intensive.
+- **Native proof (Tessera):** destination contract verifies a proof in its own native format. No ZK, no oracle. The proof itself is the evidence.
+
+Tessera occupies the **economic enforcement + native proof** corner. This combination has a specific profile:
+
+---
+
+## Comparison Table
+
+| Property | Trusted bridge | Optimistic bridge | ZK bridge | Tessera |
+|----------|---------------|-------------------|-----------|---------|
+| Relayer trust | Full | Minority honest assumed | None | None (bonded economic) |
+| Proof verification | Oracle attestation | Dispute game | ZK verifier on-chain | Native Merkle proof in destination VM format |
+| Ed25519 on EVM | N/A or skipped | N/A or skipped | ZK circuit | Off-chain in Go (bypass) |
+| Latency | ~30s | 7 days | minutes (proof gen) | 75–90s (challenge window) |
+| New chain cost | Config change | Config change | New ZK circuit | New Go plugin module |
+| New app cost | N/A | N/A | N/A | Implement `IApp`, no contract change |
+| On-chain gas | Low | Low | High (verifier) | Medium (Merkle walk) |
+| Hardware requirement | Relayer server | Relayer server | GPU prover | Commodity server |
+
+> **Note:** Tessera's 75–90s latency is driven by the 60-second challenge window — a configurable parameter, not an architectural limit. Production deployments with higher bond thresholds can reasonably tighten this.
+
+---
+
+## What Tessera Does Not Try to Be
+
+- **Not a ZK bridge.** ZK provers require dedicated hardware and produce latency measured in minutes. Tessera's proof transformation is CPU-only and deterministic.
+- **Not a light-client bridge.** Full on-chain light clients require the destination chain to implement the source chain's consensus mechanism natively. Tessera's Ed25519 bypass avoids this without sacrificing cryptographic security — the relayer does the Ed25519 work and the destination verifies the resulting Merkle proof.
+- **Not a generalized message bus.** Tessera's envelope format supports arbitrary `action` + `payload`, so it can carry arbitrary messages — but the reference application is a token bridge, and the demo is scoped to that.
+
+---
+
+## Where the Architecture Argument Is
+
+The case for Tessera is not "we're better than X." It's that the **combination** of:
+1. Native-format proof verification (no ZK, no oracle)
+2. Deterministic cross-format proof transformation (Patricia ↔ IAVL)
+3. Bonded economic enforcement with per-message role rotation
+
+...produces a system where fraud is detectable by anyone, punishable on-chain, and economically irrational — without requiring ZK hardware, a trusted committee, or chain-native light client support.
+
+> See [Architecture](./03-architecture) for how the pieces connect.
+> See [Economics](./04-economics) for the incentive model in detail.
+
+---
+
+## Architecture
+
+---
+
+## System Components
+
+```mermaid
+flowchart LR
+    subgraph SEP["Sepolia (EVM)"]
+        SV["BridgeVault<br/>(lock/release)"]
+        SR["Verifier"]
+        ST["tUSDC ERC-20"]
+        SB["Bond + Registry"]
+    end
+
+    subgraph REL["Go Relayer × 2"]
+        EP["EthereumPlugin"]
+        XF["transform layer<br/>Patricia ↔ IAVL"]
+        TP["TendermintPlugin"]
+        DB[("Supabase<br/>state/realtime")]
+    end
+
+    subgraph NEU["Neutron (CosmWasm)"]
+        NV["Verifier"]
+        NM["BridgeMint<br/>(mint/burn)"]
+        NT["tUSDC CW20"]
+        NB["Bond + Registry"]
+    end
+
+    SV -- "Locked" --> EP
+    NM -- "Burned" --> TP
+    EP <--> XF
+    TP <--> XF
+    EP -- "submitMessage" --> SR
+    TP -- "submitMessage" --> NV
+    SR --> SV
+    NV --> NM
+    EP --> DB
+    TP --> DB
 ```
 
 ---
 
-### Six Contracts Per VM
+## Six Contracts Per VM
 
 The same logical contract set deploys on every supported chain. Solidity on EVM; Rust + CosmWasm on Cosmos.
 
@@ -144,67 +335,55 @@ The same logical contract set deploys on every supported chain. Solidity on EVM;
 
 ---
 
-### Proof Pipeline
+## Proof Pipeline
 
-#### Sepolia → Neutron
+### Sepolia → Neutron
 
-```
-1. User calls BridgeVault.lock() on Sepolia
-        ↓
-2. Relayer observes Locked event
-        ↓
-3. EthereumPlugin.FetchProof()
-   → eth_getProof (storage proof, Patricia / Keccak-256 / RLP)
-        ↓
-4. VerifyConsensus() — RPC trust (documented limitation; see §10)
-        ↓
-5. TranslateProofTo(targetChainType=Tendermint)
-   Patricia (Keccak-256/RLP) → IAVL (SHA-256/Protobuf)
-   Deterministic. Byte-identical for same input.
-        ↓
-6. TendermintPlugin.SubmitMessage()
-   → Verifier.submitMessage(envelope, transformedRoot, IAVLproof)
-        ↓
-7. Challenge window: 60s
-   Challenger independently replicates steps 3–5.
-   On mismatch → challenge(). On match → stand down.
-        ↓
-8. executeMessage() (anyone callable after window)
-   Verifier walks IAVL proof with SHA-256.
-   On valid → IApp(destinationApp).onCrossChainMessage(...)
-        ↓
-9. BridgeMint.mint() → user receives tUSDC on Neutron
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault<br/>(Sepolia)
+    participant R as Relayer<br/>(Go)
+    participant NV as Verifier<br/>(Neutron)
+    participant NM as BridgeMint<br/>(Neutron)
+
+    U->>SV: lock(amount, recipient, dest)
+    SV-->>R: Locked event
+    Note over R: eth_getProof<br/>Patricia / Keccak-256 / RLP
+    Note over R: VerifyConsensus<br/>(RPC trust — limitation L-1)
+    Note over R: TranslateProofTo(Tendermint)<br/>deterministic — byte-identical replay
+    R->>NV: submitMessage(envelope, root, IAVL proof)
+    Note over NV: 60s challenge window<br/>any relayer can dispute
+    NV->>NM: executeMessage → onCrossChainMessage
+    NM-->>U: tUSDC minted (6 decimals)
 ```
 
-#### Neutron → Sepolia (Ed25519 bypass)
+### Neutron → Sepolia (Ed25519 bypass)
 
-```
-1. User calls BridgeMint.burn() on Neutron
-        ↓
-2. Relayer observes Burned event
-        ↓
-3. TendermintPlugin.FetchProof()
-   → ABCI query (IAVL proof, SHA-256/Protobuf)
-        ↓
-4. VerifyConsensus()
-   → cometbft.NewValidatorSet.VerifyCommit()
-   → validates 2/3+ Ed25519 validator signatures off-chain in Go
-   ← EVM never sees Ed25519
-        ↓
-5. TranslateProofTo(targetChainType=EVM)
-   IAVL (SHA-256/Protobuf) → Patricia (Keccak-256/RLP)
-        ↓
-6. EthereumPlugin.SubmitMessage()
-   → Verifier.submitMessage(envelope, transformedRoot, patriciaProof)
-        ↓
-7–9. Same challenge + execute flow as above (Solidity Verifier walks Patricia proof)
-        ↓
-9. BridgeVault.release() → user receives tUSDC on Sepolia
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant NM as BridgeMint<br/>(Neutron)
+    participant R as Relayer<br/>(Go)
+    participant SR as Verifier<br/>(Sepolia)
+    participant SV as BridgeVault<br/>(Sepolia)
+
+    U->>NM: burn(amount, recipient)
+    NM-->>R: Burned event
+    Note over R: ABCI query<br/>IAVL / SHA-256 / Protobuf
+    Note over R: VerifyConsensus<br/>cometbft.NewValidatorSet.VerifyCommit()<br/>2/3+ Ed25519 sigs validated in Go
+    Note over R: TranslateProofTo(EVM)<br/>IAVL → Patricia (deterministic)
+    R->>SR: submitMessage(envelope, root, Patricia proof)
+    Note over SR: 60s challenge window<br/>EVM walks Patricia (Keccak-256)
+    SR->>SV: executeMessage → onCrossChainMessage
+    SV-->>U: tUSDC released (18 decimals)
 ```
 
 ---
 
-### Message Envelope
+## Message Envelope
 
 Every cross-chain message uses this canonical structure:
 
@@ -225,9 +404,9 @@ The `destinationApp` field is what makes the system application-agnostic — any
 
 ---
 
-### Relayer Plugin Model
+## Relayer Plugin Model
 
-The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/tessera-bridge/tessera/blob/main/relayer/internal/chain/plugin.go). The interface below is copied verbatim:
+The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/sami-funavry/Tessera/blob/main/relayer/internal/chain/plugin.go). The interface below is copied verbatim:
 
 ```go
 type Plugin interface {
@@ -251,7 +430,7 @@ Adding a new source chain = implementing this interface in a new Go file under `
 
 ---
 
-### Trust Model
+## Trust Model
 
 | Layer | Trust assumption |
 |-------|----------------|
@@ -265,7 +444,7 @@ Adding a new source chain = implementing this interface in a new Go file under `
 
 ---
 
-### Live System Visibility
+## Live System Visibility
 
 Every component of the architecture above emits structured data that the frontend renders in real time. The benchmark page summarises end-to-end performance — proof fetch latency, transformation time, on-chain submission gas, and the full source-to-destination wall-clock — across recent submissions on both directions.
 
@@ -277,13 +456,1224 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 > Related: [Economics](./04-economics) · [Limitations](./10-limitations) · [Developer Guide](./07-developer-guide)
 
+---
+
+## Economics
+
+Tessera's security model is economic. Relayers are bonded; wrong behavior costs more than it can gain. This section covers the full incentive structure.
+
+---
+
+## Roles Are Per-Message, Not Per-Relayer
+
+Every running relayer is simultaneously a potential submitter and a potential challenger. There is no dedicated "challenger" instance.
+
+**Per-message role assignment (on-chain, deterministic):**
+
+```
+assigned_index = (nonce + floor(elapsed_since_event / handover_period)) % registered_relayer_count
+```
+
+- `handover_period` = 30 seconds (testnet)
+- With 2 relayers: message #1 → relayer[0] submits, message #2 → relayer[1] submits, alternating by nonce
+- If the assigned relayer doesn't act within 30s, assignment rotates to the next. The original is slashed for absence.
+- Every non-assigned relayer independently verifies the submission and challenges if wrong.
+
+---
+
+## Bond Thresholds
+
+*Testnet values — intentionally low due to daily faucet limits (~0.05 ETH/day Sepolia, ~2 NTRN/day Neutron).*
+
+| Threshold | Sepolia | Neutron (uNTRN) | Meaning |
+|-----------|---------|-----------------|---------|
+| **Initial bond** (register) | 0.02 ETH | 80,000 uNTRN (0.08 NTRN) | Required to join the registry |
+| **Operating** (50% of initial) | 0.01 ETH | 40,000 uNTRN (0.04 NTRN) | Below this: no new submissions accepted |
+| **Deregistration** (25% of initial) | 0.005 ETH | 20,000 uNTRN (0.02 NTRN) | Below this: fully removed from registry |
+
+> See [Limitations §L-3](./10-limitations#l-3-testnet-parameters-are-deliberately-low) for the production-recommended bond schedule.
+
+> **Production note:** These values would be significantly higher in production (e.g., 0.5 ETH / 100 NTRN). The slashing ratios and all mechanisms are identical — only the absolute amounts change.
+
+Both submission slashing and challenge slashing draw from **one bond per relayer per chain**. There is no separate challenger deposit.
+
+---
+
+## Slashing Rules
+
+| Trigger | Who is slashed | Amount | Who receives it | Outcome |
+|---------|---------------|--------|-----------------|---------|
+| Wrong submission (fraud) | Submitter | 50% of submitter's bond | 100% to challenger | Submission reverts; user refunded |
+| Frivolous challenge | Challenger | 25% of challenger's bond | 100% to submitter | Submission executes normally; user receives tokens |
+| Absence (no submission in handover window) | Original assigned submitter | 50% of their bond | 100% to whoever submitted instead | Submission executes normally |
+
+**Dispute settlement is on-chain.** The Bond contract verifies which party is right by checking the submitted evidence. No off-chain coordination decides outcomes.
+
+---
+
+## User Protection
+
+In all four scenarios, the user is made whole:
+
+- Honest delivery → user receives bridged tokens.
+- Lying relayer → submission reverts; source-chain lock is returned to user.
+- Silent relayer → successor submits; user receives bridged tokens.
+- Frivolous challenge → original honest submission executes; user receives bridged tokens.
+
+The bond is the financial guarantee. Slashing is the enforcement mechanism.
+
+---
+
+## Relayer Lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Active: register +<br/>initial bond
+    Active --> Active: submit /<br/>challenge / cycle
+    Active --> Benched: bond < 50%<br/>(after slash)
+    Benched --> Active: topUpBond()
+    Benched --> Deregistered: bond < 25%<br/>(after 2nd slash)
+    Deregistered --> [*]: 1h cooldown<br/>then re-register
+```
+
+**Voluntary exit:** call `withdrawBond()` after 1-hour idle period (no pending submissions).
+
+---
+
+## Why the Network Stays Honest
+
+For fraud to be profitable, a lying relayer would need:
+- The challenger to be offline or corrupted (liveness assumption: at least one honest relayer is online)
+- The benefit of fraud to exceed 50% of their bond
+
+If the bridge is handling meaningful volume, the bond must be meaningful. At any reasonable bond size, fraud is economically irrational. The network is honest not because operators are trusted, but because dishonesty is reliably punished.
+
+> See [Demo Scenarios](./05-demo-scenarios) for each slash trigger played out step-by-step.
+
+---
+
+## Demo Scenarios
+
+Four scenarios cover the complete state space of the economic enforcement model. Each is a real on-testnet execution, not a simulation.
+
+Test scripts read on-chain rotation state at runtime to determine which physical relayer (A or B) is the assigned submitter for each scenario. Role assignment is never hardcoded.
+
+![Demo Control panel: four scenario buttons, two relayer status cards with live bond + earnings, and a streaming event log per run.](./images/04-demo-desktop.png)
+
+---
+
+## Outcome Summary
+
+| Scenario | Submitter action | Challenger action | User outcome | Relayer outcome |
+|----------|-----------------|-------------------|--------------|-----------------|
+| S-1 Honest | Correct proof | Verifies, stands down | Receives bridged tokens | Submitter earns fee |
+| S-2 Lying | Wrong fingerprint | Detects fraud, challenges | Source lock returned | Submitter slashed 50%; challenger +50% |
+| S-3 Silent | Does not act | — | Receives bridged tokens | Original slashed 50%; successor +fee +slash |
+| S-4 Frivolous | Correct proof | Challenges incorrectly | Receives bridged tokens | Challenger slashed 25%; submitter +25% |
+
+---
+
+## S-1: Honest Delivery
+
+**Setup:** Two relayers registered. Message #N assigned to relayer[0].
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault
+    participant A as Relayer A<br/>(submitter)
+    participant B as Relayer B<br/>(challenger)
+    participant V as Verifier (dest)
+    participant M as BridgeMint
+
+    U->>SV: lock(100 tUSDC, dest, recipient)
+    SV-->>A: Locked event (nonce N)
+    SV-->>B: Locked event (nonce N)
+    Note over A: FetchProof + VerifyConsensus<br/>+ TranslateProof
+    A->>V: submitMessage(envelope, root, proof)
+    Note over B: independently re-runs transform<br/>computed root == submitted root
+    B-->>B: stands down
+    Note over V: 60s challenge window — uncontested
+    V->>M: executeMessage → onCrossChainMessage
+    M-->>U: mint(recipient, 100 tUSDC)
+    Note over A: earns relay fee
+```
+
+**Pass condition:** User balance +100 tUSDC on destination. No slash events.
+
+---
+
+## S-2: Lying Relayer
+
+**Setup:** Relayer A is assigned submitter. A submits a deliberately wrong proof fingerprint.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault
+    participant A as Relayer A<br/>(lying)
+    participant B as Relayer B<br/>(challenger)
+    participant V as Verifier (dest)
+    participant Bd as Bond
+
+    U->>SV: lock(100 tUSDC, ...)
+    SV-->>A: Locked event
+    SV-->>B: Locked event
+    A->>V: submitMessage(envelope, WRONG_FINGERPRINT, fabricated proof)
+    Note over B: re-runs transform → real_root<br/>real_root ≠ WRONG_FINGERPRINT
+    B->>V: challenge(submissionId, real_root, evidence)
+    V->>Bd: verify evidence
+    Note over Bd: real_root matches source state ✓<br/>WRONG_FINGERPRINT does not ✗
+    Bd-->>A: slash 50% of A's bond
+    Bd-->>B: transfer 100% of slash to B
+    V-->>U: submission reverted; lock returned
+```
+
+**Pass condition:** Relayer A bond −50%. Relayer B balance +50% of A's slashed bond. User source balance restored. No mint on destination.
+
+---
+
+## S-3: Silent Relayer
+
+**Setup:** Relayer A is assigned submitter. A does not act within 30s handover period.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault
+    participant A as Relayer A<br/>(silent)
+    participant B as Relayer B<br/>(successor)
+    participant V as Verifier (dest)
+    participant M as BridgeMint
+    participant Bd as Bond
+
+    U->>SV: lock(100 tUSDC, ...)
+    SV-->>A: Locked event
+    SV-->>B: Locked event
+    Note over A: does not submit within 30s
+    Note over B: rotation triggers<br/>assigned_index = (nonce+1) % 2 = B
+    B->>V: submitMessage(envelope, correct root, proof)
+    Note over V: challenge window passes uncontested
+    V->>M: executeMessage → mint(recipient, 100 tUSDC)
+    M-->>U: 100 tUSDC delivered
+    B->>V: claimAbsenceSlash(submissionId)
+    V->>Bd: slash A 50% (absence)
+    Bd-->>B: transfer 100% of slash to B
+```
+
+**Pass condition:** User receives 100 tUSDC on destination. Relayer A bond −50%. Relayer B earns fee + absence slash reward.
+
+---
+
+## S-4: Frivolous Challenge
+
+**Setup:** Relayer A submits a correct proof. Relayer B files a baseless challenge.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault
+    participant A as Relayer A<br/>(honest)
+    participant B as Relayer B<br/>(frivolous)
+    participant V as Verifier (dest)
+    participant M as BridgeMint
+    participant Bd as Bond
+
+    U->>SV: lock(100 tUSDC, ...)
+    A->>V: submitMessage(envelope, correct_root, correct_proof)
+    B->>V: challenge(submissionId, wrong_claim, bad_evidence)
+    V->>Bd: verify challenge
+    Note over Bd: A's root correct ✓<br/>B's claim wrong ✗<br/>frivolous challenge
+    Bd-->>B: slash 25% of B's bond
+    Bd-->>A: transfer 100% of slash to A
+    Note over V: original submission reinstated
+    V->>M: executeMessage → mint(recipient, 100 tUSDC)
+    M-->>U: 100 tUSDC delivered
+```
+
+**Pass condition:** Relayer B bond −25%. Relayer A balance +25% of B's slashed bond. User receives 100 tUSDC. Original submission executed.
+
+---
+
+## Running Scenarios
+
+These run as in-process simulations. For testnet runs, see `scripts/scenarios/0N-*.sh`.
+
+```bash
+# From repo root — in-process simulations (no funds needed)
+go run ./cmd/tessera test-scenario 1
+go run ./cmd/tessera test-scenario 2
+go run ./cmd/tessera test-scenario 3
+go run ./cmd/tessera test-scenario 4
+```
+
+Each run prints the assigned roles, simulated transaction hashes, and final bond states. To exercise the same flows against live testnets (real gas, real bonds, real explorers), run the matching shell scripts under `scripts/scenarios/` after `.env` is populated.
+
+> See [Developer Guide](./07-developer-guide) for environment setup prerequisites.
+
+---
+
+## Repo Structure & Scalability
+
+---
+
+## Directory Layout
+
+Generated from `find . -maxdepth 3 -type d` (filtered to skip `node_modules`, `.git`, `target`, `.next`, `cache`, `out`, `info`, `dist`).
+
+```
+tessera/
+├── contracts-evm/                       # Solidity contracts (Foundry)
+│   ├── src/
+│   │   ├── RelayerRegistry.sol
+│   │   ├── Bond.sol
+│   │   ├── Verifier.sol
+│   │   ├── BridgeVault.sol
+│   │   ├── BridgeMint.sol
+│   │   ├── TUSDC.sol
+│   │   ├── interfaces/                  # IApp.sol and friends
+│   │   └── libraries/
+│   ├── test/
+│   │   ├── unit/
+│   │   ├── integration/
+│   │   └── helpers/
+│   ├── script/                          # Deploy.s.sol etc.
+│   └── broadcast/                       # forge broadcast artifacts
+│
+├── contracts-cosmwasm/                  # Rust + CosmWasm contracts
+│   ├── contracts/
+│   │   ├── relayer-registry/
+│   │   ├── bond/
+│   │   ├── verifier/
+│   │   ├── bridge-vault/
+│   │   ├── bridge-mint/
+│   │   └── tusdc/
+│   ├── packages/
+│   │   └── tessera-types/               # shared message types
+│   └── artifacts/                       # optimized .wasm output
+│
+├── relayer/                             # Go service
+│   ├── cmd/tessera/                     # binary entry point (cmd/tessera/main.go)
+│   ├── internal/
+│   │   ├── chain/                       # Plugin interface (chain/plugin.go)
+│   │   ├── cli/                         # cobra subcommands (relayer/bond/fetch/test-scenario)
+│   │   ├── config/                      # env-var loading
+│   │   ├── cosmwasm/                    # low-level CosmWasm/Tendermint client
+│   │   ├── obs/                         # observability (slog, sentry)
+│   │   ├── pipeline/                    # mock end-to-end pipeline runner
+│   │   ├── relayer/                     # submitter, challenger, runner
+│   │   ├── scenario/                    # in-process S-1..S-4 simulations
+│   │   ├── supabase/                    # state persistence
+│   │   └── transform/                   # Patricia ↔ IAVL transformation
+│   └── plugins/
+│       ├── ethereum/                    # EthereumPlugin
+│       └── tendermint/                  # TendermintPlugin
+│
+├── frontend/                            # Next.js 14 App Router
+│   ├── app/                             # routes (bridge, demo, dashboard, docs, benchmark, submissions, api)
+│   ├── components/                      # shared UI (incl. components/ui)
+│   ├── hooks/                           # data hooks
+│   ├── lib/                             # wagmi, keplr, supabase, config
+│   ├── public/
+│   └── types/
+│
+├── scripts/                             # deploy + scenario + ops scripts
+│   ├── addresses.json                   # canonical deployed contract addresses
+│   ├── deploy/                          # solidity deploy helpers
+│   ├── scenarios/                       # 01-honest.sh, 02-lying.sh, 03-silent.sh, 04-frivolous.sh (live testnet)
+│   ├── register-relayers.sh             # cross-chain bond + register
+│   ├── register-sepolia-relayers.sh
+│   ├── register-neutron-relayers.js
+│   ├── deploy-neutron-v4.js             # current Neutron deploy entrypoint
+│   ├── deploy-tusdc-v2.js
+│   ├── complete-neutron-deploy.js
+│   ├── finalize-neutron-deploy.js
+│   ├── redeploy-all-neutron.js
+│   ├── redeploy-bond-neutron.js
+│   ├── redeploy-tusdc-neutron.js
+│   ├── redeploy-verifier-neutron.js
+│   ├── claim-neutron-tusdc.js
+│   ├── fund-all-neutron-v2.js
+│   ├── fund-neutron-relayers.js
+│   ├── smoke-test.sh
+│   └── smoke-test.log
+│
+├── docs/                                # in-app documentation (this directory) + images/
+└── supabase/
+    └── migrations/                      # 001_initial_schema.sql, 002_indexes_and_constraints.sql
+```
+
+The Go binary lives at `relayer/cmd/tessera/`; invocations elsewhere in the docs use `go run ./cmd/tessera ...` from inside `relayer/`.
+
+---
+
+## What's in `frontend/`
+
+The Next.js app is the single user- and operator-facing surface for the live deployment. It reads from Supabase (for relayer state, submissions, events) and from both chains directly (for bonds and balances). The dashboard is the primary operator view — every card, table, and metric below is rendered from real on-chain and Supabase data, not fixtures.
+
+![Live operator dashboard rendering real Supabase data: relayer cards, bond balances, recent submissions, system stats.](./images/03-dashboard-desktop.png)
+
+---
+
+## Why This Layout
+
+**One contract set, multiple chains.**
+`contracts-evm/src/` contains six `.sol` files. The same compiled bytecode deploys on Sepolia today and on any other EVM chain tomorrow. The only change is deployment configuration. Same principle applies to `contracts-cosmwasm/` — same Rust code, new addresses.
+
+**Plugin isolation.**
+Each chain plugin lives in `relayer/plugins/<chain-name>/plugin.go`. The plugin has one responsibility: implement `ChainPlugin`. No other file in the relayer knows the difference between Ethereum and Tendermint at the implementation level.
+
+**Shared packages for correctness.**
+`packages/tessera-types/` is shared across all CosmWasm contracts so message-type definitions stay consistent — a single fix propagates to every destination app.
+
+---
+
+## Adding a New Source Chain
+
+**What changes:** one new file.
+
+```
+relayer/plugins/polygon/plugin.go   ← new file
+```
+
+That file implements the `chain.Plugin` interface (defined in `relayer/internal/chain/plugin.go`) for the new chain. The 13-method interface is reproduced verbatim in the [Architecture → Relayer Plugin Model](./03-architecture#relayer-plugin-model) section.
+
+The relayer wires plugins together in `internal/cli/root.go` (the `relayer` subcommand). Adding a chain there is a few lines: construct your plugin from env-var config and pass it to the runner. There is no YAML config file — all runtime configuration is via env vars (see [Developer Guide](./07-developer-guide#prerequisites)).
+
+**What does not change:**
+- No existing plugin files.
+- No `internal/` files (the plugin pattern keeps chain-specific logic out of the core).
+- No contract code.
+- No frontend code (new chain appears in the chain selector automatically if the frontend reads from `scripts/addresses.json` / `frontend/lib/config.ts`).
+
+---
+
+## Adding a New Destination VM
+
+**What changes:** one new directory of contracts, ported to the new VM's language.
+
+```
+contracts-<new-vm>/
+├── relayer-registry/
+├── bond/
+├── verifier/
+├── bridge-vault/
+├── bridge-mint/
+└── tusdc/
+```
+
+The six contracts implement the same logical interface. The Verifier dispatches to `IApp`-equivalent in the new VM's style. Existing contracts on Sepolia and Neutron are unchanged.
+
+---
+
+## Adding a New Application
+
+**What changes:** one new contract.
+
+```solidity
+// MyApp.sol
+contract MyApp is IApp {
+    address public immutable verifier;
+
+    modifier onlyVerifier() {
+        require(msg.sender == verifier, "not verifier");
+        _;
+    }
+
+    function onCrossChainMessage(
+        bytes32 sourceChainId,
+        bytes calldata sourceApp,
+        bytes4 action,
+        bytes calldata payload
+    ) external onlyVerifier {
+        // custom application logic
+    }
+}
+```
+
+Register `MyApp`'s address as the `destinationApp` in the message envelope. The Verifier dispatches to it after proof verification. No Verifier changes. No relayer changes. No registry changes.
+
+---
+
+## Contract Addresses (Deployed)
+
+| Contract | Sepolia | Neutron (pion-1) |
+|----------|---------|-----------------|
+| tUSDC | [`0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0`](https://sepolia.etherscan.io/address/0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0) | [`neutron1fw6unz7a9j4zf9gnvhup5qe6dlftytdc0y0rwyn3lyxdazz22rtsck0vld`](https://neutron.celat.one/pion-1/contracts/neutron1fw6unz7a9j4zf9gnvhup5qe6dlftytdc0y0rwyn3lyxdazz22rtsck0vld) |
+| Bond | [`0x8c7dc28559B75AF8c3d59B62C87309E65cb37912`](https://sepolia.etherscan.io/address/0x8c7dc28559B75AF8c3d59B62C87309E65cb37912) | [`neutron1nnz9j6c3d25wnwj4h3jqkvazgawcmgjjk5unysvf6e0j90gavvsseunvg8`](https://neutron.celat.one/pion-1/contracts/neutron1nnz9j6c3d25wnwj4h3jqkvazgawcmgjjk5unysvf6e0j90gavvsseunvg8) |
+| RelayerRegistry | [`0x43677d5Da5701E061Eefa65e36A4fF6D4BFC1109`](https://sepolia.etherscan.io/address/0x43677d5Da5701E061Eefa65e36A4fF6D4BFC1109) | [`neutron1jq5kku3r0sxdkcxvkx7ke4dlcwq4my0m2gncrx4zf7g37hxtwj7qfrya5k`](https://neutron.celat.one/pion-1/contracts/neutron1jq5kku3r0sxdkcxvkx7ke4dlcwq4my0m2gncrx4zf7g37hxtwj7qfrya5k) |
+| Verifier | [`0x2EfAB8cC7ed7C11cfC23C215731aaFA2A602F72a`](https://sepolia.etherscan.io/address/0x2EfAB8cC7ed7C11cfC23C215731aaFA2A602F72a) | [`neutron1sda4ucdq06de7h7lxg66n6sq29ft9hk76a5mpjwehk3a8wfga0eqf002f0`](https://neutron.celat.one/pion-1/contracts/neutron1sda4ucdq06de7h7lxg66n6sq29ft9hk76a5mpjwehk3a8wfga0eqf002f0) |
+| BridgeVault | [`0x2C3544434185DD65F058494816bB816e5314a29E`](https://sepolia.etherscan.io/address/0x2C3544434185DD65F058494816bB816e5314a29E) | [`neutron12z7xqgwgp6vsk5s96z4n6vjupqjg3zmvv5v068vvy3n69gshvhaq8j7dam`](https://neutron.celat.one/pion-1/contracts/neutron12z7xqgwgp6vsk5s96z4n6vjupqjg3zmvv5v068vvy3n69gshvhaq8j7dam) |
+| BridgeMint | [`0x61cab20856b16003b6a3FB213F86355515AD43cd`](https://sepolia.etherscan.io/address/0x61cab20856b16003b6a3FB213F86355515AD43cd) | [`neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7`](https://neutron.celat.one/pion-1/contracts/neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7) |
+
+Source of truth: [`scripts/addresses.json`](../scripts/addresses.json)
+
+---
+
+## Developer Guide
+
+---
+
+## Prerequisites
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Go | ≥ 1.22 | Relayer |
+| Rust + `wasm32-unknown-unknown` target | ≥ 1.78 | CosmWasm contracts |
+| Foundry (`forge`, `cast`, `anvil`) | latest | Solidity contracts |
+| Docker | ≥ 24 | CosmWasm optimizer (required for Neutron deploy) |
+| Node.js + pnpm | ≥ 20 / ≥ 9 | Frontend |
+| `neutrond` CLI | v4.x | Neutron transactions |
+
+All runtime configuration is via environment variables. There is no YAML config file — `cp .env.example .env` and fill in the values; the relayer reads them directly.
+
+The canonical list is `.env.example` at the repo root. The variables the running relayer actually reads (per `relayer/internal/config/config.go`):
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ETHEREUM_SEPOLIA_ENDPOINT` | yes | Sepolia JSON-RPC URL (Alchemy / Infura / self-hosted) |
+| `NEUTRON_RPC_URL` | yes | Neutron Tendermint RPC |
+| `NEUTRON_GRPC_URL` | yes | Neutron gRPC endpoint (used for some Cosmos queries) |
+| `NEUTRON_REST_URL` | yes | Neutron REST / LCD endpoint |
+| `NEUTRON_CHAIN_ID` | yes | `pion-1` for testnet |
+| `RELAYER_PRIVATE_KEY` | yes | The running relayer's hex secp256k1 key (no `0x` prefix). Same key signs both Sepolia and Neutron txs. |
+| `SUPABASE_PROJECT_URL` | yes | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | Service-role key (server-side only) |
+| `ETHERSCAN_API_KEY` | yes | Used by Foundry for source verification |
+| `ETHERSCAN_API_URL` | yes | e.g. `https://api-sepolia.etherscan.io/api` |
+| `SEPOLIA_DEPLOYER_PRIVATE_KEY` | deploy only | Hex key used by `forge script Deploy.s.sol` |
+| `NEUTRON_DEPLOYER_PRIVATE_KEY` | deploy only | Hex key used by Neutron deploy + `bond fund-neutron` |
+| `RELAYER_A_PRIVATE_KEY` / `RELAYER_B_PRIVATE_KEY` | scripts only | Read by `scripts/register-relayers.sh` to register both relayers in one shot. The running daemon ignores these. |
+| `SEPOLIA_*` / `NEUTRON_*` contract addresses | optional | Override `scripts/addresses.json`. Most operators leave unset. |
+
+To run a second relayer instance, set `RELAYER_PRIVATE_KEY` to the second key and rerun the binary in another terminal — there are no per-instance config files.
+
+---
+
+## Local Setup
+
+```bash
+git clone <repo>
+cd tessera
+
+# Solidity (Foundry)
+cd contracts-evm && forge install && forge build
+
+# CosmWasm
+cd contracts-cosmwasm && cargo build
+
+# Go relayer
+cd relayer && go mod download && go build ./...
+
+# Frontend
+cd frontend && pnpm install
+```
+
+---
+
+## Running Tests
+
+### Solidity (Foundry)
+
+```bash
+cd contracts-evm
+
+# All tests with verbose output
+forge test -vvv
+
+# Coverage report
+forge coverage
+
+# Gas snapshot (run after any contract change)
+forge snapshot
+```
+
+Expected: 88 tests, ~91% line coverage.
+
+### CosmWasm
+
+```bash
+cd contracts-cosmwasm
+
+# Unit + integration tests
+cargo test
+
+# Lint (warnings = errors)
+cargo clippy -- -D warnings
+
+# Check wasm targets build
+cargo wasm
+```
+
+Expected: full workspace passes, clippy clean.
+
+### Go Relayer
+
+```bash
+cd relayer
+
+# All tests including race detector
+go test -race ./...
+
+# Transform layer specifically (determinism tests run 100x)
+go test -race -run TestPatriciaToIAVL ./internal/transform/...
+go test -race -run TestIAVLToPatricia ./internal/transform/...
+```
+
+Expected: transform tests pass both directions, 100x determinism confirmed.
+
+---
+
+## Running the Relayer (Against Testnets)
+
+Requires `.env` populated and contracts deployed (addresses in `scripts/addresses.json`).
+
+```bash
+cd relayer
+
+# Run Relayer A
+RELAYER_PRIVATE_KEY=<A_KEY> go run ./cmd/tessera relayer
+
+# Run Relayer B (separate terminal — reuses the same .env, but RELAYER_PRIVATE_KEY is overridden)
+RELAYER_PRIVATE_KEY=<B_KEY> go run ./cmd/tessera relayer
+
+# Check bond status (currently prints a hint; use the block explorer for now)
+go run ./cmd/tessera bond status
+
+# Inspect a chain at a given block (debugging)
+go run ./cmd/tessera fetch --chain sepolia --block 0
+go run ./cmd/tessera fetch --chain neutron --block 0 --transform
+```
+
+To run a second relayer instance, set `RELAYER_PRIVATE_KEY` to the second key (inline as above, or via a second `.env`) and rerun.
+
+---
+
+## Running Demo Scenarios
+
+These run as in-process simulations. For testnet runs, see `scripts/scenarios/0N-*.sh`.
+
+```bash
+# In-process simulations — no funds required
+go run ./cmd/tessera test-scenario mock   # pipeline dry run, no scenario logic
+go run ./cmd/tessera test-scenario 1      # S-1 Honest
+go run ./cmd/tessera test-scenario 2      # S-2 Lying
+go run ./cmd/tessera test-scenario 3      # S-3 Silent
+go run ./cmd/tessera test-scenario 4      # S-4 Frivolous
+```
+
+The matching shell scripts at `scripts/scenarios/01-honest.sh`, `02-lying.sh`, `03-silent.sh`, and `04-frivolous.sh` exercise the same scenarios against live Sepolia + Neutron testnets.
+
+---
+
+## Adding a New Chain Plugin
+
+1. Create `relayer/plugins/<chain-name>/plugin.go`.
+2. Implement the `chain.Plugin` interface — every method is required. The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/sami-funavry/Tessera/blob/main/relayer/internal/chain/plugin.go); read it before writing any plugin code. The 13 methods are:
+
+   ```go
+   type Plugin interface {
+       ChainID() string
+       LatestBlock(ctx context.Context) (uint64, error)
+       FetchBlockFingerprint(ctx context.Context, height uint64) (Fingerprint, error)
+       FetchProof(ctx context.Context, event Event, height uint64) (Proof, error)
+       VerifyConsensus(ctx context.Context, height uint64) error
+       SubscribeEvents(ctx context.Context, fromBlock uint64) (<-chan Event, error)
+       TranslateProofTo(proof Proof, destChainID string) (Proof, error)
+       SubmitMessage(ctx context.Context, env MessageEnvelope, proof Proof) (txHash string, submissionID [32]byte, err error)
+       ExecuteMessage(ctx context.Context, submissionID [32]byte, proof Proof) (string, error)
+       SubmitChallenge(ctx context.Context, submissionID [32]byte, counterProof Proof) (string, error)
+       ClaimAbsenceSlash(ctx context.Context, submissionID [32]byte) (string, error)
+       Register(ctx context.Context, pubKeyBytes []byte) (string, error)
+       DepositBond(ctx context.Context, amount string) (string, error)
+   }
+   ```
+
+3. Wire it up in `internal/cli/root.go` (the `relayer`, `bond`, and `fetch` subcommands construct the existing `ethereum` and `tendermint` plugins from env-var config — add your plugin alongside them).
+4. Add the env-vars your plugin needs to `internal/config/config.go` and `.env.example`. There is no YAML config; everything is env-var driven.
+5. Run `go test -race ./plugins/<chain-name>/...`.
+
+The proof transformation layer (`internal/transform/`) handles both directions automatically. The plugin only needs to know how to fetch and submit in its chain's native format.
+
+---
+
+## Adding a New Application
+
+**Solidity (EVM):**
+
+```solidity
+import {IApp} from "./interfaces/IApp.sol";
+
+contract MyApp is IApp {
+    address public immutable verifier;
+
+    constructor(address _verifier) {
+        verifier = _verifier;
+    }
+
+    modifier onlyVerifier() {
+        require(msg.sender == verifier, "not verifier");
+        _;
+    }
+
+    function onCrossChainMessage(
+        bytes32 sourceChainId,
+        bytes calldata sourceApp,
+        bytes4 action,
+        bytes calldata payload
+    ) external override onlyVerifier {
+        // decode payload, execute application logic
+    }
+}
+```
+
+**CosmWasm (Neutron):**
+
+```rust
+// In execute.rs
+pub fn execute_on_cross_chain_message(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    source_chain_id: String,
+    source_app: String,
+    action: [u8; 4],
+    payload: Binary,
+) -> Result<Response, ContractError> {
+    // Enforce only-verifier
+    if info.sender != VERIFIER_ADDR.load(deps.storage)? {
+        return Err(ContractError::Unauthorized {});
+    }
+    // application logic
+}
+```
+
+No changes to Verifier, Bond, Registry, BridgeVault, or BridgeMint. Deploy the app contract and use its address as `destinationApp` in the message envelope.
+
+---
+
+## Contract Verification
+
+Sepolia contracts are verified on Etherscan. Neutron contracts are verified on Celatone.
+
+- Etherscan Sepolia: `https://sepolia.etherscan.io/address/<address>`
+- Celatone Neutron pion-1: `https://neutron.celat.one/pion-1/contracts/<address>`
+
+> Full address list: [Repo Structure → Contract Addresses](./06-repo-structure#contract-addresses-deployed)
+
+---
+
+## Inspecting State
+
+The relayer mirrors observed events and submission state into a Supabase project. Schema migrations live in `supabase/migrations/` (`001_initial_schema.sql`, `002_indexes_and_constraints.sql`).
+
+- Supabase project URL: `<SUPABASE_PROJECT_URL>` (set in `.env`; the running deployment uses the URL configured by the operator).
+- Open the SQL editor in the Supabase dashboard and run ad-hoc queries against the project.
+
+A useful starting query:
+
+```sql
+select *
+from messages
+order by created_at desc
+limit 10;
+```
+
+This returns the most recently observed cross-chain messages with their current status, source/destination chain, and submission timestamps. Other tables (`submissions`, `events`, `relayers`, `bond_balances`) are joined on `message_id` / `submission_id` — see the migration files for the full schema.
+
+---
+
+## Protocol User Guide
+
+This section covers two audiences: **relayer operators** (who run the Go binary and post bonds) and **bridge users** (who lock/burn tokens). The bridge UI covers the user path visually — this page covers the protocol-level mechanics.
+
+---
+
+## Relayer Operator Guide
+
+### Prerequisites
+
+- A secp256k1 private key (same key works for both Sepolia and Neutron — it derives both `0x...` and `neutron1...` addresses)
+- ETH on Sepolia for gas + bond: minimum 0.02 ETH bond + ~0.005 ETH gas
+- NTRN on Neutron for gas + bond: minimum 80,000 uNTRN (0.08 NTRN) bond + ~5,000 uNTRN gas
+- Tessera relayer binary built (see [Developer Guide](./07-developer-guide))
+
+---
+
+### Register and Bond
+
+**Sepolia:**
+
+```bash
+# 1. Deposit bond to Bond contract
+cast send <BOND_ADDRESS> "deposit(address)" <YOUR_ADDRESS> \
+  --value 20000000000000000 \
+  --private-key <YOUR_PRIVATE_KEY> \
+  --rpc-url <SEPOLIA_RPC>
+
+# 2. Register on RelayerRegistry
+cast send <REGISTRY_ADDRESS> "register(bytes)" <YOUR_PUBKEY_HEX> \
+  --private-key <YOUR_PRIVATE_KEY> \
+  --rpc-url <SEPOLIA_RPC>
+
+# 3. Verify active status
+cast call <REGISTRY_ADDRESS> "isActive(address)(bool)" <YOUR_ADDRESS> \
+  --rpc-url <SEPOLIA_RPC>
+```
+
+**Neutron (via neutrond CLI):**
+
+```bash
+# Deposit bond
+neutrond tx wasm execute <BOND_ADDRESS> \
+  '{"deposit":{"relayer":"<YOUR_NEUTRON_ADDRESS>"}}' \
+  --amount 80000untrn \
+  --from <YOUR_KEY_NAME> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
+
+# Register
+neutrond tx wasm execute <REGISTRY_ADDRESS> \
+  '{"register":{"pubkey":"<YOUR_PUBKEY_BASE64>"}}' \
+  --from <YOUR_KEY_NAME> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
+```
+
+Or use the relayer CLI which handles both chains. All runtime config is via env vars; copy `.env.example` to `.env` and fill in. To run a second relayer instance, set `RELAYER_PRIVATE_KEY` to the second key and rerun.
+
+```bash
+# register on both chains (or pass --chain sepolia | neutron)
+go run ./cmd/tessera bond register
+
+# deposit bond — amount is in wei for sepolia, uNTRN for neutron
+go run ./cmd/tessera bond deposit --chain sepolia --amount 20000000000000000
+go run ./cmd/tessera bond deposit --chain neutron --amount 80000
+```
+
+The available `bond` subcommands are `register`, `deposit`, `status`, and `fund-neutron`. Run `go run ./cmd/tessera bond --help` for the canonical list.
+
+---
+
+### Monitor Bond Status
+
+```bash
+go run ./cmd/tessera bond status
+```
+
+The current build prints a hint suggesting the block explorer until the on-chain query is wired up. For now, check live bonds via:
+
+- Sepolia: `cast call <BOND_ADDRESS> "balanceOf(address)(uint256)" <YOUR_ADDRESS> --rpc-url <SEPOLIA_RPC>`
+- Neutron: `neutrond query wasm contract-state smart <BOND_ADDRESS> '{"bond_of":{"relayer":"<YOUR_NEUTRON_ADDRESS>"}}' --node <NEUTRON_RPC>`
+
+Or open the contract in [Etherscan / Celatone](./06-repo-structure#contract-addresses-deployed) and read `bondBalances` / `BondOf` directly.
+
+---
+
+### Top Up Bond
+
+If your bond falls below the operating threshold (50% of initial), top up by depositing again on the affected chain:
+
+```bash
+# Sepolia top-up: 0.01 ETH
+go run ./cmd/tessera bond deposit --chain sepolia --amount 10000000000000000
+
+# Neutron top-up: 40,000 uNTRN
+go run ./cmd/tessera bond deposit --chain neutron --amount 40000
+```
+
+---
+
+### Withdraw Bond
+
+> Not yet implemented in the CLI. The Bond contracts expose a withdraw entry point — call it directly via `cast` or `neutrond` until a `bond withdraw` subcommand is added.
+
+```bash
+# Sepolia
+cast send <BOND_ADDRESS> "withdraw(uint256)" <AMOUNT_WEI> \
+  --private-key <YOUR_PRIVATE_KEY> \
+  --rpc-url <SEPOLIA_RPC>
+
+# Neutron
+neutrond tx wasm execute <BOND_ADDRESS> \
+  '{"withdraw":{"amount":"<AMOUNT_UNTRN>"}}' \
+  --from <YOUR_KEY_NAME> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
+```
+
+A 1-hour idle period (no pending submissions) is enforced on-chain.
+
+---
+
+## How Disputes Work
+
+When a challenge is filed, the Bond contract resolves it on-chain. No off-chain arbitration.
+
+**Filing a challenge (automated — relayer does this):**
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User / observer
+    participant C as Challenger<br/>(relayer)
+    participant V as Verifier
+    participant Bd as Bond
+
+    U-->>C: notices suspect submission
+    Note over C: independently fetches source proof<br/>re-runs deterministic transform<br/>computes expected_root
+    alt expected_root ≠ submitted_root
+        C->>V: challenge(submissionId, expected_root, evidence_proof)
+        V->>Bd: verify evidence_proof vs source state
+        Bd-->>Bd: identify correct party on-chain
+        Bd-->>V: slash incorrect party
+    else roots match
+        C-->>C: stand down
+    end
+```
+
+**Challenging a challenge (S-4 scenario):**
+If the submitter's original proof was correct, the bond contract will find the challenger's "evidence" to be wrong and slash the challenger instead.
+
+---
+
+## Bridge User Guide
+
+The steps below describe the protocol-level (CLI / `cast` / `neutrond`) flow. For UI users see [tUSDC Bridge → UI walkthrough](./09-tusdc-bridge#ui).
+
+### Lock tUSDC (Sepolia → Neutron)
+
+1. Connect MetaMask (Sepolia)
+2. Approve `BridgeVault` to spend your tUSDC: `tUSDC.approve(BRIDGE_VAULT, amount)`
+3. Call `BridgeVault.lock(amount, destinationChainId, recipientNeutronAddress)`
+4. Note the `nonce` emitted in the `Locked` event — this is your message ID
+5. Wait for the relayer to submit and the challenge window to pass (~75–90s)
+6. tUSDC appears in your Neutron wallet
+
+### Burn tUSDC (Neutron → Sepolia)
+
+1. Connect Keplr (Neutron)
+2. Call `BridgeMint.burn(amount, destinationChainId, recipientSepoliaAddress)`
+3. Wait for relay + challenge window (~75–90s)
+4. tUSDC released from BridgeVault on Sepolia
+
+### Claim Test Tokens
+
+Both chains have a no-argument `claim()` entry point on the tUSDC contract that mints 1000 tUSDC to `msg.sender` (per-address 24h cooldown).
+
+```bash
+# Sepolia — claim() takes no arguments; tokens go to msg.sender
+cast send <TUSDC_SEPOLIA> "claim()" \
+  --private-key <KEY> \
+  --rpc-url <SEPOLIA_RPC>
+
+# Neutron — Claim {} takes no fields; tokens go to the message sender
+neutrond tx wasm execute <TUSDC_NEUTRON> \
+  '{"claim":{}}' \
+  --from <KEY> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
+```
+
+---
+
+## Reference App — tUSDC Bridge
+
+The tUSDC bridge is Tessera's reference application. It demonstrates the full cross-chain lifecycle — both directions — using a custom ERC20/CW20 test token. It is not real USDC.
+
+The bridge exists to prove that the Tessera infrastructure works end-to-end. Every piece of the system is exercised: proof fetch, transformation, on-chain verification, `IApp` dispatch, economic enforcement.
+
+---
+
+## What It Demonstrates
+
+| Capability | Demonstrated by |
+|-----------|----------------|
+| EVM → Cosmos asset transfer | Sepolia lock → Neutron mint |
+| Cosmos → EVM asset transfer | Neutron burn → Sepolia release |
+| Fraud prevention | S-2: challenger catches lying relayer |
+| Liveness enforcement | S-3: successor submits; original slashed |
+| Frivolous challenge prevention | S-4: bad challenger slashed |
+| Ed25519 bypass | Neutron→Sepolia direction; Go verifies off-chain |
+| Patricia ↔ IAVL transformation | Both directions |
+| IApp dispatch pattern | BridgeMint + BridgeVault implement IApp |
+
+---
+
+## Sepolia → Neutron Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault<br/>(Sepolia)
+    participant R as Relayer<br/>(Go)
+    participant NV as Verifier<br/>(Neutron)
+    participant NM as BridgeMint<br/>(Neutron)
+
+    U->>SV: lock(amount, recipient, dest)
+    SV-->>R: Locked event
+    Note over R: eth_getProof<br/>Patricia / Keccak-256 / RLP
+    Note over R: VerifyConsensus<br/>(RPC trust — limitation L-1)
+    Note over R: TranslateProofTo(Tendermint)<br/>deterministic — byte-identical replay
+    R->>NV: submitMessage(envelope, root, IAVL proof)
+    Note over NV: 60s challenge window<br/>any relayer can dispute
+    NV->>NM: executeMessage → onCrossChainMessage
+    NM-->>U: tUSDC minted (6 decimals)
+```
+
+---
+
+## Neutron → Sepolia Flow
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant NM as BridgeMint<br/>(Neutron)
+    participant R as Relayer<br/>(Go)
+    participant SR as Verifier<br/>(Sepolia)
+    participant SV as BridgeVault<br/>(Sepolia)
+
+    U->>NM: burn(amount, recipient)
+    NM-->>R: Burned event
+    Note over R: ABCI query<br/>IAVL / SHA-256 / Protobuf
+    Note over R: VerifyConsensus<br/>cometbft.NewValidatorSet.VerifyCommit()<br/>2/3+ Ed25519 sigs validated in Go
+    Note over R: TranslateProofTo(EVM)<br/>IAVL → Patricia (deterministic)
+    R->>SR: submitMessage(envelope, root, Patricia proof)
+    Note over SR: 60s challenge window<br/>EVM walks Patricia (Keccak-256)
+    SR->>SV: executeMessage → onCrossChainMessage
+    SV-->>U: tUSDC released (18 decimals)
+```
+
+---
+
+## Token Details
+
+| Property | Sepolia (ERC20) | Neutron (CW20) |
+|----------|----------------|---------------|
+| Name | tUSDC | tUSDC |
+| Symbol | tUSDC | tUSDC |
+| Decimals | 18 | 6 |
+| Claim limit | 1000 tUSDC / address / 24h | 1000 tUSDC / address / 24h |
+| Real USDC? | No | No |
+
+Contract addresses:
+- Sepolia: `0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0`
+- Neutron: `neutron1fw6unz7a9j4zf9gnvhup5qe6dlftytdc0y0rwyn3lyxdazz22rtsck0vld`
+
+---
+
+## UI
+
+The bridge UI is the homepage of the live deployment. The same widget works on desktop and mobile; the steps below describe a full Sepolia → Neutron bridge using both wallets.
+
+![Tessera homepage showing the bridge widget, hero copy, and live system status.](./images/01-home-desktop.png)
+
+1. **Connect wallets.** Connect MetaMask on Sepolia (chainId `11155111`) and Keplr on Neutron (`pion-1`). The widget shows both connection statuses and the active source/destination direction.
+2. **Click "Claim 1000 tUSDC".** First-time users click the claim button on the source chain. This triggers **MetaMask popup #1** — a `claim()` call on the tUSDC contract (no arguments, mints 1000 tUSDC to `msg.sender`, 24h cooldown). After confirmation your balance updates to 1000 tUSDC.
+3. **Enter the amount.** Type the amount you want to bridge into the widget's amount field. The recipient field auto-fills with the connected destination wallet; you can override it.
+4. **Click "Bridge".** On the very first bridge from this wallet, **MetaMask popup #2** asks you to approve `BridgeVault` to spend your tUSDC (`tUSDC.approve(BridgeVault, amount)`). This approval is one-time per wallet per direction.
+5. **Confirm the lock.** **MetaMask popup #3** is the actual `BridgeVault.lock(amount, "pion-1", neutronRecipient)` transaction. After confirmation, the source-chain lock is on-chain and the relayer picks up the `Locked` event.
+6. **Watch the curvy roadmap fill.** The bridge widget renders a progress roadmap that fills in as each stage completes — proof fetched, transformed, submitted, challenge window passed, executed. Each segment links to the corresponding transaction on Etherscan or Celatone.
+
+   ![Bridge widget close-up: from/to chain selectors, amount, recipient, primary Bridge action, and the curvy progress roadmap.](./images/02-bridge-widget-desktop.png)
+
+7. **Tokens appear in Keplr.** Once `executeMessage` runs on Neutron and `BridgeMint.mint` fires, the bridged tUSDC shows up in the connected Keplr wallet.
+
+The reverse direction (Neutron → Sepolia) is identical — flip the direction selector, sign the burn from Keplr, and watch the same roadmap drive the release on Sepolia.
+
+After a bridge is submitted, a per-submission detail page exposes the full cryptographic state: source and destination tx hashes, proof inspector with the raw fingerprint and Merkle path, route summary, and a Cryptographic Roadmap that walks every stage in order.
+
+![Submission detail page showing the proof inspector, source and destination tx hashes, route summary, and the Cryptographic Roadmap walkthrough.](./images/07-submission-detail-desktop.png)
+
+---
+
+> See [Demo Scenarios](./05-demo-scenarios) for step-by-step S-1 through S-4 walkthroughs.
+> See [Protocol User Guide](./08-protocol-user-guide) for CLI-level bridge operations.
+
+---
+
+## Limitations
+
+Tessera is a hackathon build. These are the real constraints — not limitations to hide, but trade-offs that were made deliberately to ship a working system within the build window. Each has a clear mitigation path.
+
+---
+
+## L-1: RPC Trust on Sepolia
+
+**What it means:** The relayer trusts the data returned by its configured Sepolia RPC node when verifying source events. If the RPC node lies about a block's state root, the relayer will relay a fraudulent message.
+
+**Why we accept it for now:** Ethereum's sync committee (a set of 512 validators who sign block headers every ~27 hours using BLS signatures) provides a trustless verification mechanism. Implementing sync committee verification requires BLS signature aggregation and beacon chain header tracking — non-trivial additional work beyond the hackathon scope.
+
+**Mitigation path:** Integrate sync committee verification in the EthereumPlugin. The relayer would fetch and verify a sync committee signature on the block header before trusting the state root. This is a pure off-chain Go change; no contract changes required.
+
+**Current exposure:** Low in practice — Alchemy and Infura, the standard RPCs, would not lie about block state. This is an assumption about RPC provider honesty, not about the relayer network's honesty.
+
+---
+
+## L-2: Liveness Assumption
+
+**What it means:** The system is secure only if at least one honest, online relayer is in the registered set. If all registered relayers collude or go offline simultaneously, messages can be delayed or fraudulently relayed.
+
+**Why this is acceptable:** This is the standard liveness assumption for all optimistic and bonded relay systems. It is explicit, documented, and enforced by the bond mechanism — anyone can register as a relayer, so the registered set can grow without permission.
+
+**Mitigation path:** As more independent relayers register (with independent bond sources and independent infrastructure), the probability of simultaneous collusion or outage approaches zero. The bond threshold can be tuned upward to raise the cost of Sybil attacks.
+
+---
+
+## L-3: Testnet Parameters Are Deliberately Low
+
+**What it means:** Bond thresholds (0.02 ETH / 80,000 uNTRN) and the challenge window (60s) are set for testnet conditions. Production deployments require significantly tighter parameters.
+
+| Parameter | Testnet | Production recommendation |
+|-----------|---------|--------------------------|
+| Initial bond (ETH) | 0.02 ETH | 0.5 ETH |
+| Initial bond (NTRN) | 80,000 uNTRN | 100 NTRN (100,000,000 uNTRN) |
+| Challenge window | 60 seconds | 10 minutes |
+| Handover period | 30 seconds | 5 minutes |
+| Re-registration cooldown | 1 hour | 24 hours |
+
+**Why testnet values are low:** Sepolia faucets yield ~0.05 ETH/day. Neutron pion-1 faucets yield ~2 NTRN/day. Setting bonds at production levels would make the demo non-repeatable within the hackathon window.
+
+**All slashing ratios (50%/25%) and economic mechanisms are identical between testnet and production.** Only the absolute amounts change.
+
+---
+
+## L-4: Neutron submissionId Parsing
+
+**What it means:** The Go relayer currently returns a zero `[32]byte{}` submissionId after a Neutron `SubmitMessage` call because it does not parse the `MessageSubmitted` event from the CosmWasm `TxResponse.Events`. The submissionId is emitted in the event but not read back.
+
+**Current impact:** Works correctly for the demo because only one message is in flight at a time. If multiple messages were pending simultaneously, submissionId collisions (all-zeros key) would cause incorrect challenger lookups.
+
+**Mitigation path:** Parse `TxResponse.Events` in the TendermintPlugin after broadcast, extract the `submission_id` attribute from the `tessera.MessageSubmitted` event, and return it. Pure Go change; no contract changes.
+
+---
+
+## Summary
+
+| Limitation | Current impact | Production risk | Fix complexity |
+|-----------|---------------|----------------|----------------|
+| RPC trust (Sepolia) | Low (trusted RPC providers) | Medium | Medium (BLS sync committee in Go) |
+| Liveness assumption | Low (2 independent relayers running) | Low (grows better with more relayers) | N/A (inherent to model) |
+| Testnet parameters | Demo only — not production-safe bond amounts | High if deployed as-is | Low (config change) |
+| Neutron submissionId | Safe for single in-flight message | Medium (concurrent messages) | Low (event parsing) |
+
+> See [Future Work](./11-future-work) for the full roadmap beyond these mitigations.
+
+---
+
+## Future Work
+
+The architecture was designed for extension. Everything on this list is additive — none of it requires changing deployed contracts.
+
+---
+
+## Near-Term (Production Readiness)
+
+### Fix Known Limitations
+
+See [Limitations](./10-limitations) for the full list. Priority order for production:
+
+1. **Testnet → production parameters** — bond thresholds and windows to production values. Config change only.
+2. **Neutron submissionId parsing** — parse `tessera.MessageSubmitted` event after broadcast. Go change only.
+3. **Sync committee verification for Sepolia** — eliminate RPC trust. BLS aggregation in the EthereumPlugin.
+
+### Production Operational Requirements
+
+- Multi-region relayer deployment (eliminate single point of liveness failure)
+- On-call alerting for bond threshold breaches
+- Relayer key rotation playbook
+- RPC fallback chain (primary → secondary → tertiary)
+- Automated bond top-up from a separate treasury wallet
+
+---
+
+## Medium-Term (Expansion)
+
+### Additional Source Chains
+
+Each new chain is one Go plugin file. Highest-value candidates:
+
+| Chain | Plugin type | Note |
+|-------|-------------|------|
+| Polygon | `EthereumPlugin` variant | Same EVM code; different chain ID |
+| Arbitrum | `EthereumPlugin` variant | Same; different L2 proof structure |
+| Osmosis | `TendermintPlugin` variant | CosmWasm-capable; Cosmos IBC neighbor |
+| Cosmos Hub | `TendermintPlugin` variant | Highest Cosmos TVL |
+
+**What changes:** one new plugin file. No contract changes. No other Go changes.
+
+### Additional Destination VMs
+
+Any VM where you can deploy contracts and verify Merkle proofs natively is supportable. The proof transformation layer already produces Patricia or IAVL proofs — a new VM just needs a verifier for one of those formats (or we add a new output format to the transform layer).
+
+### Additional Applications
+
+Any cross-chain application can plug in by implementing `IApp`:
+- NFT bridges
+- Cross-chain governance (vote on chain A, execute on chain B)
+- Cross-chain lending (collateral on one chain, borrow on another)
+- Cross-chain oracle updates
+
+**What changes:** one new contract per chain. No Verifier, Bond, Registry, or relayer changes.
+
+---
+
+## Long-Term (Research)
+
+### ZK Option
+
+The proof transformation step (Patricia ↔ IAVL) could be replaced by a ZK proof of correct transformation. This would eliminate the need for challengers to re-run the transformation and would make fraud detection instant rather than relying on the challenge window.
+
+**Trade-off:** ZK proof generation requires dedicated hardware and adds latency measured in minutes. The current optimistic approach is faster and cheaper at the cost of a 60-second window.
+
+This is future work, not a current priority. The current system is already trustless for the destination chain — the ZK option would also make the transformation step trustless, which is an additional (not foundational) improvement.
+
+### Validator Reward Mechanism
+
+Currently, relayers earn fees for honest submissions and slash rewards for catching fraud. Future work would formalize this into a more explicit reward model:
+
+**Proposed design:**
+- Do good (honest submission, correct challenge, successful catch) → earn reward
+- Do bad (fraud, frivolous challenge, absence) → get punished
+- Punishment > maximum possible gain from bad behavior → honest network by design
+
+This creates a formally analyzed incentive-compatible mechanism where:
+- Rational actors are honest because dishonesty has negative expected value
+- The network self-selects for honest operators
+- Bond requirements can be lower because the reward asymmetry does the security work
+
+**Key insight:** A relayer who stays honest over many messages earns more from accumulated fees than they could ever gain from a single fraud attempt (which costs 50% of their bond + reputation). The current implementation already has this property implicitly; the future work is to formalize and quantify it.
+
+---
+
+## What Will Never Be In Scope
+
+These are explicitly out of scope and would require a new product decision to include:
+
+- Real USDC integration (regulatory risk; use tUSDC as the interface, let the market decide what backs it)
+- Mainnet deployment without a formal security audit
+- Centralized components (no admin keys on deployed contracts beyond the `setVerifier` one-time setter)
+- Competitor integration or compatibility layers
+
+---
+
+> The architecture decisions that make this extensible are documented in [Architecture](./03-architecture) and [Repo Structure](./06-repo-structure).
+
+---
+
 ## Technical Decisions
 
 > Architecture decision records (ADRs) for the choices that shaped Tessera. Each entry: context, decision, alternatives, consequences. Cited by file path so future contributors can find the code.
 
 ---
 
-### DEC-01: Native proof verification instead of ZK
+## DEC-01: Native proof verification instead of ZK
 
 **Status:** Accepted
 
@@ -305,7 +1695,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-02: Off-chain Ed25519 verification for Tendermint
+## DEC-02: Off-chain Ed25519 verification for Tendermint
 
 **Status:** Accepted
 
@@ -327,7 +1717,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-03: Bonded relayers + slashing
+## DEC-03: Bonded relayers + slashing
 
 **Status:** Accepted
 
@@ -349,7 +1739,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-04: Generic dispatcher pattern (Verifier dispatches to `destinationApp`)
+## DEC-04: Generic dispatcher pattern (Verifier dispatches to `destinationApp`)
 
 **Status:** Accepted
 
@@ -371,7 +1761,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-05: Two relayers for the demo
+## DEC-05: Two relayers for the demo
 
 **Status:** Accepted
 
@@ -394,7 +1784,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-06: Server-side relay simulator for the frontend demo
+## DEC-06: Server-side relay simulator for the frontend demo
 
 **Status:** Accepted (hackathon scope)
 
@@ -410,12 +1800,12 @@ This is what gives operators a single glance into whether the proof pipeline is 
 **Consequences.**
 
 - This is a hackathon-scope shortcut. **`docs/audit-findings.md` SEC-03 to SEC-15 cover the production gaps this introduces** (private key in env, no signature verification on the relay endpoint, no rate limiting, etc.).
-- The proof flow is fully implemented and tested in the contract layer (`forge test` 88 passing, `cargo test` 28 passing) and in the Go relayer (`go test -race ./...` clean across 5 packages, including 35 transform fixture tests). The demo scenarios in `relayer/internal/scenario/` exercise the full path through mock plugins. The gap is specifically the *user-facing* widget invoking the Go relayer rather than the Node.js helper.
+- The proof flow is fully implemented and tested in the contract layer (`forge test` — 88 passing, `cargo test --workspace` — green) and in the Go relayer (`go test -race ./...` clean, including the 35 transform fixture tests). The demo scenarios in `relayer/internal/scenario/` exercise the full path through mock plugins. The gap is specifically the *user-facing* widget invoking the Go relayer rather than the Node.js helper.
 - Mainnet path: replace `frontend/lib/relay-helper.ts` with an HTTP call to the deployed Go relayer's submission queue. The frontend doesn't change beyond the URL.
 
 ---
 
-### DEC-07: Supabase as off-chain state store
+## DEC-07: Supabase as off-chain state store
 
 **Status:** Accepted
 
@@ -438,7 +1828,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-08: Plugin pattern for chain support
+## DEC-08: Plugin pattern for chain support
 
 **Status:** Accepted
 
@@ -460,7 +1850,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-09: Custom tUSDC test token
+## DEC-09: Custom tUSDC test token
 
 **Status:** Accepted (hackathon scope)
 
@@ -481,7 +1871,7 @@ This is what gives operators a single glance into whether the proof pipeline is 
 
 ---
 
-### DEC-10: Manual `StdFee` everywhere on Neutron transactions
+## DEC-10: Manual `StdFee` everywhere on Neutron transactions
 
 **Status:** Accepted
 
@@ -504,140 +1894,439 @@ The error surfaced three times during the build before the durable fix landed: f
 - The cure is durable until the dep tree is realigned. PROMPT_LOG entry [P-9 bridge bugfixes] documents the root cause and the three sites where the fix was applied.
 - Implementation: `frontend/lib/keplr.ts::neutronFee`, used by `frontend/app/HomepageClient.tsx`, `frontend/lib/relay-helper.ts`, and any new code that invokes a CosmWasm contract.
 
-## Post-Hackathon Roadmap
+---
 
-> What it would take to actually run Tessera for users. Scope: from "demo on testnet" to "users move real funds." This is the operational, security, and infrastructure agenda — not the research roadmap. For research-track future work (additional chains, ZK option, validator reward formalization), see [`11-future-work.mdx`](./11-future-work.mdx).
+## State & Database
+
+Tessera has two state stores, with a strict separation of concerns. **On-chain** contracts hold the authoritative state — bonds, submission status, executed msgIds. **Supabase** is the operator-facing mirror used by the dashboard, indexed off chain events, and never relied on for security decisions. If Supabase disappears, the bridge keeps working. If a chain disappears, that direction stalls — exactly as you'd want.
 
 ---
 
-### 1. Missing features
+## Where State Lives
 
-- **Bridge directionality completeness.** Sepolia→Neutron and Neutron→Sepolia both work end-to-end on testnet, but the user-facing flow uses a server-side relay simulator (see DEC-06 in `12-technical-decisions.mdx`). Production must run the actual Go relayer's `SubmitMessage` → `Verifier.executeMessage` dispatch path with real Patricia↔IAVL proofs on the user's behalf. The contracts and Go transform layer are wired; the gap is the production deployment of the Go relayer talking to the deployed Verifier on both chains.
-- **App-extension story.** Generic dispatcher (`destinationApp` in the message envelope) is implemented and tested. A second reference application beyond tUSDC (e.g., NFT bridge or cross-chain governance) would prove the plug-in claim and de-risk the abstraction.
-- **Mainnet support.** Currently Sepolia and Neutron pion-1 only. Mainnet adds: real fee market integration (EIP-1559 on Ethereum mainnet, dynamic gas price on Neutron), production bond thresholds (per `10-limitations.mdx` table), and KYC/compliance posture decisions if real assets ever back tUSDC.
-- **Fee market.** Relayers currently earn slash rewards but no per-message fee. Production needs a configurable `relayerFee` field in the message envelope so honest delivery is profitable in steady state, not only on adversarial paths.
-
----
-
-### 2. Security path-to-mainnet
-
-- **Resolve all SEC-03 through SEC-15 production-only items in `audit-findings.md`.** These were deferred as out-of-scope for hackathon but block any mainnet deployment.
-- **Third-party audit.** Two independent firms (Trail of Bits and Spearbit are the targets). Scope: full Solidity + CosmWasm contract suite, the Go relayer's proof-transformation logic, and the bond/slash invariants. Target: zero-finding clean reports plus public disclosure.
-- **Bug bounty program.** Immunefi or HackenProof, scaled to TVL. Tiered payouts: critical (proof verifier bypass, bond drain) at the high end; medium (DoS, griefing) at the low end.
-- **Rotate every demo key.** `Relayer A`'s private key is exposed via the demo's server-side relay-helper API (see DEC-06). Mainnet must generate fresh keys in an HSM or KMS-backed signer (AWS KMS, GCP KMS, or Fireblocks). The on-chain `rotateKey` function on `RelayerRegistry` already supports this — operator runbook required.
-- **Monitoring + alerting** for: bond threshold breaches, RPC failover events, slash events on either chain, challenge filings, restart loops. Sentry already wired (`relayer/internal/obs/obs.go`); production adds Prometheus + PagerDuty.
-- **Formal verification of the proof-transformation invariant.** R-52 ("transformation is deterministic across all honest relayers") is the foundational security claim. Currently asserted by 35 fixture tests in `relayer/internal/transform/transform_test.go`. Target: a TLA+ or Coq spec of the transformation algorithm with a machine-checked proof that any two honest implementations produce byte-identical output for any well-formed input.
+| Store | Authority | Consumed by | Failure mode |
+|-------|-----------|-------------|--------------|
+| Sepolia + Neutron contracts | Authoritative — on-chain truth | Relayer + Verifier dispatch | Chain outage stalls that direction |
+| Supabase (Postgres) | Mirror only | Frontend, benchmark page, demo log | Stale dashboard; bridge unaffected |
 
 ---
 
-### 3. Database hardening
+## Entity-Relationship Diagram
 
-- **RLS audit.** Current Supabase schema applies public-read RLS policies (per P-0 setup) so the dashboard works without auth. Production must split: `messages`, `submissions`, `disputes`, `events` stay public-read; `bonds` and any operator metadata become role-gated. Service-role key is currently used from the frontend's API routes — must move to a separate read-only role with explicit grants.
-- **Separate read/write database roles.** Frontend gets read-only via PostgREST; relayer gets write via a service role; admin operations require an explicit second role. Today the frontend's `/api/scenarios/[type]` and `/api/bridge/relay` routes hold a service-role key (`frontend/lib/supabase-admin.ts`), which is too broad.
-- **Point-in-time recovery + backups.** Free tier has no PITR. Upgrade to Supabase Pro for daily backups + 7-day PITR. Combine with periodic logical dumps to S3 (or equivalent) for a second recovery path.
-- **Connection pooling.** PgBouncer in transaction mode already available on Supabase Pro. Required once the relayer reconnects on every restart and any CI run hits the DB.
-- **Upgrade to Supabase Pro for SLA.** Free tier has no uptime guarantee. Pro is roughly $25/month per project and unlocks the bullets above.
+Six tables. `messages` is the parent; `submissions` and `benchmark_runs` hang off it. `disputes` hang off submissions. `bonds` and `events` are independent of any specific message.
+
+```mermaid
+erDiagram
+    messages ||--o{ submissions : "has"
+    messages ||--o| benchmark_runs : "measured by"
+    submissions ||--o{ disputes : "may be challenged by"
+
+    messages {
+        bigserial id PK
+        bigint nonce
+        text source_chain_id
+        text source_app
+        text destination_chain_id
+        text destination_app
+        text action
+        bytea payload
+        text sender
+        text recipient
+        numeric amount
+        text source_tx_hash
+        bigint source_block
+        text status
+    }
+    submissions {
+        bigserial id PK
+        bigint message_id FK
+        text submitter_address
+        text fingerprint
+        text dest_tx_hash
+        text status
+    }
+    disputes {
+        bigserial id PK
+        bigint submission_id FK
+        text challenger_address
+        text correct_fingerprint
+        text outcome
+    }
+    bonds {
+        bigserial id PK
+        text relayer_address
+        text chain_id
+        numeric balance
+        text threshold_status
+    }
+    events {
+        bigserial id PK
+        text chain_id
+        bigint block_number
+        text tx_hash
+        text event_type
+        jsonb raw_data
+    }
+    benchmark_runs {
+        bigserial id PK
+        bigint message_id FK
+        text direction
+        bigint total_latency_ms
+        bigint source_gas_used
+        bigint dest_gas_used
+        bigint proof_transform_ms
+    }
+```
 
 ---
 
-### 4. QA pipeline
+## Tables
 
-- **CI gates.** Required before any merge: smoke test (the existing `scripts/smoke-test.sh` 14-check suite), four-scenario integration test on a forked testnet, Slither + Mythril on Solidity, `gosec` + `govulncheck` on the Go relayer, `cargo audit` + `cargo deny` on CosmWasm. Coverage threshold: 80% lines per package (already enforced for Solidity in `forge coverage`).
-- **Mutation testing.** `mutmut` on Python tooling, `cargo mutants` on CosmWasm, `gremlins` on Go. Target: 70%+ killed mutants on the proof-transformation paths.
-- **Staging environment.** A persistent testnet deployment that mirrors production config (production bond thresholds, production challenge windows). Staging runs the same Go relayer binary as production. Demo runs against staging, not against the dev environment.
-- **Replay harness against historic events.** Capture every Sepolia `Locked` and Neutron `Burned` event into a fixture archive; replay them through the relayer in CI to catch regressions in the transform layer or consensus verification.
-- **Fuzz the proof verifier.** Both `forge fuzz` for Solidity `Verifier._verifyProof` and `cargo fuzz` for the CosmWasm equivalent. Target: 1M+ executions per nightly run, zero crashes, zero invalid-proof acceptances.
-
----
-
-### 5. Monitoring / on-call
-
-- **Sentry already wired.** `relayer/internal/obs/obs.go` reads `SENTRY_DSN` from env and captures errors from the runner goroutines. Production-ready as-is.
-- **Prometheus metrics.** Per-message latency histograms, per-chain submission counts, bond balance gauges, RPC failure counters. Scrape endpoint on the relayer admin port.
-- **PagerDuty (or Opsgenie).** Page on: any P0/P1 Sentry event, bond below operating threshold, no submissions for >5 min when there are pending source events, RPC failover to the last fallback in the chain, challenge filed against own submissions.
-- **Runbooks** (markdown, in `docs/runbooks/`):
-  - `relayer-A-out-of-NTRN.md` — top-up procedure from the deployer wallet, faucet fallback, escalation if both fail.
-  - `polkachu-rpc-down.md` — switch to falcron / palvus / self-hosted RPC; recovery validation steps.
-  - `challenge-filed.md` — when a challenge is filed against our submission: triage steps, evidence comparison, escalation if it's a real fraud (versus our bug).
-  - `bond-near-threshold.md` — automated top-up trigger; manual override path.
-- **SLOs.** Target: 99% of bridges complete in <120s end-to-end; 99.9% relayer uptime per month; <1 challenge per 10,000 submissions in steady state. These are stated as targets to be measured, not as claims of current performance.
+| Table | Granularity | Purpose |
+|-------|-------------|---------|
+| `messages` | one row / cross-chain message | Lifecycle FSM — `pending → submitted → challenge_window → executed \| reverted` |
+| `submissions` | one row / relayer attempt | Tracks who submitted, what fingerprint, and dest tx outcome |
+| `disputes` | one row / challenge filed | Outcome: `upheld` (submitter slashed) or `rejected` (challenger slashed) |
+| `bonds` | one row / relayer / chain | Periodically synced from on-chain Bond contract; powers dashboard |
+| `events` | one row / raw chain event | Source-of-truth for the live dashboard event log; deduplicated by `(chain_id, tx_hash, event_type)` |
+| `benchmark_runs` | one row / completed message | Per-direction latency + gas; powers the benchmark page |
 
 ---
 
-### First 30 days (prioritized)
+## Message Status FSM
 
-1. **Resolve audit-findings.md SEC-03 to SEC-15** — security blocks everything else.
-2. **Engage Trail of Bits or Spearbit for the third-party audit** — long lead time (typically 4–8 weeks); start the procurement before code work.
-3. **Rotate Relayer A and B keys to KMS-backed signers** — exposed-key risk is real today; this is the cheapest mitigation per minute of work.
-4. **Deploy staging environment with production parameters** — gives a real surface to test the Go-relayer + Verifier dispatch path end-to-end before mainnet.
-5. **Set up CI gates with the existing smoke test + scenarios + Slither/gosec** — protects the codebase while items 1–4 are in flight.
+The `messages.status` column is a finite state machine driven by chain events. The relayer only writes from a small set of allowed transitions — these are enforced in code (`relayer/internal/state/transitions.go`), not by the database, because the database is a mirror, not the authority.
 
-## Reflection
+```mermaid
+stateDiagram-v2
+    [*] --> pending: source event observed
+    pending --> submitted: relayer submits
+    submitted --> challenge_window: included on dest
+    challenge_window --> executed: 60s expires<br/>uncontested
+    challenge_window --> challenged: challenge filed
+    challenged --> reverted: challenge upheld<br/>submitter -50%
+    challenged --> executed: challenge rejected<br/>challenger -25%
+    executed --> [*]
+    reverted --> [*]
+```
 
-> Hackathon: ChainGPT Internal AI Hackathon (May 7–9, 2026). Project: Tessera — bonded-relayer cross-chain framework with a tUSDC bridge between Sepolia and Neutron.
-
-This is the honest, one-page debrief on what shipped, what didn't, and what I'd change next time.
-
----
-
-### What worked
-
-**Sub-agents for read-heavy exploration.** Whenever a prompt needed "find every file:line that touches X across four languages," I spawned three parallel Explore agents instead of grepping serially in the main context. Three concrete payoffs: the [P-9.5] UI ↔ on-chain reconciliation pass found exact root causes for 11 separate bugs in a single round-trip; the [P-9 bridge bugfixes] pass mapped four user-reported failures to the precise files in `frontend/lib/keplr.ts`, `frontend/lib/relay-helper.ts`, and `relayer/plugins/tendermint/plugin.go` before any code changed; the [P-pre] discovery pass built a full mental map of a 103KB SPEC and 13 skills in one shot. Cheaper in tokens than serial grepping and kept the main thread free for synthesis.
-
-**Plan mode + numbered requirement IDs.** SPEC.md has 129 numbered requirements (R-1 through R-129) and stable phase IDs (P-0 through P-11). Every plan file referenced exact requirement IDs, which made "is this in scope?" a 5-second lookup instead of a 5-minute argument. The reorder of phases in [P-8 reorder] (inserting Documentation before Frontend) was a 3,000-token operation precisely because every reference was indirected through an ID.
-
-**Custom skills as anti-hallucination guardrails.** The `tessera-context` skill loads on every prompt and enumerates the locked invariants — Sepolia↔Neutron only, two relayers, 50%/25% slashing, 60s window, generic dispatcher. The `tessera-prompt-log` skill auto-appends to PROMPT_LOG.md so the audit trail wrote itself. Together they caught at least three drift attempts (mixing source-root vs. transformed-root, fabricated "60% gas saved" claims, an attempt to add a third relayer).
+Only two terminal states: `executed` (success) and `reverted` (challenge upheld). Both clear the challenge window for downstream consumers.
 
 ---
 
-### What didn't
+## Why Two State Stores
 
-**Dual `@cosmjs/stargate` versions bit twice.** The dep tree carried 0.38 transitive and 0.39 direct, so the `GasPrice` class had two identities and `instanceof` checks failed at runtime. First diagnosed and worked around in [P-9 token_info fix] with a dynamic import + `as unknown as` cast; bit *again* on the server side in [P-9.5] (manual fee object); bit a *third* time on the user-facing Neutron→Sepolia bridge in [P-9 bridge bugfixes]. The durable cure (explicit `StdFee` everywhere via `neutronFee()` in `frontend/lib/keplr.ts`) only landed on the third occurrence. Should have been done the first time.
-
-**Bond thresholds rewritten mid-build.** Original SPEC values were 0.5 ETH / 100 NTRN. Sepolia faucets yield ~0.05 ETH/day; Neutron pion-1 faucets yield ~2 NTRN/day. The numbers were unreachable. Caught at [P-5 prep] — late enough that contract constants, tests, deploy scripts, SPEC.md, the `tessera-context` skill, and the cost log all needed coordinated rewrites. Should have been calibrated against real faucet output at P-0.
-
-**CosmWasm bulk-memory wasm trap.** Local `cargo build --release` emits `memory.copy` / `memory.fill` instructions that Neutron's wasmd v0.61 rejects. Burned a half-day on this in [P-5] and the [P-5/P-6 neutron-v4-deploy] pass before the Docker `cosmwasm/workspace-optimizer:0.16.1` + cosmwasm-std pin to 2.1.4 became the reliable path. The signal was there in CosmWasm release notes; I wasn't reading them.
+| Question | Answer |
+|----------|--------|
+| Where is the authoritative bond balance? | On chain. The `bonds` Supabase table is a periodically-synced cache. |
+| Where is the authoritative msgId-executed flag? | On chain. The Verifier rejects a duplicate msgId regardless of what Supabase says. |
+| What if Supabase is wrong? | The dashboard shows stale data; the bridge still works. Operator backfill replays events. |
+| What if the chain RPC is wrong? | L-1 limitation. Future work: sync committee for Sepolia. |
 
 ---
 
-### What I'd do differently
+## Realtime + RLS
 
-**Lock dep versions at P-0, not P-9.** A 30-minute `pnpm why @cosmjs/stargate` audit on day one would have surfaced the dual-version conflict before any code was written against it. Same applies to `cosmwasm-std` — pin to a wasmd-compatible version up front, not after the third deploy attempt.
+The frontend subscribes to `messages`, `submissions`, `disputes`, and `events` via Supabase realtime (Postgres logical replication). All six tables are RLS-enabled with `SELECT` public; writes require the service-role key, which only the relayer holds.
 
-**Calibrate testnet economics against measured faucet output before writing contracts.** `for i in {1..3}; do faucet-request; done` over a day, then set bond thresholds from that data. Five minutes of measurement saves a day of retrofit.
+```sql
+-- supabase/migrations/001_initial_schema.sql
+ALTER TABLE messages    ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "public read messages" ON messages FOR SELECT USING (true);
+-- Writes: service-role key only (relayer)
 
-**Adopt a chain-deploy template (Docker optimizer + version pins) on day one.** The CosmWasm build pipeline is non-trivial and the failure modes are silent (wasm validates locally, rejects on chain). A `Makefile` target with `RUSTFLAGS` + `wasm-opt` + Docker invocation would have been one P-0 task; instead it leaked across [P-5], [P-5/P-6], and [P-9 token_info]. Treat "the chain accepts our wasm" as a P-0 smoke test, same as RPC reachability.
+ALTER PUBLICATION supabase_realtime ADD TABLE messages;
+ALTER PUBLICATION supabase_realtime ADD TABLE submissions;
+ALTER PUBLICATION supabase_realtime ADD TABLE disputes;
+ALTER PUBLICATION supabase_realtime ADD TABLE events;
+```
 
-## Appendix A — Screenshot gallery
+---
 
-Embed-ready PNGs (relative path from this file). Drag into Notion, or paste images one at a time when importing.
+> Related: [Architecture](./03-architecture) · [Scripts & Tests](./14-scripts) · [Limitations](./10-limitations)
 
-![Tessera homepage on desktop — hero, bridge widget, system status strip.](images/01-home-desktop.png)
+---
 
-![Bridge widget — direction selector, amount, recipient, primary action.](images/02-bridge-widget-desktop.png)
+## Scripts & Tests
 
-![Operator dashboard — relayer cards, bond balances, recent submissions, system stats.](images/03-dashboard-desktop.png)
+Tessera ships with three families of scripts: **tests** (CI gates), **deploys** (one-shot, idempotent), and **scenarios** (the four hackathon demos). Every file in this section is real and pinned to its path; CI runs the test commands on every push.
 
-![Demo Control panel — four scenario buttons, live event log with run separators.](images/04-demo-desktop.png)
+---
 
-![In-app documentation route at /docs.](images/05-docs-desktop.png)
+## Test Commands
 
-![Benchmark page — end-to-end performance metrics.](images/06-benchmark-desktop.png)
+| Layer | Command | What it covers |
+|-------|---------|----------------|
+| Solidity | `cd contracts-evm && forge test` (88 tests) | Solidity contracts: unit + integration + scenarios + proof verification fixtures |
+| Solidity coverage | `cd contracts-evm && forge coverage` (~91% line coverage) | Coverage report; gating value pre-merge |
+| CosmWasm | `cd contracts-cosmwasm && cargo test --workspace` (full workspace) | CosmWasm contracts via cw-multi-test, including the four demo scenarios |
+| CosmWasm lint | `cd contracts-cosmwasm && cargo clippy -- -D warnings` (zero warnings) | Lint gate |
+| Go relayer | `cd relayer && go test -race ./...` (all packages) | Includes 100× determinism tests on transform layer + Ed25519 forgery test |
 
-![Submission detail — proof inspector, source/destination tx hashes, cryptographic roadmap.](images/07-submission-detail-desktop.png)
+---
 
-![Homepage on iPhone 11.](images/08-home-mobile.png)
+## Test File Map
 
-![Bridge widget on iPhone 11 — single-column layout.](images/09-bridge-widget-mobile.png)
+| File | What it tests |
+|------|---------------|
+| `contracts-evm/test/unit/Verifier.t.sol` | submitMessage / challenge / executeMessage state machine; custom errors; access control |
+| `contracts-evm/test/unit/Bond.t.sol` | deposit / slash / withdraw; threshold ladder (50% / 25%); CEI compliance |
+| `contracts-evm/test/integration/VerifierProof.t.sol` | Real proof bytes (TesseraProof wire format); flags=0 accept, flags=1 reject |
+| `contracts-evm/test/integration/BridgeScenarios.t.sol` | S-1 through S-4 end-to-end on a forked Foundry harness |
+| `contracts-cosmwasm/contracts/verifier/src/tests/scenarios.rs` | CosmWasm side of the four scenarios (mirror of Solidity) |
+| `relayer/internal/transform/transform_test.go` | 35 fixtures · cross-impl parity · 100× byte-identical determinism · msgId derivation |
+| `relayer/plugins/tendermint/plugin_test.go` | Ed25519 verify-then-bypass; forged signature reordered to legitimate slot — still rejected |
+| `relayer/internal/scenario/runner_test.go` | In-process scenario runner used by `go run ./cmd/tessera test-scenario [1..4]` |
 
-![Dashboard on iPhone 11.](images/10-dashboard-mobile.png)
+---
 
-![Demo control panel on iPhone 11.](images/11-demo-mobile.png)
+## Deployment Scripts
+
+| Script | Chain | Purpose |
+|--------|-------|---------|
+| `contracts-evm/script/Deploy.s.sol` | Sepolia | Foundry script — deploys all 6 EVM contracts with circular-dep break (Verifier setVerifier) |
+| `scripts/deploy/sepolia.sh` | Sepolia | Wrapper that runs Deploy.s.sol with broadcast + verifies on Etherscan |
+| `scripts/deploy/neutron.js` | Neutron pion-1 | CosmJS script — uploads + instantiates all 6 CosmWasm contracts; updates addresses.json |
+| `scripts/register-sepolia-relayers.sh` | Sepolia | Registers + funds bond for Relayer A and B (post-deploy bootstrap) |
+| `scripts/register-neutron-relayers.js` | Neutron | Registers + funds bond on Neutron side |
+| `scripts/fund-all-neutron-v2.js` | Neutron | One-pass funding for all Neutron wallets (relayers + dev wallets) with tUSDC + uNTRN |
+| `scripts/claim-neutron-tusdc.js` | Neutron | CLI claim helper for `tUSDC.Claim{}` — used during onboarding/QA |
+| `scripts/smoke-test.sh` | both | End-to-end smoke: register both relayers, post bond, run honest scenario, verify execution |
+| `scripts/addresses.json` | both | Machine-readable contract address registry; updated by every deploy script |
+
+---
+
+## Scenario Scripts (Live Testnet)
+
+The four hackathon scenarios run against real testnet contracts. Each script is idempotent — it re-uses bonded relayers and produces a unique nonce. They mirror the in-process integration tests under `relayer/internal/scenario`.
+
+| Script | Scenario | What it proves |
+|--------|----------|----------------|
+| `scripts/scenarios/01-honest.sh` | S-1 Honest delivery | Cryptographic verification path is wired correctly end-to-end |
+| `scripts/scenarios/02-lying.sh` | S-2 Lying relayer | Challenger detects bad fingerprint → 50% slash to challenger |
+| `scripts/scenarios/03-silent.sh` | S-3 Silent relayer | Handover triggers next relayer; original slashed for absence |
+| `scripts/scenarios/04-frivolous.sh` | S-4 Frivolous challenge | 25% deposit forfeited; original tx proceeds normally |
+
+> The in-process equivalent (no testnet funds required) is `go run ./cmd/tessera test-scenario [1..4]`.
+
+---
+
+## Verification Suite (Playwright)
+
+Three end-to-end UI suites guard the demo path. They live under `scripts/verify/` and require the dev server running on `:3000`:
+
+- `scripts/verify/ui-verify.py` — homepage, dashboard, demo, submission detail, and explorer-link format checks. Includes SEC-02 same-origin guard (deny no-Origin POST → 403).
+- `scripts/verify/demo-verify.py` — demo page UX: page-load scroll position, log-container scroll behavior, Clear-Log button, run separators.
+- `scripts/verify/docs-mermaid-verify.py` — every section in `/docs` renders its expected Mermaid diagrams without parse errors.
+
+UI + demo suites pass 11/11 as of P-10 audit gate close; the docs suite passes 9/9 as of the documentation overhaul. They are check-in suites, not replacements for unit tests.
+
+---
+
+> Related: [Demo Scenarios](./05-demo-scenarios) · [Developer Guide](./07-developer-guide) · [Repo Structure](./06-repo-structure)
+
+---
+
+## Cryptography Deep-Dive
+
+The core cryptographic problem Tessera solves: Ethereum and Cosmos use fundamentally different data structures for their state proofs, and use different hash functions to anchor them. The transformation layer bridges them deterministically — without requiring either chain to understand the other's format and without a trusted oracle. This section walks through every cryptographic primitive in the system, what it commits to, and how each piece is verified.
+
+---
+
+## The Four Cryptographic Primitives In Play
+
+| Primitive | Used by | Where verified | Why it matters |
+|-----------|---------|----------------|----------------|
+| `Keccak-256` | Ethereum (Patricia node hashing) | On-chain in Solidity Verifier (~36 gas/byte) | Anchors Ethereum state root |
+| `SHA-256` | Cosmos (IAVL node hashing, Tendermint hashing) | On-chain in CosmWasm Verifier (precompile) | Anchors Tendermint app state root |
+| `RLP` | Ethereum (proof node encoding) | Solidity Verifier walks Patricia nodes | Deterministic byte encoding for Patricia |
+| `Ed25519` | Tendermint (block validator signatures) | Off-chain in Go (verify-then-bypass) | EVM cost for on-chain Ed25519: prohibitive |
+
+---
+
+## Patricia Merkle Trie — Ethereum Side
+
+Ethereum state is stored in a Modified Merkle Patricia Trie. Proofs are a sequence of RLP-encoded nodes — Branch (16 children + value), Extension (compressed nibble path), and Leaf (terminal value). Every node is hashed with Keccak-256. The root is committed in each block header.
+
+```mermaid
+flowchart TD
+    R["block.stateRoot<br/>(in Sepolia block header)"]
+    R --> A["account proof (Patricia)<br/>RLP nodes, Keccak-256"]
+    A --> AccLeaf["Account leaf<br/>balance | nonce | codeHash | storageRoot"]
+    AccLeaf --> SR["account.storageRoot"]
+    SR --> S["storage proof (Patricia)<br/>RLP nodes, Keccak-256"]
+    S --> SLeaf["Storage leaf<br/>(slot, value)"]
+```
+
+The verifier walks the path from leaf to root, hashing each step with Keccak-256, and asserts the final hash equals the on-chain `block.stateRoot`.
+
+---
+
+## IAVL Tree — Cosmos Side
+
+Cosmos chains use an IAVL+ tree (a self-balancing AVL Merkle tree) for module-store proofs. Nodes are encoded with Protobuf and hashed with SHA-256. The IAVL root is included in the Tendermint commit hash, which is signed by the validator set.
+
+```mermaid
+flowchart TD
+    H["block.AppHash<br/>(in Tendermint header)"]
+    H --> M["multi-store commit hash<br/>SHA-256"]
+    M --> S["wasm module store root<br/>SHA-256"]
+    S --> I["IAVL inner nodes<br/>(Protobuf)"]
+    I --> L["IAVL leaf<br/>(key, value)"]
+```
+
+The verifier reconstructs the path from leaf to root, hashing with SHA-256, and asserts the final hash matches the AppHash committed in the block.
+
+---
+
+## Deterministic Transformation — The Byte-Identity Claim
+
+The transformation between Patricia and IAVL is a *pure function of the input proof and the input fingerprint*. The same input always produces the same output byte-for-byte — a property called **determinism**. This is the load-bearing security claim: it's what makes fraud detectable.
+
+```mermaid
+flowchart LR
+    SP["source proof<br/>e.g. Patricia / RLP / Keccak-256"]
+    PARSE["parse → canonical AST<br/>(no hash function)"]
+    BUILD["re-encode → target format<br/>e.g. IAVL / Protobuf / SHA-256"]
+    DP["destination proof<br/>+ transformedRoot"]
+    SP --> PARSE
+    PARSE --> BUILD
+    BUILD --> DP
+
+    CHK["challenger replays<br/>same input → same bytes"]
+    SP -.->|same input| CHK
+    DP -.->|byte-equal| CHK
+```
+
+The relayer parses the source proof into a chain-neutral canonical AST, then re-encodes it for the target. Any party can replay this — that's the security property.
+
+The acceptance test for the transform layer is exactly this: 100 independent runs on the same input produce 100 byte-identical outputs. The test fixture lives in `relayer/internal/transform/transform_test.go` (35 fixtures, including cross-implementation parity at 100×).
+
+> Both proofs commit to the same logical claim: *"Vault contract storage slot 0x4 has value 100,000,000 at block N"* — anchored differently for each chain's native verification path.
+
+**Why this enables challenge:** the submitter posts `(envelope, transformedRoot, destinationProof)`. Any other relayer can fetch the source proof, re-run the transform, and check whether the submitter's `transformedRoot` matches. If it does, the submission stands. If it doesn't, anyone can call `challenge(...)` with the correct fingerprint and slash 50% of the submitter's bond.
+
+---
+
+## Ed25519 Bypass — The Off-Chain Verification Path
+
+Tendermint validators sign block commits with Ed25519. Verifying one Ed25519 signature on the EVM costs roughly 500k gas; verifying 2/3+ of a typical Cosmos validator set (Neutron pion-1 testnet runs dozens; Cosmos Hub mainnet runs ~150) is not economically viable. Tessera sidesteps this by verifying the entire validator set off-chain in Go, using the production cometbft library, before submitting anything to Sepolia.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant TM as Tendermint block<br/>(Neutron)
+    participant R as Go Relayer<br/>(off-chain)
+    participant SR as Verifier<br/>(Sepolia)
+
+    TM->>R: header + commit + ValidatorSet
+    Note over R: cometbft.NewValidatorSet(vals)<br/>.VerifyCommit(chainID, blockID, height, commit)
+    Note over R: validates ≥ 2/3 voting-power Ed25519 signatures
+    alt all sigs valid
+        R->>R: TranslateProofTo(EVM) — IAVL → Patricia
+        R->>SR: submitMessage(envelope, transformedRoot, Patricia proof)
+        Note over SR: walks Patricia with Keccak-256<br/>NEVER touches Ed25519
+    else any sig invalid
+        R-->>R: drop submission
+    end
+```
+
+The Go relayer is the only place Ed25519 is touched. Sepolia only ever sees Patricia (Keccak-256) — a primitive its precompile already supports.
+
+The hostile-input test for this lives in `relayer/plugins/tendermint/plugin_test.go` (function `TestVerifyConsensusUnit`): a forged signature reordered to the exact slot a legitimate validator occupies is *still rejected* because cometbft's `NewValidatorSet` sorts by (voting power desc, address asc) before `VerifyCommit` runs. This is the subtle bug class the test prevents.
+
+---
+
+## Message ID Derivation
+
+Every cross-chain message has a stable ID — the `msgId` — that's the same on both chains. It's derived from the canonical envelope so that *both* chains compute the identical 32-byte ID without any cross-chain lookup. The Solidity Verifier and the CosmWasm Verifier each compute it independently and check equality on execution.
+
+```
+msgId = keccak256(
+    abi.encode(
+        envelope.sourceChainId,
+        envelope.sourceApp,
+        envelope.destinationChainId,
+        envelope.destinationApp,
+        envelope.action,
+        envelope.payload,
+        envelope.nonce
+    )
+)
+
+// Sepolia: Verifier._envelopeHash() — same encoding
+// Neutron: cosmwasm verifier::msg_id() — same encoding
+// Test:    relayer/internal/transform/transform_test.go
+//          (TestVerify_WrongMsgID + cross-impl parity fixtures)
+```
+
+The nonce is monotonic per `(sourceChain, sourceApp)`, preventing replay across messages. Replay against a different `destinationApp` is impossible: the `destinationApp` field is inside the hash. Replay across chains is impossible: chain IDs are inside the hash.
+
+---
+
+## Verification Claim — What We Actually Prove
+
+1. **Source-event integrity.** The destination chain only executes a message after Merkle-walking a proof against its own native commitment. If the source event didn't happen, the proof doesn't exist and the walk fails.
+
+2. **Validator-set authenticity (Cosmos→EVM).** The Go relayer verifies 2/3+ of the validator set signed the block before the relayer is willing to vouch for the source root. Forged or reordered signatures are rejected by cometbft's reference VerifyCommit.
+
+3. **Transform integrity.** Determinism makes the transform a verifiable computation: any honest relayer can re-run it and reach byte-identical output. A wrong `transformedRoot` is a publicly slashable event.
+
+4. **Replay resistance.** The msgId binds chain IDs, app addresses, action selector, payload, and nonce. The Verifier rejects an already-executed msgId. Cross-chain and within-chain replay both fail.
+
+5. **Source consensus on Sepolia (limitation L-1).** For Sepolia→Neutron, the relayer trusts its configured Sepolia RPC. Mitigation: integrate sync committee verification (Beacon BLS aggregation). Pure off-chain Go change; documented in the roadmap.
+
+---
+
+> Related: [Architecture](./03-architecture) · [Limitations](./10-limitations) · [Future Work](./11-future-work)
+
+---
+
+## Appendix A — Screenshot Gallery
+
+All UI screenshots are tracked in `docs/images/`. The desktop captures are 1400×900; mobile captures are 414×900 (iPhone 11 viewport).
 
 
-## Appendix B — How this page is maintained
+![01-home-desktop](./images/01-home-desktop.png)
 
-- Source files: `docs/00-pm-brief.mdx`, `docs/03-architecture.mdx`, `docs/12-technical-decisions.mdx`, `docs/post-hackathon-roadmap.md`, `docs/reflection.md`.
-- Re-generate by running the consolidation script that produced this file.
-- Audit findings live in `docs/audit-findings.md`; this page references them but does not duplicate.
-- Live demo URL is intentionally a `<LIVE_URL>` placeholder — operator fills in once Vercel deploy lands.
+
+![02-bridge-widget-desktop](./images/02-bridge-widget-desktop.png)
+
+
+![03-dashboard-desktop](./images/03-dashboard-desktop.png)
+
+
+![04-demo-desktop](./images/04-demo-desktop.png)
+
+
+![05-docs-desktop](./images/05-docs-desktop.png)
+
+
+![06-benchmark-desktop](./images/06-benchmark-desktop.png)
+
+
+![07-submission-detail-desktop](./images/07-submission-detail-desktop.png)
+
+
+![08-home-mobile](./images/08-home-mobile.png)
+
+
+![09-bridge-widget-mobile](./images/09-bridge-widget-mobile.png)
+
+
+![10-dashboard-mobile](./images/10-dashboard-mobile.png)
+
+
+![11-demo-mobile](./images/11-demo-mobile.png)
+
+
+---
+
+## Appendix B — How This File Is Maintained
+
+This single-file export is the canonical Notion-paste artefact. It is regenerated by `/tmp/build-notion-export.py` (kept out of git — it's a one-shot tool) by stitching every MDX file in `docs/sidebar.json` order. After running the script:
+
+1. Open https://www.notion.so/Tessera-35a23e3815fc81a08b60c8fd039ba123
+2. Replace the page body with the contents of this file
+3. Notion auto-renders the ```mermaid code blocks as diagrams
+4. Notion auto-renders relative `./images/*.png` references — drag the image folder into Notion if needed

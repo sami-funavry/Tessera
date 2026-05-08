@@ -43,19 +43,47 @@ Every cross-chain message uses a canonical envelope with a `destinationApp` fiel
 
 ## At a Glance
 
-```
-Sepolia (EVM)                    Go Relayer × 2               Neutron (CosmWasm)
-─────────────────                ──────────────               ──────────────────
-BridgeVault.lock()  ──Locked──▶  fetch Patricia proof         Verifier.submitMessage()
-                                 transform → IAVL             BridgeMint.mint()
-                                 verify Ed25519 ✓
-                                 submit to Neutron ──────────▶
-
-BridgeVault.release() ◀──────── transform → Patricia         BridgeMint.burn() ──Burned──▶
-                                 submit to Sepolia ◀──────────
+```mermaid
+flowchart LR
+    subgraph SEP["Sepolia (EVM)"]
+        SV["BridgeVault<br/>(lock/release)"]
+        SR["Verifier"]
+        ST["tUSDC ERC-20"]
+        SB["Bond + Registry"]
+    end
+    subgraph REL["Go Relayer × 2"]
+        EP["EthereumPlugin"]
+        XF["transform layer<br/>Patricia ↔ IAVL"]
+        TP["TendermintPlugin"]
+        DB[("Supabase<br/>state/realtime")]
+    end
+    subgraph NEU["Neutron (CosmWasm)"]
+        NV["Verifier"]
+        NM["BridgeMint<br/>(mint/burn)"]
+        NT["tUSDC CW20"]
+        NB["Bond + Registry"]
+    end
+    SV -- "Locked" --> EP
+    NM -- "Burned" --> TP
+    EP <--> XF
+    TP <--> XF
+    EP -- "submitMessage" --> SR
+    TP -- "submitMessage" --> NV
+    SR --> SV
+    NV --> NM
+    EP --> DB
+    TP --> DB
 ```
 
 > **Deep dive:** [Architecture](./03-architecture) covers the full component map, proof pipeline, and message envelope format.
+
+---
+
+## External Documentation
+
+The full Notion submission doc lives at: **https://www.notion.so/Tessera-35a23e3815fc81a08b60c8fd039ba123**
+
+It mirrors this in-app guide and adds the PM brief, technical decisions, post-hackathon roadmap, and Form-2 reflection.
 
 ---
 

@@ -11,23 +11,39 @@ slug: "architecture"
 
 ## System Components
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Tessera System                              │
-│                                                                     │
-│  Sepolia (EVM)            Go Relayer × 2        Neutron (CosmWasm) │
-│  ──────────────           ─────────────         ────────────────── │
-│  RelayerRegistry   ◀────  bond / register ────▶  RelayerRegistry   │
-│  Bond              ◀────  deposit / slash  ────▶  Bond              │
-│  Verifier          ◀────  submit / challenge ──▶  Verifier          │
-│  BridgeVault             EthereumPlugin           BridgeVault       │
-│  BridgeMint              TendermintPlugin         BridgeMint        │
-│  tUSDC (ERC20)           Transform Layer          tUSDC (CW20)      │
-│                          Supabase (state)                           │
-│                                                                     │
-│                        Next.js Frontend                             │
-│                        (reads Supabase)                             │
-└─────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph SEP["Sepolia (EVM)"]
+        SV["BridgeVault<br/>(lock/release)"]
+        SR["Verifier"]
+        ST["tUSDC ERC-20"]
+        SB["Bond + Registry"]
+    end
+
+    subgraph REL["Go Relayer × 2"]
+        EP["EthereumPlugin"]
+        XF["transform layer<br/>Patricia ↔ IAVL"]
+        TP["TendermintPlugin"]
+        DB[("Supabase<br/>state/realtime")]
+    end
+
+    subgraph NEU["Neutron (CosmWasm)"]
+        NV["Verifier"]
+        NM["BridgeMint<br/>(mint/burn)"]
+        NT["tUSDC CW20"]
+        NB["Bond + Registry"]
+    end
+
+    SV -- "Locked" --> EP
+    NM -- "Burned" --> TP
+    EP <--> XF
+    TP <--> XF
+    EP -- "submitMessage" --> SR
+    TP -- "submitMessage" --> NV
+    SR --> SV
+    NV --> NM
+    EP --> DB
+    TP --> DB
 ```
 
 ---
@@ -55,58 +71,46 @@ The same logical contract set deploys on every supported chain. Solidity on EVM;
 
 ### Sepolia → Neutron
 
-```
-1. User calls BridgeVault.lock() on Sepolia
-        ↓
-2. Relayer observes Locked event
-        ↓
-3. EthereumPlugin.FetchProof()
-   → eth_getProof (storage proof, Patricia / Keccak-256 / RLP)
-        ↓
-4. VerifyConsensus() — RPC trust (documented limitation; see §10)
-        ↓
-5. TranslateProofTo(targetChainType=Tendermint)
-   Patricia (Keccak-256/RLP) → IAVL (SHA-256/Protobuf)
-   Deterministic. Byte-identical for same input.
-        ↓
-6. TendermintPlugin.SubmitMessage()
-   → Verifier.submitMessage(envelope, transformedRoot, IAVLproof)
-        ↓
-7. Challenge window: 60s
-   Challenger independently replicates steps 3–5.
-   On mismatch → challenge(). On match → stand down.
-        ↓
-8. executeMessage() (anyone callable after window)
-   Verifier walks IAVL proof with SHA-256.
-   On valid → IApp(destinationApp).onCrossChainMessage(...)
-        ↓
-9. BridgeMint.mint() → user receives tUSDC on Neutron
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant SV as BridgeVault<br/>(Sepolia)
+    participant R as Relayer<br/>(Go)
+    participant NV as Verifier<br/>(Neutron)
+    participant NM as BridgeMint<br/>(Neutron)
+
+    U->>SV: lock(amount, recipient, dest)
+    SV-->>R: Locked event
+    Note over R: eth_getProof<br/>Patricia / Keccak-256 / RLP
+    Note over R: VerifyConsensus<br/>(RPC trust — limitation L-1)
+    Note over R: TranslateProofTo(Tendermint)<br/>deterministic — byte-identical replay
+    R->>NV: submitMessage(envelope, root, IAVL proof)
+    Note over NV: 60s challenge window<br/>any relayer can dispute
+    NV->>NM: executeMessage → onCrossChainMessage
+    NM-->>U: tUSDC minted (6 decimals)
 ```
 
 ### Neutron → Sepolia (Ed25519 bypass)
 
-```
-1. User calls BridgeMint.burn() on Neutron
-        ↓
-2. Relayer observes Burned event
-        ↓
-3. TendermintPlugin.FetchProof()
-   → ABCI query (IAVL proof, SHA-256/Protobuf)
-        ↓
-4. VerifyConsensus()
-   → cometbft.NewValidatorSet.VerifyCommit()
-   → validates 2/3+ Ed25519 validator signatures off-chain in Go
-   ← EVM never sees Ed25519
-        ↓
-5. TranslateProofTo(targetChainType=EVM)
-   IAVL (SHA-256/Protobuf) → Patricia (Keccak-256/RLP)
-        ↓
-6. EthereumPlugin.SubmitMessage()
-   → Verifier.submitMessage(envelope, transformedRoot, patriciaProof)
-        ↓
-7–9. Same challenge + execute flow as above (Solidity Verifier walks Patricia proof)
-        ↓
-9. BridgeVault.release() → user receives tUSDC on Sepolia
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant NM as BridgeMint<br/>(Neutron)
+    participant R as Relayer<br/>(Go)
+    participant SR as Verifier<br/>(Sepolia)
+    participant SV as BridgeVault<br/>(Sepolia)
+
+    U->>NM: burn(amount, recipient)
+    NM-->>R: Burned event
+    Note over R: ABCI query<br/>IAVL / SHA-256 / Protobuf
+    Note over R: VerifyConsensus<br/>cometbft.NewValidatorSet.VerifyCommit()<br/>2/3+ Ed25519 sigs validated in Go
+    Note over R: TranslateProofTo(EVM)<br/>IAVL → Patricia (deterministic)
+    R->>SR: submitMessage(envelope, root, Patricia proof)
+    Note over SR: 60s challenge window<br/>EVM walks Patricia (Keccak-256)
+    SR->>SV: executeMessage → onCrossChainMessage
+    SV-->>U: tUSDC released (18 decimals)
 ```
 
 ---
@@ -134,7 +138,7 @@ The `destinationApp` field is what makes the system application-agnostic — any
 
 ## Relayer Plugin Model
 
-The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/tessera-bridge/tessera/blob/main/relayer/internal/chain/plugin.go). The interface below is copied verbatim:
+The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/sami-funavry/Tessera/blob/main/relayer/internal/chain/plugin.go). The interface below is copied verbatim:
 
 ```go
 type Plugin interface {
