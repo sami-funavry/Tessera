@@ -7,6 +7,8 @@ slug: "overview"
 
 # Overview
 
+![Tessera homepage showing the bridge widget, hero copy, and live system status.](./images/01-home-desktop.png)
+
 Tessera is a trust-minimized cross-chain infrastructure layer. It moves assets and arbitrary messages between EVM and Cosmos chains without trusting any relay operator, running any ZK prover, or doing on-chain Ed25519 verification.
 
 The first reference application is a bidirectional **tUSDC bridge** between Sepolia (Ethereum testnet) and Neutron (Cosmos / CosmWasm testnet).
@@ -54,3 +56,21 @@ BridgeVault.release() ◀──────── transform → Patricia        
 ```
 
 > **Deep dive:** [Architecture](./03-architecture) covers the full component map, proof pipeline, and message envelope format.
+
+---
+
+## Quick Start
+
+```bash
+cp .env.example .env             # then fill in keys
+cd contracts-evm && forge install && forge test
+cd ../relayer && go build ./...
+go run ./cmd/tessera test-scenario mock   # in-process dry run, no funds needed
+# Live demo: <LIVE_URL>
+```
+
+Operator: replace `<LIVE_URL>` with the deployed frontend URL before submission.
+
+The bridge widget is the primary user-facing surface, designed to work identically on desktop and mobile:
+
+![Bridge widget on mobile (iPhone 11) — direction selector, amount, recipient, single primary action.](./images/09-bridge-widget-mobile.png)

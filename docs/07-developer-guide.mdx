@@ -20,25 +20,28 @@ slug: "developer-guide"
 | Node.js + pnpm | ≥ 20 / ≥ 9 | Frontend |
 | `neutrond` CLI | v4.x | Neutron transactions |
 
-Required environment variables — copy `.env.example` to `.env` and fill in:
+All runtime configuration is via environment variables. There is no YAML config file — `cp .env.example .env` and fill in the values; the relayer reads them directly.
 
-```bash
-# RPC endpoints
-SEPOLIA_RPC_URL=<alchemy or infura URL>
-NEUTRON_RPC_URL=https://rpc-palvus.pion-1.ntrn.tech:443
+The canonical list is `.env.example` at the repo root. The variables the running relayer actually reads (per `relayer/internal/config/config.go`):
 
-# Deployer keys (never commit)
-DEPLOYER_PRIVATE_KEY_SEPOLIA=<hex>
-DEPLOYER_MNEMONIC_NEUTRON=<12 or 24 words>
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `ETHEREUM_SEPOLIA_ENDPOINT` | yes | Sepolia JSON-RPC URL (Alchemy / Infura / self-hosted) |
+| `NEUTRON_RPC_URL` | yes | Neutron Tendermint RPC |
+| `NEUTRON_GRPC_URL` | yes | Neutron gRPC endpoint (used for some Cosmos queries) |
+| `NEUTRON_REST_URL` | yes | Neutron REST / LCD endpoint |
+| `NEUTRON_CHAIN_ID` | yes | `pion-1` for testnet |
+| `RELAYER_PRIVATE_KEY` | yes | The running relayer's hex secp256k1 key (no `0x` prefix). Same key signs both Sepolia and Neutron txs. |
+| `SUPABASE_PROJECT_URL` | yes | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | yes | Service-role key (server-side only) |
+| `ETHERSCAN_API_KEY` | yes | Used by Foundry for source verification |
+| `ETHERSCAN_API_URL` | yes | e.g. `https://api-sepolia.etherscan.io/api` |
+| `SEPOLIA_DEPLOYER_PRIVATE_KEY` | deploy only | Hex key used by `forge script Deploy.s.sol` |
+| `NEUTRON_DEPLOYER_PRIVATE_KEY` | deploy only | Hex key used by Neutron deploy + `bond fund-neutron` |
+| `RELAYER_A_PRIVATE_KEY` / `RELAYER_B_PRIVATE_KEY` | scripts only | Read by `scripts/register-relayers.sh` to register both relayers in one shot. The running daemon ignores these. |
+| `SEPOLIA_*` / `NEUTRON_*` contract addresses | optional | Override `scripts/addresses.json`. Most operators leave unset. |
 
-# Relayer keys
-RELAYER_A_PRIVATE_KEY=<hex>
-RELAYER_B_PRIVATE_KEY=<hex>
-
-# Supabase
-SUPABASE_URL=<project URL>
-SUPABASE_SERVICE_KEY=<service role key>
-```
+To run a second relayer instance, set `RELAYER_PRIVATE_KEY` to the second key and rerun the binary in another terminal — there are no per-instance config files.
 
 ---
 
@@ -124,42 +127,66 @@ Requires `.env` populated and contracts deployed (addresses in `scripts/addresse
 cd relayer
 
 # Run Relayer A
-go run ./cmd/relayer relayer --config configs/relayer-a.yaml
+RELAYER_PRIVATE_KEY=<A_KEY> go run ./cmd/tessera relayer
 
-# Run Relayer B (separate terminal)
-go run ./cmd/relayer relayer --config configs/relayer-b.yaml
+# Run Relayer B (separate terminal — reuses the same .env, but RELAYER_PRIVATE_KEY is overridden)
+RELAYER_PRIVATE_KEY=<B_KEY> go run ./cmd/tessera relayer
 
-# Check bond status
-go run ./cmd/relayer bond status --config configs/relayer-a.yaml
+# Check bond status (currently prints a hint; use the block explorer for now)
+go run ./cmd/tessera bond status
 
-# Manually fetch and decode a proof (debugging)
-go run ./cmd/relayer fetch --tx <tx-hash> --chain sepolia
+# Inspect a chain at a given block (debugging)
+go run ./cmd/tessera fetch --chain sepolia --block 0
+go run ./cmd/tessera fetch --chain neutron --block 0 --transform
 ```
+
+To run a second relayer instance, set `RELAYER_PRIVATE_KEY` to the second key (inline as above, or via a second `.env`) and rerun.
 
 ---
 
 ## Running Demo Scenarios
 
+These run as in-process simulations. For testnet runs, see `scripts/scenarios/0N-*.sh`.
+
 ```bash
-# Each reads on-chain rotation state to assign roles dynamically
-go run ./cmd/relayer test-scenario s1-honest    --config configs/relayer-a.yaml
-go run ./cmd/relayer test-scenario s2-lying     --config configs/relayer-a.yaml
-go run ./cmd/relayer test-scenario s3-silent    --config configs/relayer-a.yaml
-go run ./cmd/relayer test-scenario s4-frivolous --config configs/relayer-a.yaml
+# In-process simulations — no funds required
+go run ./cmd/tessera test-scenario mock   # pipeline dry run, no scenario logic
+go run ./cmd/tessera test-scenario 1      # S-1 Honest
+go run ./cmd/tessera test-scenario 2      # S-2 Lying
+go run ./cmd/tessera test-scenario 3      # S-3 Silent
+go run ./cmd/tessera test-scenario 4      # S-4 Frivolous
 ```
+
+The matching shell scripts at `scripts/scenarios/01-honest.sh`, `02-lying.sh`, `03-silent.sh`, and `04-frivolous.sh` exercise the same scenarios against live Sepolia + Neutron testnets.
 
 ---
 
 ## Adding a New Chain Plugin
 
-1. Create `relayer/plugins/<chain-name>/plugin.go`
-2. Implement `chain.ChainPlugin` interface (all methods required — see `internal/chain/plugin.go`)
-3. Register with a unique key in `cmd/relayer/main.go`:
+1. Create `relayer/plugins/<chain-name>/plugin.go`.
+2. Implement the `chain.Plugin` interface — every method is required. The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/tessera-bridge/tessera/blob/main/relayer/internal/chain/plugin.go); read it before writing any plugin code. The 13 methods are:
+
    ```go
-   pluginRegistry.Register("polygon", polygon.New)
+   type Plugin interface {
+       ChainID() string
+       LatestBlock(ctx context.Context) (uint64, error)
+       FetchBlockFingerprint(ctx context.Context, height uint64) (Fingerprint, error)
+       FetchProof(ctx context.Context, event Event, height uint64) (Proof, error)
+       VerifyConsensus(ctx context.Context, height uint64) error
+       SubscribeEvents(ctx context.Context, fromBlock uint64) (<-chan Event, error)
+       TranslateProofTo(proof Proof, destChainID string) (Proof, error)
+       SubmitMessage(ctx context.Context, env MessageEnvelope, proof Proof) (txHash string, submissionID [32]byte, err error)
+       ExecuteMessage(ctx context.Context, submissionID [32]byte, proof Proof) (string, error)
+       SubmitChallenge(ctx context.Context, submissionID [32]byte, counterProof Proof) (string, error)
+       ClaimAbsenceSlash(ctx context.Context, submissionID [32]byte) (string, error)
+       Register(ctx context.Context, pubKeyBytes []byte) (string, error)
+       DepositBond(ctx context.Context, amount string) (string, error)
+   }
    ```
-4. Add chain config block to the relayer YAML (see `R-85` in SPEC.md for schema)
-5. Run `go test -race ./plugins/<chain-name>/...`
+
+3. Wire it up in `internal/cli/root.go` (the `relayer`, `bond`, and `fetch` subcommands construct the existing `ethereum` and `tendermint` plugins from env-var config — add your plugin alongside them).
+4. Add the env-vars your plugin needs to `internal/config/config.go` and `.env.example`. There is no YAML config; everything is env-var driven.
+5. Run `go test -race ./plugins/<chain-name>/...`.
 
 The proof transformation layer (`internal/transform/`) handles both directions automatically. The plugin only needs to know how to fetch and submit in its chain's native format.
 
@@ -225,6 +252,26 @@ No changes to Verifier, Bond, Registry, BridgeVault, or BridgeMint. Deploy the a
 Sepolia contracts are verified on Etherscan. Neutron contracts are verified on Celatone.
 
 - Etherscan Sepolia: `https://sepolia.etherscan.io/address/<address>`
-- Celatone Neutron pion-1: `https://testnet.celatone.com/pion-1/contracts/<address>`
+- Celatone Neutron pion-1: `https://neutron.celat.one/pion-1/contracts/<address>`
 
 > Full address list: [Repo Structure → Contract Addresses](./06-repo-structure#contract-addresses-deployed)
+
+---
+
+## Inspecting State
+
+The relayer mirrors observed events and submission state into a Supabase project. Schema migrations live in `supabase/migrations/` (`001_initial_schema.sql`, `002_indexes_and_constraints.sql`).
+
+- Supabase project URL: `<SUPABASE_PROJECT_URL>` (set in `.env`; the running deployment uses the URL configured by the operator).
+- Open the SQL editor in the Supabase dashboard and run ad-hoc queries against the project.
+
+A useful starting query:
+
+```sql
+select *
+from messages
+order by created_at desc
+limit 10;
+```
+
+This returns the most recently observed cross-chain messages with their current status, source/destination chain, and submission timestamps. Other tables (`submissions`, `events`, `relayers`, `bond_balances`) are joined on `message_id` / `submission_id` — see the migration files for the full schema.

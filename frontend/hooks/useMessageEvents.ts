@@ -81,7 +81,15 @@ export function useMessageEvents(nonce: number | null): HookState<EventRow[]> {
           });
         }
       )
-      .subscribe();
+      // Audit fix PROD-03: refetch on channel-error / timeout so the bridge
+      // widget proof roadmap doesn't freeze if the websocket drops.
+      .subscribe((status) => {
+        if (cancelled) return;
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[useMessageEvents] channel ${status} — refetching`);
+          initialFetch();
+        }
+      });
 
     return () => {
       cancelled = true;

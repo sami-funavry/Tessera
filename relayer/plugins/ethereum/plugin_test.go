@@ -65,11 +65,11 @@ func TestEthereumPluginPubKeyBytesNoKey(t *testing.T) {
 }
 
 // TestEthereumPluginIntegration fetches a real Sepolia block fingerprint.
-// Skipped unless ETHERUM_SEPOLIA_ENDPOINT is set in the environment.
+// Skipped unless ETHEREUM_SEPOLIA_ENDPOINT is set in the environment.
 func TestEthereumPluginIntegration(t *testing.T) {
-	rpcURL := os.Getenv("ETHERUM_SEPOLIA_ENDPOINT")
+	rpcURL := os.Getenv("ETHEREUM_SEPOLIA_ENDPOINT")
 	if rpcURL == "" {
-		t.Skip("ETHERUM_SEPOLIA_ENDPOINT not set — skipping integration test")
+		t.Skip("ETHEREUM_SEPOLIA_ENDPOINT not set — skipping integration test")
 	}
 
 	p := newTestPlugin(rpcURL)
@@ -91,9 +91,9 @@ func TestEthereumPluginIntegration(t *testing.T) {
 
 // TestEthereumPluginConsensusStubIntegration confirms VerifyConsensus returns nil even with a real RPC.
 func TestEthereumPluginConsensusStubIntegration(t *testing.T) {
-	rpcURL := os.Getenv("ETHERUM_SEPOLIA_ENDPOINT")
+	rpcURL := os.Getenv("ETHEREUM_SEPOLIA_ENDPOINT")
 	if rpcURL == "" {
-		t.Skip("ETHERUM_SEPOLIA_ENDPOINT not set — skipping integration test")
+		t.Skip("ETHEREUM_SEPOLIA_ENDPOINT not set — skipping integration test")
 	}
 
 	p := newTestPlugin(rpcURL)

@@ -98,20 +98,32 @@ User (Sepolia)
 
 Contract addresses:
 - Sepolia: `0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0`
-- Neutron: `neutron16ket7npnkekn76nzhfjauwkwsea49rssp9fkn7fyxu35fwavfrxqxp5qnz`
+- Neutron: `neutron1fw6unz7a9j4zf9gnvhup5qe6dlftytdc0y0rwyn3lyxdazz22rtsck0vld`
 
 ---
 
 ## UI
 
-> **Note:** The bridge UI is being built in Phase 9. This section will be expanded with wallet connection flow, live transaction visualization, and the Proof Inspector component when the frontend is complete.
+The bridge UI is the homepage of the live deployment. The same widget works on desktop and mobile; the steps below describe a full Sepolia → Neutron bridge using both wallets.
 
-The bridge will be accessible at the root route (`/`). Key UI elements:
-- Bridge widget with lock/burn form
-- MetaMask + Keplr wallet connect
-- Live transaction visualization (progress path fills as stages complete)
-- Proof Inspector (expandable, shows real cryptographic content per stage)
-- Transaction hash display with Etherscan / Celatone explorer links
+![Tessera homepage showing the bridge widget, hero copy, and live system status.](./images/01-home-desktop.png)
+
+1. **Connect wallets.** Connect MetaMask on Sepolia (chainId `11155111`) and Keplr on Neutron (`pion-1`). The widget shows both connection statuses and the active source/destination direction.
+2. **Click "Claim 1000 tUSDC".** First-time users click the claim button on the source chain. This triggers **MetaMask popup #1** — a `claim()` call on the tUSDC contract (no arguments, mints 1000 tUSDC to `msg.sender`, 24h cooldown). After confirmation your balance updates to 1000 tUSDC.
+3. **Enter the amount.** Type the amount you want to bridge into the widget's amount field. The recipient field auto-fills with the connected destination wallet; you can override it.
+4. **Click "Bridge".** On the very first bridge from this wallet, **MetaMask popup #2** asks you to approve `BridgeVault` to spend your tUSDC (`tUSDC.approve(BridgeVault, amount)`). This approval is one-time per wallet per direction.
+5. **Confirm the lock.** **MetaMask popup #3** is the actual `BridgeVault.lock(amount, "pion-1", neutronRecipient)` transaction. After confirmation, the source-chain lock is on-chain and the relayer picks up the `Locked` event.
+6. **Watch the curvy roadmap fill.** The bridge widget renders a progress roadmap that fills in as each stage completes — proof fetched, transformed, submitted, challenge window passed, executed. Each segment links to the corresponding transaction on Etherscan or Celatone.
+
+   ![Bridge widget close-up: from/to chain selectors, amount, recipient, primary Bridge action, and the curvy progress roadmap.](./images/02-bridge-widget-desktop.png)
+
+7. **Tokens appear in Keplr.** Once `executeMessage` runs on Neutron and `BridgeMint.mint` fires, the bridged tUSDC shows up in the connected Keplr wallet.
+
+The reverse direction (Neutron → Sepolia) is identical — flip the direction selector, sign the burn from Keplr, and watch the same roadmap drive the release on Sepolia.
+
+After a bridge is submitted, a per-submission detail page exposes the full cryptographic state: source and destination tx hashes, proof inspector with the raw fingerprint and Merkle path, route summary, and a Cryptographic Roadmap that walks every stage in order.
+
+![Submission detail page showing the proof inspector, source and destination tx hashes, route summary, and the Cryptographic Roadmap walkthrough.](./images/07-submission-detail-desktop.png)
 
 ---
 

@@ -178,11 +178,22 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
             ? Math.round((confirmedSubmissions / totalSubmissions) * 100)
             : 100;
 
-        const isOperating =
-          (sepoliaBond?.threshold_status === 'operating' ||
-            neutronBond?.threshold_status === 'operating') &&
-          sepoliaBond?.threshold_status !== 'deregistered' &&
-          neutronBond?.threshold_status !== 'deregistered';
+        // Audit fix UX-02: don't conflate "registered + bonded" with "actively
+        // submitting right now". Old logic flipped to `busy` whenever the bond
+        // was at the operating threshold, so both relayers permanently showed
+        // a pulsing amber "Submitting" badge. Now `busy` only fires when this
+        // relayer has a submission row inside the challenge window (pending /
+        // unconfirmed in the last `BUSY_WINDOW_MS`). Otherwise it's `idle`.
+        const BUSY_WINDOW_MS = 90_000;
+        const nowMs = Date.now();
+        const hasPendingSubmission = relayerSubmissions.some((s) => {
+          // SubmissionStatus enum: pending | confirmed | challenged | slashed.
+          // Only `pending` is in-flight from the relayer's POV.
+          if (s.status !== 'pending') return false;
+          const submittedAt = s.submitted_at ? Date.parse(s.submitted_at) : 0;
+          if (!submittedAt) return true; // missing timestamp → assume recent
+          return nowMs - submittedAt < BUSY_WINDOW_MS;
+        });
 
         const activityType: RelayerInfo['activityType'] = (() => {
           if (
@@ -195,7 +206,7 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
             neutronBond?.threshold_status === 'below_operating'
           )
             return 'benched';
-          if (isOperating) return 'busy';
+          if (hasPendingSubmission) return 'busy';
           return 'idle';
         })();
 
@@ -204,7 +215,7 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
           benched: 'Bond below operating threshold',
           deregistered: 'Deregistered',
           cooling: 'Cooling off',
-          idle: 'Idle',
+          idle: 'Watching',
         };
         const activity = ACTIVITY_LABELS[activityType];
 
@@ -407,7 +418,7 @@ export function useEventsRealtime(limit = 50): HookState<EventRow[]> {
     initialFetch();
 
     const channel = supabase
-      .channel('events-realtime')
+      .channel(`events-realtime-${Math.random().toString(36).slice(2)}`)
       .on<EventRow>(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'events' },
@@ -420,9 +431,24 @@ export function useEventsRealtime(limit = 50): HookState<EventRow[]> {
           });
         }
       )
-      .subscribe();
+      // Audit fix PROD-03: log channel-error / timeout and refetch on recovery.
+      .subscribe((status) => {
+        if (cancelled) return;
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[useEventsRealtime] channel ${status} — refetching`);
+          initialFetch();
+        }
+      });
+
+    function onVisibility() {
+      if (document.visibilityState === 'visible' && !cancelled) {
+        initialFetch();
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
       cancelled = true;
       supabase.removeChannel(channel);
     };

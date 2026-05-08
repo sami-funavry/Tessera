@@ -1,7 +1,8 @@
 # Cost Log
 
 > Tracks API spend per phase. Hard cap: $100/day. Soft cap: $75/day.
-> Model used: Claude Sonnet 4.6 (claude-sonnet-4-6) throughout unless noted.
+> P-0 → P-8 ran on Claude Sonnet 4.6 (claude-sonnet-4-6).
+> P-9 → P-10 ran on Claude Opus 4.7 (1M context, claude-opus-4-7) — escalation justified by the audit / multi-agent fan-out and the volume of cross-cutting fixes per phase.
 
 ---
 
@@ -10,18 +11,20 @@
 | Phase | Date | Model | Approx. tokens | Est. cost | Notes |
 |-------|------|-------|----------------|-----------|-------|
 | P-0 | 2026-05-07 | Sonnet | ~50k | ~$0.60 | Env setup, CI scaffold, Supabase schema |
-| P-1 | 2026-05-07 | Sonnet | ~180k | ~$2.16 | 6 Solidity contracts + 77 Foundry tests |
-| P-2 | 2026-05-07 | Sonnet | ~160k | ~$1.92 | 6 CosmWasm contracts + 28 cw-multi-test tests |
+| P-1 | 2026-05-07 | Sonnet | ~180k | ~$2.16 | 6 Solidity contracts + 88 Foundry tests |
+| P-2 | 2026-05-07 | Sonnet | ~160k | ~$1.92 | 6 CosmWasm contracts + cw-multi-test workspace |
 | P-3 | 2026-05-07 | Sonnet | ~120k | ~$1.44 | Go relayer skeleton + Ed25519 bypass |
 | P-4 | 2026-05-07 | Sonnet | ~140k | ~$1.68 | Transform layer + 35 determinism tests |
 | P-5 | 2026-05-08 | Sonnet | ~90k | ~$1.08 | Deploy to Sepolia + Neutron, verify |
 | P-6 | 2026-05-08 | Sonnet | ~100k | ~$1.20 | Relayer registration, honest path E2E |
 | P-7 | 2026-05-08 | Sonnet | ~150k | ~$1.80 | Challenger logic + 4 demo scenarios + security audit |
-| P-8 | 2026-05-08 | Sonnet | ~200k | ~$2.40 | Documentation (this phase) |
-| **Total P-0–P-8** | | | **~1.19M** | **~$14.28** | |
+| P-8 | 2026-05-08 | Sonnet | ~200k | ~$2.40 | Documentation midway checkpoint |
+| P-9 | 2026-05-08 | Opus 4.7 | ~280k | ~$10.50 | Frontend live data wiring, bridge bugfixes, demo-log polish |
+| P-10 | 2026-05-08 | Opus 4.7 | ~180k | ~$6.75 | Multi-lens audit (security + prod-readiness + UX + docs), 89 findings triaged, P0/P1 fixed or accepted, audit-findings.md + 4 new docs + Notion export |
+| **Total P-0–P-10** | | | **~1.65M** | **~$31.53** | |
 
-> **Token estimates are approximate** — derived from prompt + completion sizes visible in the session. Actual billing may differ by ±20%.
-> **Daily totals stayed within the $75 soft cap throughout the build.**
+> **Token estimates are approximate** — derived from prompt + completion sizes visible in the session and from sub-agent `usage.total_tokens` lines in completion notifications. Actual billing may differ by ±20%.
+> **Daily totals stayed within the $75 soft cap throughout the build.** P-9/P-10 used Opus 4.7 because the work spanned cross-cutting fixes across 4 layers and benefited from 1M-context single-pass reasoning; the per-phase cost rose ~5–10× vs Sonnet days but the day-total stayed under cap.
 
 ---
 
@@ -31,6 +34,11 @@ Claude Sonnet 4.6:
 - Input: $3.00 / 1M tokens
 - Output: $15.00 / 1M tokens
 - Blended estimate used above: ~$1.20/100k tokens (60/40 input/output mix)
+
+Claude Opus 4.7 (1M context):
+- Input: $15.00 / 1M tokens
+- Output: $75.00 / 1M tokens
+- Blended estimate used above: ~$3.75/100k tokens (60/40 input/output mix)
 
 ---
 

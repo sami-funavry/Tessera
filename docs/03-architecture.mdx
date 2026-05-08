@@ -134,24 +134,27 @@ The `destinationApp` field is what makes the system application-agnostic — any
 
 ## Relayer Plugin Model
 
+The single source of truth is [`relayer/internal/chain/plugin.go`](https://github.com/tessera-bridge/tessera/blob/main/relayer/internal/chain/plugin.go). The interface below is copied verbatim:
+
 ```go
-type ChainPlugin interface {
+type Plugin interface {
     ChainID() string
-    ChainType() ChainType           // EVM | Tendermint
-
-    FetchBlockFingerprint(ctx, height) (Fingerprint, error)
-    FetchProof(ctx, txHash, eventIdx, proofKind) (RawProof, error)
-    VerifyConsensus(ctx, blockHeader, validatorSet) error
-    TranslateProofTo(rawProof, fingerprint, targetChainType) (CanonicalProof, Fingerprint, error)
-
-    SubmitMessage(ctx, envelope, proof, fingerprint, bondRef) (TxHash, error)
-    SubmitChallenge(ctx, submissionId, correctFingerprint, evidenceProof) (TxHash, error)
-    SubscribeEvents(ctx, contractAddrs, fromBlock) (<-chan Event, error)
-    GetBondStatus(ctx, relayer) (BondStatus, error)
+    LatestBlock(ctx context.Context) (uint64, error)
+    FetchBlockFingerprint(ctx context.Context, height uint64) (Fingerprint, error)
+    FetchProof(ctx context.Context, event Event, height uint64) (Proof, error)
+    VerifyConsensus(ctx context.Context, height uint64) error
+    SubscribeEvents(ctx context.Context, fromBlock uint64) (<-chan Event, error)
+    TranslateProofTo(proof Proof, destChainID string) (Proof, error)
+    SubmitMessage(ctx context.Context, env MessageEnvelope, proof Proof) (txHash string, submissionID [32]byte, err error)
+    ExecuteMessage(ctx context.Context, submissionID [32]byte, proof Proof) (string, error)
+    SubmitChallenge(ctx context.Context, submissionID [32]byte, counterProof Proof) (string, error)
+    ClaimAbsenceSlash(ctx context.Context, submissionID [32]byte) (string, error)
+    Register(ctx context.Context, pubKeyBytes []byte) (string, error)
+    DepositBond(ctx context.Context, amount string) (string, error)
 }
 ```
 
-Adding a new source chain = implementing this interface in a new Go file. Nothing else in the repository changes.
+Adding a new source chain = implementing this interface in a new Go file under `relayer/plugins/<chain>/`. Nothing else in the repository changes.
 
 ---
 
@@ -166,6 +169,16 @@ Adding a new source chain = implementing this interface in a new Go file. Nothin
 | Economic enforcement | Bond at risk. Punishment > gain. Honest behavior is the rational strategy. |
 
 > Liveness assumption: at least one honest, online relayer in the registered set.
+
+---
+
+## Live System Visibility
+
+Every component of the architecture above emits structured data that the frontend renders in real time. The benchmark page summarises end-to-end performance — proof fetch latency, transformation time, on-chain submission gas, and the full source-to-destination wall-clock — across recent submissions on both directions.
+
+![Benchmark page summarising end-to-end performance metrics.](./images/06-benchmark-desktop.png)
+
+This is what gives operators a single glance into whether the proof pipeline is healthy, where latency is concentrated, and how each plugin (Ethereum, Tendermint) is performing.
 
 ---
 

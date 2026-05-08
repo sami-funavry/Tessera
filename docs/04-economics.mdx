@@ -34,9 +34,11 @@ assigned_index = (nonce + floor(elapsed_since_event / handover_period)) % regist
 
 | Threshold | Sepolia | Neutron (uNTRN) | Meaning |
 |-----------|---------|-----------------|---------|
-| **Initial bond** (register) | 0.02 ETH | 80,000 uNTRN | Required to join the registry |
-| **Operating** (50% of initial) | 0.01 ETH | 40,000 uNTRN | Below this: no new submissions accepted |
-| **Deregistration** (25% of initial) | 0.005 ETH | 20,000 uNTRN | Below this: fully removed from registry |
+| **Initial bond** (register) | 0.02 ETH | 80,000 uNTRN (0.08 NTRN) | Required to join the registry |
+| **Operating** (50% of initial) | 0.01 ETH | 40,000 uNTRN (0.04 NTRN) | Below this: no new submissions accepted |
+| **Deregistration** (25% of initial) | 0.005 ETH | 20,000 uNTRN (0.02 NTRN) | Below this: fully removed from registry |
+
+> See [Limitations §L-3](./10-limitations#l-3-testnet-parameters-are-deliberately-low) for the production-recommended bond schedule.
 
 > **Production note:** These values would be significantly higher in production (e.g., 0.5 ETH / 100 NTRN). The slashing ratios and all mechanisms are identical — only the absolute amounts change.
 

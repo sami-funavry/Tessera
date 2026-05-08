@@ -1,0 +1,233 @@
+---
+title: "Technical Decisions"
+description: "Key architectural choices made during the build, with rationale and alternatives considered."
+section: 12
+slug: "technical-decisions"
+---
+
+# Technical Decisions
+
+> Architecture decision records (ADRs) for the choices that shaped Tessera. Each entry: context, decision, alternatives, consequences. Cited by file path so future contributors can find the code.
+
+---
+
+## DEC-01: Native proof verification instead of ZK
+
+**Status:** Accepted
+
+**Context.** Cross-chain proof verification needs a way to prove that "event X happened on chain A" to a verifier on chain B. The dominant approach in 2025–2026 is ZK proofs of state inclusion: chain A's state is committed in a SNARK and verified on chain B. This works but introduces three real costs: per-proof cost (~$0.50+ in public ZK bridges), proof generation latency (minutes), and dedicated GPU infrastructure for the prover.
+
+**Decision.** Verify Merkle proofs natively in each VM's own format. Patricia Merkle Trie on EVM (Keccak-256/RLP); IAVL on CosmWasm (SHA-256/Protobuf). Submit the proof + the source-chain fingerprint to the destination Verifier; the contract walks the proof against the fingerprint and accepts or rejects.
+
+**Alternatives.**
+
+- *ZK proof of state inclusion* — rejected on cost, latency, and infrastructure complexity for a hackathon scope. Reconsidered as long-term research in [`11-future-work.mdx`](./11-future-work).
+- *Light-client verification with on-chain header tracking* — viable on EVM (header tracking is cheap) but expensive on Cosmos→EVM because of Ed25519 verification cost (see DEC-02).
+- *Trusted oracle (multisig)* — eliminates the cryptography problem but reintroduces the trust problem Tessera exists to solve.
+
+**Consequences.**
+
+- Destination gas under 250k per verification (per R-102) — proof walk dominates.
+- Determinism of the transformation step (DEC-04 / R-52) becomes the foundational security claim, because honest replication is what enables fraud detection.
+- Implementation: `contracts-evm/src/Verifier.sol::_verifyProof` and `contracts-cosmwasm/contracts/verifier/src/contract.rs::_verify_proof`.
+
+---
+
+## DEC-02: Off-chain Ed25519 verification for Tendermint
+
+**Status:** Accepted
+
+**Context.** Cosmos→EVM bridges need to prove that a Cosmos block was finalized by 2/3+ of the Tendermint validator set. Tendermint validators sign with Ed25519. On-chain Ed25519 verification on EVM costs ~500k gas per signature; with 100+ validators, this is prohibitive.
+
+**Decision.** Verify Tendermint validator signatures off-chain in Go using cometbft's batch verifier. The relayer fetches the block header, validator set, and commit; verifies 2/3+ Ed25519 signatures locally on commodity hardware; only then submits the already-verified proof to the Sepolia Verifier. EVM never sees Ed25519.
+
+**Alternatives.**
+
+- *On-chain Ed25519 precompile* — would require an EVM hard fork; not available on Sepolia or mainnet today.
+- *ZK proof of the Ed25519 verification* — possible but expensive and reintroduces ZK costs (DEC-01).
+- *Trust the relayer's claim that consensus was verified* — defeats the trust-minimization goal.
+
+**Consequences.**
+
+- The Ed25519 step happens *but is invisible to the destination chain*. This is what we mean by "Ed25519 bypass" — not skipping the verification, just moving it to where it's affordable.
+- Bonded enforcement (DEC-03) is what keeps the off-chain step honest: a relayer who skips or lies about consensus verification produces a fraudulent submission and gets slashed.
+- Implementation: `relayer/plugins/tendermint/plugin.go::VerifyConsensus` calls `cometbft/types.ValidatorSet.VerifyCommit`. Forged-signature rejection tested in `relayer/plugins/tendermint/plugin_test.go::TestVerifyConsensusUnit`.
+
+---
+
+## DEC-03: Bonded relayers + slashing
+
+**Status:** Accepted
+
+**Context.** Native proof verification (DEC-01) and off-chain consensus verification (DEC-02) move work off-chain. Both depend on the relayer being honest about what they fetched and transformed. We need an enforcement mechanism that doesn't require trusting any individual operator.
+
+**Decision.** Every relayer posts a bond on each chain (Sepolia: 0.02 ETH testnet, ~0.5 ETH production target; Neutron: 80,000 uNTRN testnet, 100 NTRN production target). Wrong submissions slash 50% of the submitter's bond, paid 100% to the challenger. Frivolous challenges slash 25% of the challenger's bond, paid 100% to the wrongly-accused submitter. Bond and slashing are executed by on-chain contracts; no off-chain coordination decides outcomes.
+
+**Alternatives.**
+
+- *Trusted committee (multisig)* — empirically broken (Ronin, Multichain, Nomad).
+- *Pure cryptographic enforcement (ZK)* — DEC-01 already rejected ZK on cost grounds.
+- *Reputation systems* — vulnerable to Sybil; reputation has no slashable mass.
+
+**Consequences.**
+
+- Liveness assumption: at least one honest, online relayer exists. The system stays correct as the registered set grows; it cannot stay correct if every relayer simultaneously colludes (per R-40, [`10-limitations.mdx`](./10-limitations) L-2).
+- Bond size must be calibrated to the volume secured. Testnet values are intentionally low because faucets cap daily output; production must scale up.
+- Implementation: `contracts-evm/src/Bond.sol`, `contracts-evm/src/RelayerRegistry.sol`, `contracts-evm/src/Verifier.sol::challenge`. Symmetric CosmWasm versions under `contracts-cosmwasm/contracts/`.
+
+---
+
+## DEC-04: Generic dispatcher pattern (Verifier dispatches to `destinationApp`)
+
+**Status:** Accepted
+
+**Context.** Cross-chain frameworks tend to either hard-code a single application (a token bridge contract that owns the verifier) or hand-roll dispatch logic that requires verifier upgrades for new apps. The first locks in scope; the second creates upgrade risk.
+
+**Decision.** Every cross-chain message envelope includes a `destinationApp` field (the contract address on the destination chain). After successful proof verification, the Verifier calls `IApp(destinationApp).onCrossChainMessage(sourceChainId, sourceApp, action, payload)`. Each application implements `IApp` and enforces `onlyVerifier` on the entry point. New apps are deployed; the Verifier never changes.
+
+**Alternatives.**
+
+- *Hard-coded token-bridge integration* — would tie tUSDC to the Verifier and require a new Verifier per app. Rejected for extensibility.
+- *Plugin registry inside Verifier* — adds upgrade surface to the most security-critical contract. Rejected for the same reason ZK was rejected: every additional moving part is an attack surface.
+- *Off-chain dispatch (relayer routes by application)* — moves trust back to the relayer. Defeats DEC-03.
+
+**Consequences.**
+
+- Adding a new application is a one-contract deploy. No Verifier changes, no Bond changes, no Registry changes.
+- Verifier security boundary is precisely defined: it verifies proofs and dispatches; it does not interpret application logic. Each `IApp` contract is responsible for its own input validation under `onlyVerifier`.
+- Implementation: `contracts-evm/src/interfaces/IApp.sol` defines the interface. `contracts-evm/src/BridgeVault.sol` and `contracts-evm/src/BridgeMint.sol` are the first two `IApp`-conforming contracts. `contracts-evm/src/Verifier.sol::executeMessage` dispatches.
+
+---
+
+## DEC-05: Two relayers for the demo
+
+**Status:** Accepted
+
+**Context.** The bonded-relayer model (DEC-03) requires at least two relayers to demonstrate adversarial scenarios — you need a submitter and a challenger to show the slash. Beyond two, additional relayers add operational complexity (race-condition handling for concurrent submissions) without changing what the demo demonstrates.
+
+**Decision.** Run exactly two relayers (Relayer A and Relayer B) for the hackathon demo. Both run identical code, with different keypairs and ports. Per-message role assignment is deterministic and on-chain (R-22): `assigned_index = (nonce + floor(elapsed / handover_period)) % count`. With two relayers, this means message #1 → A, message #2 → B, alternating by nonce.
+
+**Alternatives.**
+
+- *N relayers* — supported by the architecture but introduces race-condition handling for concurrent submissions (R-121, explicitly out of scope).
+- *One relayer* — cannot demonstrate the challenger path. Useless for adversarial scenarios.
+- *Three relayers* — would prove N>2 works but adds operational cost without adding demo value.
+
+**Consequences.**
+
+- Race-condition-free: with two relayers and deterministic per-message rotation, only one is the assigned submitter for any given nonce at any given moment.
+- Sufficient to demonstrate all four scenarios in [`05-demo-scenarios.mdx`](./05-demo-scenarios): honest, lying, silent, frivolous.
+- The same code runs unchanged with N relayers — only the assignment formula's modulus changes.
+- Implementation: relayer keys, addresses, and bond status are in `.env` and `scripts/addresses.json`. Both relayers use the same Go binary (`relayer/cmd/tessera/main.go`) with different config.
+
+---
+
+## DEC-06: Server-side relay simulator for the frontend demo
+
+**Status:** Accepted (hackathon scope)
+
+**Context.** Wiring the user-facing bridge widget to the full Go-relayer + Verifier dispatch path required the Go relayer to be deployed, addressable, and reliably submitting Patricia↔IAVL proofs to the deployed Verifiers on both chains. Doing all of that with a 90-second user-perceived latency target inside the hackathon window was schedule-incompatible with also delivering polished UX, four working scenarios, and the dashboard.
+
+**Decision.** Implement a server-side relay simulator (`frontend/lib/relay-helper.ts`, exposed via `frontend/app/api/bridge/relay/route.ts`) that performs the destination-side action (Neutron mint or Sepolia release) using Relayer A's wallet directly, and writes the message + submission + 5 lifecycle events to Supabase. The user signs the source-side transaction; the simulator handles destination delivery. Real on-chain transactions, real tx hashes, real balance changes — but the cryptographic proof flow is not exercised in the user-facing path.
+
+**Alternatives.**
+
+- *Wire the full Go relayer + Verifier dispatch path for the user-facing flow* — correct for production; not feasible in the hackathon window. Deferred to post-hackathon (see [`post-hackathon-roadmap.md`](./post-hackathon-roadmap)).
+- *Pure mock (no on-chain transactions)* — would disqualify the demo from any "does it work end-to-end" criterion.
+
+**Consequences.**
+
+- This is a hackathon-scope shortcut. **`docs/audit-findings.md` SEC-03 to SEC-15 cover the production gaps this introduces** (private key in env, no signature verification on the relay endpoint, no rate limiting, etc.).
+- The proof flow is fully implemented and tested in the contract layer (`forge test` 88 passing, `cargo test` 28 passing) and in the Go relayer (`go test -race ./...` clean across 5 packages, including 35 transform fixture tests). The demo scenarios in `relayer/internal/scenario/` exercise the full path through mock plugins. The gap is specifically the *user-facing* widget invoking the Go relayer rather than the Node.js helper.
+- Mainnet path: replace `frontend/lib/relay-helper.ts` with an HTTP call to the deployed Go relayer's submission queue. The frontend doesn't change beyond the URL.
+
+---
+
+## DEC-07: Supabase as off-chain state store
+
+**Status:** Accepted
+
+**Context.** The dashboard, benchmark page, and submission detail views need real-time data: messages in flight, submissions per relayer, events from both chains, bond balances. Reading this directly from chain on every page load is too slow (RPC round-trips, no realtime push). Some kind of off-chain index is required.
+
+**Decision.** Supabase (managed Postgres + REST + realtime) as the off-chain state store. Six tables: `messages`, `submissions`, `disputes`, `bonds`, `events`, `benchmark_runs` (per R-84). Schema in `supabase/migrations/`. Frontend reads via the public anon key with row-level-security policies; the Go relayer writes via the service role key.
+
+**Alternatives.**
+
+- *Self-hosted Postgres* — operationally heavier; no managed realtime channels; we'd build the websocket layer ourselves.
+- *On-chain truth only (no off-chain index)* — page loads would be 5–10 seconds, multiple RPC calls per render, no historical aggregation.
+- *The Graph or similar subgraph* — viable but slower to iterate on schema during a hackathon.
+
+**Consequences.**
+
+- RLS posture: today, all six tables have public-read policies (per P-0 setup). This is fine for hackathon scope — none of the data is sensitive — but production must split read/write roles and tighten policies (see [`post-hackathon-roadmap.md`](./post-hackathon-roadmap) §3).
+- Realtime subscriptions on `messages`, `submissions`, `disputes`, `events` drive the dashboard's live updates. Configured via `ALTER PUBLICATION supabase_realtime ADD TABLE` (note in P-0 prompt log).
+- The relayer treats Supabase writes as best-effort: failures are logged to Sentry but never block the on-chain hot path. The chain remains the source of truth; Supabase is a derived index.
+- Implementation: `relayer/internal/supabase/client.go`, `frontend/lib/supabase.ts`, `frontend/lib/supabase-admin.ts`.
+
+---
+
+## DEC-08: Plugin pattern for chain support
+
+**Status:** Accepted
+
+**Context.** Tessera needs to support multiple chains (Sepolia and Neutron today; more later — see [`11-future-work.mdx`](./11-future-work)). Each chain has its own RPC, its own block/header structure, its own proof format, its own consensus verification. Hard-coding two chains' worth of logic into one Go file would not extend.
+
+**Decision.** Define a `ChainPlugin` interface in `relayer/internal/chain/plugin.go`. Every chain is one Go module conforming to this interface. Adding a new chain is one new `.go` file; nothing else in the repository changes. For new VMs (not just new chains on the same VM), it's a one-time port of the four contracts (Verifier, Bond, RelayerRegistry, Bridge*).
+
+**Alternatives.**
+
+- *Monolithic relayer with switch statements per chain* — works for two chains, breaks at five.
+- *Separate binary per chain* — multiplies operational cost; loses the shared challenger logic.
+- *Configuration-driven with no chain-specific code* — would require a unified proof format that works for both Patricia and IAVL, which is what we explicitly avoid (the transformation layer exists precisely because the formats are incompatible).
+
+**Consequences.**
+
+- Two plugins implemented: `relayer/plugins/ethereum/plugin.go` (Sepolia, ~go-ethereum) and `relayer/plugins/tendermint/plugin.go` (Neutron, ~cometbft). Both pass the same test suite.
+- The transform layer (`relayer/internal/transform/`) is plugin-independent; it operates on `RawProof` and `CanonicalProof` types defined by the interface.
+- Adding Polygon, Arbitrum, Osmosis, or Cosmos Hub is one new plugin file each — see [`11-future-work.mdx`](./11-future-work) §Medium-Term.
+
+---
+
+## DEC-09: Custom tUSDC test token
+
+**Status:** Accepted (hackathon scope)
+
+**Context.** The reference application is a USDC bridge. Real USDC has compliance overhead (Circle's KYC, attestation delays, regulatory exposure) that doesn't fit hackathon scope and isn't needed to demonstrate the bridge mechanism.
+
+**Decision.** Deploy a custom `tUSDC` token on each chain — ERC20 on Sepolia (18 decimals to match each chain's native conventions), CW20 on Neutron (6 decimals). Both implement a `claim(address, amount)` function rate-limited to 1000 tUSDC per address per 24 hours. Demo visitors mint freely, bridge freely.
+
+**Alternatives.**
+
+- *Real USDC on testnet* — Circle's testnet tokens have rate limits and require their faucet, complicating the visitor experience.
+- *No bridged token at all (just message passing)* — fails to demonstrate the lock-and-mint flow that's the canonical bridge use case.
+
+**Consequences.**
+
+- All bridge balances on both chains are demo balances, not real USDC. Documented prominently throughout the UI and the docs.
+- Mainnet path: deploy the same `BridgeVault` + `BridgeMint` contracts pointed at real USDC, or at any other ERC20 / CW20. Bridge logic doesn't change.
+- Implementation: `contracts-evm/src/TUSDC.sol` and `contracts-cosmwasm/contracts/tusdc/`.
+
+---
+
+## DEC-10: Manual `StdFee` everywhere on Neutron transactions
+
+**Status:** Accepted
+
+**Context.** CosmJS's `client.execute(..., 'auto')` performs gas simulation and pricing automatically. It depends on a `GasPrice` instance passed at client construction. The frontend's dependency tree carries two versions of `@cosmjs/stargate` (0.38 transitive via `@cosmjs/cosmwasm-stargate`, 0.39 direct), so the `GasPrice` class has two distinct identities and CosmJS's internal `instanceof` check fails at runtime with: `"Gas price must be a GasPrice instance when using static pricing."`
+
+The error surfaced three times during the build before the durable fix landed: first in `frontend/lib/keplr.ts` (client-side bridge widget), second in the server-side `frontend/lib/relay-helper.ts` (workaround applied), third in the user-facing Neutron→Sepolia path (workaround propagated).
+
+**Decision.** Drop `gasPrice` from `connectKeplr` entirely. Export a `neutronFee(gas)` helper that returns an explicit `StdFee` object with hand-calculated `gas` and `amount` fields. Pass this to every `client.execute(...)` call in place of `'auto'`. The same pattern is used in the server-side relay-helper, which kept it consistent across all sites of the bug.
+
+**Alternatives.**
+
+- *Force-resolve `@cosmjs/stargate` to a single version via package.json overrides* — would work but is brittle (next dep upgrade may reintroduce the conflict) and risks breaking `@cosmjs/cosmwasm-stargate`'s internal calls.
+- *Dynamic-import workaround with `as unknown as` cast* — used once in `frontend/lib/keplr.ts` initially; works but is opaque to future maintainers.
+- *Wait for upstream alignment in `@cosmjs/cosmwasm-stargate`* — out of our control; not viable in hackathon scope.
+
+**Consequences.**
+
+- Every Neutron `execute` call in the frontend uses `neutronFee(250_000)` (default gas; configurable per call). Same pattern in `frontend/lib/relay-helper.ts` server-side.
+- Gas price hard-coded to 0.025 untrn per gas unit (Neutron pion-1 mid-tier gas price). Production should read this from chain config rather than constant.
+- The cure is durable until the dep tree is realigned. PROMPT_LOG entry [P-9 bridge bugfixes] documents the root cause and the three sites where the fix was applied.
+- Implementation: `frontend/lib/keplr.ts::neutronFee`, used by `frontend/app/HomepageClient.tsx`, `frontend/lib/relay-helper.ts`, and any new code that invokes a CosmWasm contract.

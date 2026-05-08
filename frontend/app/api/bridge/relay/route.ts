@@ -30,6 +30,7 @@ import {
   relaySepoliaToNeutron,
   relayNeutronToSepolia,
 } from '@/lib/relay-helper';
+import { guardApiRoute } from '@/lib/api-guard';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -74,6 +75,12 @@ function isBody(b: unknown): b is BridgeRelayBody {
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  // Audit fix SEC-01: this endpoint signs real transfers from the server-side
+  // relayer wallet. Lock it down to same-origin browsers + admin-secret callers
+  // and rate-limit per IP. See `frontend/lib/api-guard.ts`.
+  const blocked = guardApiRoute(req, { routeName: 'bridge-relay', capacity: 4, refillPerSec: 1 / 60 });
+  if (blocked) return blocked;
+
   let body: unknown;
   try {
     body = await req.json();
@@ -95,6 +102,39 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const db = createSupabaseAdmin() as any;
+
+  // Audit fix PROD-18 / SEC-01-companion: idempotency on source_tx_hash. If
+  // the same lock/burn tx has already been relayed, return the cached result
+  // instead of issuing a second destination-chain transfer.
+  if (sourceTxHash && sourceTxHash !== '0x' && sourceTxHash.length > 10) {
+    const existing = await db
+      .from('messages')
+      .select('id, status, source_tx_hash')
+      .eq('source_tx_hash', sourceTxHash)
+      .maybeSingle();
+    if (existing.data) {
+      const existingMsgId = (existing.data as { id: number }).id;
+      const existingSub = await db
+        .from('submissions')
+        .select('dest_tx_hash')
+        .eq('message_id', existingMsgId)
+        .maybeSingle();
+      const cachedHash = (existingSub.data as { dest_tx_hash: string } | null)?.dest_tx_hash ?? null;
+      if (cachedHash) {
+        const cachedExplorer =
+          direction === 'sepolia_to_neutron'
+            ? `https://neutron.celat.one/pion-1/txs/${cachedHash.replace(/^0x/i, '').toUpperCase()}`
+            : `https://sepolia.etherscan.io/tx/0x${cachedHash.replace(/^0x/i, '').toLowerCase()}`;
+        return NextResponse.json({
+          success: true,
+          messageId: existingMsgId,
+          destTxHash: cachedHash,
+          destExplorerUrl: cachedExplorer,
+          idempotent: true,
+        });
+      }
+    }
+  }
 
   const sourceChainId =
     direction === 'sepolia_to_neutron' ? CHAIN_SEPOLIA : CHAIN_NEUTRON;

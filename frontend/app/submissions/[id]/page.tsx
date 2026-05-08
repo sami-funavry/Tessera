@@ -332,8 +332,16 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
         />
         <Meta label="Source root" hash={sourceRoot} placeholder="Pending" />
         <Meta label="Transformed root" hash={transformedRoot} placeholder="Pending" />
-        <Meta label="Gas (source)" value="~142k" mono />
-        <Meta label="Gas (destination)" value="~218k" mono />
+        {/*
+          * Audit fix UX-10: previous values "~142k" / "~218k" were hard-coded
+          * on every row, which violates CLAUDE.md anti-hallucination rule #3
+          * (no invented numerical claims). Per-tx gas is not currently
+          * captured in the schema; show '—' so judges aren't misled into
+          * thinking these are real measurements. The benchmark page surfaces
+          * canonical end-to-end numbers for the rubric.
+          */}
+        <Meta label="Gas (source)" value="—" mono />
+        <Meta label="Gas (destination)" value="—" mono />
       </motion.div>
 
       {/* Cryptographic roadmap */}
@@ -475,7 +483,7 @@ function NotFound({ id }: { id: number }) {
       </h1>
       <p className="text-stone-400">
         {isValid
-          ? 'This submission may not exist, or it may have been pruned from the local index.'
+          ? 'No record matches this submission ID. Check the URL, or browse all submissions from the dashboard.'
           : 'The submission ID in the URL is not valid.'}
       </p>
     </div>

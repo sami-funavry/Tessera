@@ -11,6 +11,8 @@ Four scenarios cover the complete state space of the economic enforcement model.
 
 Test scripts read on-chain rotation state at runtime to determine which physical relayer (A or B) is the assigned submitter for each scenario. Role assignment is never hardcoded.
 
+![Demo Control panel: four scenario buttons, two relayer status cards with live bond + earnings, and a streaming event log per run.](./images/04-demo-desktop.png)
+
 ---
 
 ## Outcome Summary
@@ -109,10 +111,11 @@ Test scripts read on-chain rotation state at runtime to determine which physical
    → BridgeMint.mint(recipient, 100 tUSDC)
    → Relayer B earns relay fee
 
-5. Anyone: Bond.claimAbsenceSlash(messageId, relayerA_address)
-   → Verifies A was assigned and did not submit in the handover window
-   → Slash: 50% of Relayer A's bond
-   → Transfer: 100% → whoever calls claimAbsenceSlash (typically Relayer B)
+5. Anyone: Verifier.claimAbsenceSlash(submissionId)
+   → Verifier checks the assigned submitter (derived from rotation rule) did not act
+     within the 30s handover period — successor submitter ≠ original assignee.
+   → Verifier instructs Bond to slash 50% of the original assignee's bond and pay
+     100% of the slashed amount to msg.sender (typically the successor).
 ```
 
 **Pass condition:** User receives 100 tUSDC on destination. Relayer A bond −50%. Relayer B earns fee + absence slash reward.
@@ -150,14 +153,16 @@ Test scripts read on-chain rotation state at runtime to determine which physical
 
 ## Running Scenarios
 
+These run as in-process simulations. For testnet runs, see `scripts/scenarios/0N-*.sh`.
+
 ```bash
-# From repo root — runs against live testnets (requires .env populated)
-go run ./cmd/relayer test-scenario s1-honest
-go run ./cmd/relayer test-scenario s2-lying
-go run ./cmd/relayer test-scenario s3-silent
-go run ./cmd/relayer test-scenario s4-frivolous
+# From repo root — in-process simulations (no funds needed)
+go run ./cmd/tessera test-scenario 1
+go run ./cmd/tessera test-scenario 2
+go run ./cmd/tessera test-scenario 3
+go run ./cmd/tessera test-scenario 4
 ```
 
-Each script prints the assigned roles, transaction hashes, and final bond states.
+Each run prints the assigned roles, simulated transaction hashes, and final bond states. To exercise the same flows against live testnets (real gas, real bonds, real explorers), run the matching shell scripts under `scripts/scenarios/` after `.env` is populated.
 
 > See [Developer Guide](./07-developer-guide) for environment setup prerequisites.

@@ -296,7 +296,13 @@ export async function relayNeutronToSepolia(
     args: [recipient as Hex, amountSep],
   });
 
-  const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+  // Audit fix PROD-06: cap how long we wait. Without a timeout, a Sepolia RPC
+  // stall would hang the API request until the platform's hard limit kills it,
+  // leaving the user staring at a spinner with no failure signal.
+  const receipt = await publicClient.waitForTransactionReceipt({
+    hash: txHash,
+    timeout: 90_000,
+  });
   if (receipt.status !== 'success') {
     throw new Error(
       `Sepolia transfer reverted on-chain (tx ${txHash}). Check Etherscan for revert reason.`,

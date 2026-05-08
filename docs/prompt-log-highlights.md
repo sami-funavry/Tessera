@@ -2,6 +2,8 @@
 
 > Curated from `PROMPT_LOG.md`. Five best prompts that show disciplined Claude Code use; three worst prompts that reveal friction, rework, or a better pattern in retrospect. Required hackathon deliverable.
 
+> **Test counts in the entries below are point-in-time snapshots from each phase.** As of the post-P-10 audit verification (commit on `main` after Phase 10 close), the canonical counts are: **88 Foundry tests** (per `forge test --list`), full CosmWasm workspace including the four demo scenarios (per `cargo test --workspace`), all Go relayer packages green (per `go test -short ./...`). Per-entry numbers reflect the snapshot at the time of that prompt and are intentionally not back-edited.
+
 ---
 
 ## 5 Best Prompts

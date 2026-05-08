@@ -16,6 +16,7 @@ import { randomBytes } from 'crypto';
 import { ERC20_ABI, BRIDGE_VAULT_ABI } from '@/lib/bridgeAbis';
 import { createSupabaseAdmin } from '@/lib/supabase-admin';
 import { relaySepoliaToNeutron } from '@/lib/relay-helper';
+import { guardApiRoute } from '@/lib/api-guard';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -104,7 +105,9 @@ async function executeLockTx(contractNonce: bigint): Promise<{
       functionName: 'approve',
       args: [VAULT, maxUint256],
     });
-    await publicClient.waitForTransactionReceipt({ hash: approveHash });
+    // Audit fix PROD-06: bound the wait so a stalled Sepolia RPC can't pin
+    // the API request open indefinitely.
+    await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: 90_000 });
   }
 
   const currentBlock = await publicClient.getBlockNumber();
@@ -582,10 +585,26 @@ async function handleScenario(type: string): Promise<NextResponse> {
 
   const scenarioType = type as ScenarioType;
 
-  // 1. Configure relayer admin (best-effort, don't fail if offline)
+  // 1. Configure relayer admin (best-effort, don't fail if offline).
+  // Audit fix PROD-05: send the X-Admin-Secret header when configured. If the
+  // operator set TESSERA_ADMIN_SECRET on the relayer but the route omits the
+  // header, every fault-injection silently 401s and the catch swallows it —
+  // dashboard shows the choreographed scenario while the real fleet stays
+  // honest. We forward the secret here (header is harmless when the relayer
+  // does not enforce one).
   try {
     const { path, method } = buildAdminRequest(scenarioType);
-    await fetch(path, { method, signal: AbortSignal.timeout(5_000) });
+    const headers: Record<string, string> = {};
+    const adminSecret = process.env.TESSERA_ADMIN_SECRET?.trim();
+    if (adminSecret) {
+      headers['x-admin-secret'] = adminSecret;
+    }
+    const adminRes = await fetch(path, { method, headers, signal: AbortSignal.timeout(5_000) });
+    if (!adminRes.ok && adminRes.status !== 404) {
+      // Don't blow up the scenario for a relayer-side admin failure, but log
+      // the status so an operator running the relayer can spot config drift.
+      console.warn(`[scenario] relayer admin returned ${adminRes.status} for ${scenarioType}`);
+    }
   } catch {
     // Relayer admin offline — scenario continues with simulated events
   }
@@ -622,17 +641,24 @@ async function handleScenario(type: string): Promise<NextResponse> {
 }
 
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ type: string }> },
 ): Promise<NextResponse> {
+  // Audit fix SEC-02: scenario routes execute real on-chain locks +
+  // simulator transfers from the relayer wallet. Guard same as bridge-relay.
+  // 2 tokens / 5-minute refill — enough for a demo run, hostile to a script.
+  const blocked = guardApiRoute(req, { routeName: 'scenarios', capacity: 2, refillPerSec: 1 / 300 });
+  if (blocked) return blocked;
   const { type } = await params;
   return handleScenario(type);
 }
 
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ type: string }> },
 ): Promise<NextResponse> {
+  const blocked = guardApiRoute(req, { routeName: 'scenarios', capacity: 2, refillPerSec: 1 / 300 });
+  if (blocked) return blocked;
   const { type } = await params;
   return handleScenario(type);
 }

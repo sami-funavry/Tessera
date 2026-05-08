@@ -1,0 +1,90 @@
+---
+title: "PM Brief"
+description: "Who Tessera is for, what problem it solves, and the success metrics."
+section: 0
+slug: "pm-brief"
+---
+
+# PM Brief
+
+A one-page product framing for Tessera. For technical depth, see [Overview](./01-overview) and [Architecture](./03-architecture).
+
+---
+
+## Who is this for?
+
+**Builders launching cross-chain apps who don't want to trust a relayer or pay ZK costs.** A team building a cross-chain swap, a cross-chain governance app, or a cross-chain NFT mint can integrate Tessera by deploying one contract that implements the `IApp` interface. They get bonded relay security without running their own validator network or paying a ZK prover per message.
+
+**Cosmos appchains adding EVM connectivity.** A new Cosmos appchain (Neutron, Osmosis, dYdX, any CosmWasm-capable chain) can ship an EVM bridge by porting six contracts and pointing the existing Go relayer at their RPC. No bespoke cryptography, no bespoke off-chain infrastructure.
+
+**EVM L2s adding Cosmos connectivity.** Symmetric to the above — a new EVM rollup gets a Cosmos bridge by deploying the Solidity contracts and registering its chain ID.
+
+**Concrete personas:**
+
+- *DeFi protocol engineer at an EVM L2:* "I want to launch on Neutron next quarter. I don't want to operate validators, I don't want to pay $0.50 per message in ZK costs, and I don't trust an external multisig with my users' funds."
+- *Cosmos appchain core dev:* "We need EVM users on day one. Existing options are either trusted (Wormhole, Axelar multisigs) or expensive and slow (any ZK bridge). I want a bonded model with a 60-second window."
+
+---
+
+## What problem does it solve?
+
+Cross-chain bridges have a trust problem. Users either trust a multisig that can be compromised (Ronin, Multichain, Nomad — collectively over $2B lost in the past three years), or they pay the cost and latency of ZK proofs. Tessera replaces both with a third option: bond the relayer, slash on fraud, prove inclusion natively in each chain's own format.
+
+Three concrete pain points it removes:
+
+1. **"I have to trust the bridge operator."** No — operators post a bond. Wrong submissions cost them 50% of that bond. The math doesn't work for fraud once the bond is meaningful.
+2. **"ZK proofs are too expensive and too slow."** No ZK in the proof path. Verification is a native Merkle walk in each VM (Patricia on EVM, IAVL on Cosmos). Gas budget: under 250k destination-side per message.
+3. **"On-chain Ed25519 verification is impractical on EVM."** True on its own — ~500k gas per signature. Tessera bypasses it by verifying the 2/3+ Tendermint validator set off-chain in Go before submitting the already-verified proof to Sepolia. EVM never sees an Ed25519 signature.
+
+---
+
+## Why now?
+
+Three converging forces:
+
+- **Bridges have lost approximately $2B+ across multiple incidents in the past three years.** Trust-based and multisig-based bridges have an empirical track record of failure. The market is asking for alternatives.
+- **ZK costs are non-trivial.** Per-proof costs in the public ZK bridge category are on the order of $0.50 and require GPU infrastructure, plus minutes of latency for proof generation. For a high-frequency app, this is prohibitive.
+- **Cosmos↔EVM connectivity still depends on trusted committees.** Wormhole, Axelar, and similar use multisig or PoA committees for cross-VM communication — not because the cryptography isn't possible, but because nobody's shipped a generic bonded alternative.
+
+Tessera is that alternative. Bonded-economic security, deterministic native proof verification, no ZK setup, and the Ed25519 problem solved by moving the work off-chain to commodity hardware where it costs nothing.
+
+---
+
+## Success metrics
+
+**For the demo (today):**
+
+- Four scenarios pass end-to-end on real testnets (honest delivery, lying relayer, silent relayer, frivolous challenge). [`05-demo-scenarios.mdx`](./05-demo-scenarios) has the full list.
+- Dashboard reflects real on-chain state (bonds, submissions, events) with no mocked numbers.
+- Judges can connect MetaMask + Keplr, claim tUSDC on either chain, and bridge a real transaction in under 90 seconds.
+
+**For mainnet (post-hackathon, see [Post-Hackathon Roadmap](./post-hackathon-roadmap)):**
+
+- TVL bridged through the contracts.
+- Number of bridges per day (growth metric).
+- Number of challenges per week (lower is better — high counts indicate either a buggy submitter or an aggressive challenger; both are operational issues to investigate).
+- Median end-to-end settlement time (target: under 120 seconds).
+- Slash events per 10,000 submissions (target: as close to zero as possible, but >0 proves the system works adversarially).
+
+---
+
+## Scope today vs scope tomorrow
+
+Mirrors SPEC.md §1.12. The hackathon ships the left column; the right column is deferred work.
+
+| Capability | Today | Tomorrow |
+|------------|-------|----------|
+| Chains | Sepolia + Neutron pion-1 testnets | Mainnet, Polygon, Arbitrum, Osmosis, Cosmos Hub |
+| Apps | tUSDC bridge | NFT bridge, cross-chain governance, generic message passing |
+| Source consensus (Sepolia) | RPC trust (documented) | Ethereum sync committee verification (BLS) |
+| Source consensus (Neutron) | Off-chain Ed25519 verification (full) | Same — already trustless |
+| Token | Custom tUSDC (mintable, rate-limited) | Real USDC integration if/when product calls for it |
+| Relayer count | 2 (per spec, sufficient for adversarial demo) | N (architecture supports it) |
+| Bond thresholds | Testnet-low (0.02 ETH / 80,000 uNTRN) | Production values (~0.5 ETH / 100 NTRN) — config change only |
+| Audit | Internal three-lens review (`audit-findings.md`) | Trail of Bits / Spearbit + Immunefi bounty |
+
+The architecture was built so that "tomorrow" never requires changing what's deployed today. New chains plug in as Go modules; new apps plug in as `IApp` contracts; production parameters are configuration.
+
+---
+
+> Related: [Overview](./01-overview) · [Architecture](./03-architecture) · [Limitations](./10-limitations) · [Future Work](./11-future-work) · [Technical Decisions](./12-technical-decisions)

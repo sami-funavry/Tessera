@@ -53,3 +53,6 @@ broadcast/
 *.jpeg
 !frontend/public/**/*.png
 !frontend/public/**/*.jpeg
+# Documentation screenshots (committed for the Notion deliverable)
+!docs/images/**/*.png
+!docs/images/**/*.jpeg

@@ -62,48 +62,69 @@ neutrond tx wasm execute <REGISTRY_ADDRESS> \
   --node <NEUTRON_RPC>
 ```
 
-Or use the relayer CLI which handles both chains:
+Or use the relayer CLI which handles both chains. All runtime config is via env vars; copy `.env.example` to `.env` and fill in. To run a second relayer instance, set `RELAYER_PRIVATE_KEY` to the second key and rerun.
 
 ```bash
-go run ./cmd/relayer bond deposit --config configs/my-relayer.yaml
-go run ./cmd/relayer bond register --config configs/my-relayer.yaml
+# register on both chains (or pass --chain sepolia | neutron)
+go run ./cmd/tessera bond register
+
+# deposit bond — amount is in wei for sepolia, uNTRN for neutron
+go run ./cmd/tessera bond deposit --chain sepolia --amount 20000000000000000
+go run ./cmd/tessera bond deposit --chain neutron --amount 80000
 ```
+
+The available `bond` subcommands are `register`, `deposit`, `status`, and `fund-neutron`. Run `go run ./cmd/tessera bond --help` for the canonical list.
 
 ---
 
 ### Monitor Bond Status
 
 ```bash
-go run ./cmd/relayer bond status --config configs/my-relayer.yaml
+go run ./cmd/tessera bond status
 ```
 
-Output shows:
-- Current bond on each chain
-- Threshold status (Active / Benched / Deregistered)
-- Pending submissions count
-- Slash history
+The current build prints a hint suggesting the block explorer until the on-chain query is wired up. For now, check live bonds via:
+
+- Sepolia: `cast call <BOND_ADDRESS> "balanceOf(address)(uint256)" <YOUR_ADDRESS> --rpc-url <SEPOLIA_RPC>`
+- Neutron: `neutrond query wasm contract-state smart <BOND_ADDRESS> '{"bond_of":{"relayer":"<YOUR_NEUTRON_ADDRESS>"}}' --node <NEUTRON_RPC>`
+
+Or open the contract in [Etherscan / Celatone](./06-repo-structure#contract-addresses-deployed) and read `bondBalances` / `BondOf` directly.
 
 ---
 
 ### Top Up Bond
 
-If your bond falls below the operating threshold (50% of initial):
+If your bond falls below the operating threshold (50% of initial), top up by depositing again on the affected chain:
 
 ```bash
-go run ./cmd/relayer bond topup --amount 0.01eth --config configs/my-relayer.yaml
-# or for Neutron
-go run ./cmd/relayer bond topup --amount 40000untrn --config configs/my-relayer.yaml
+# Sepolia top-up: 0.01 ETH
+go run ./cmd/tessera bond deposit --chain sepolia --amount 10000000000000000
+
+# Neutron top-up: 40,000 uNTRN
+go run ./cmd/tessera bond deposit --chain neutron --amount 40000
 ```
 
 ---
 
 ### Withdraw Bond
 
-After a 1-hour idle period (no pending submissions):
+> Not yet implemented in the CLI. The Bond contracts expose a withdraw entry point — call it directly via `cast` or `neutrond` until a `bond withdraw` subcommand is added.
 
 ```bash
-go run ./cmd/relayer bond withdraw --config configs/my-relayer.yaml
+# Sepolia
+cast send <BOND_ADDRESS> "withdraw(uint256)" <AMOUNT_WEI> \
+  --private-key <YOUR_PRIVATE_KEY> \
+  --rpc-url <SEPOLIA_RPC>
+
+# Neutron
+neutrond tx wasm execute <BOND_ADDRESS> \
+  '{"withdraw":{"amount":"<AMOUNT_UNTRN>"}}' \
+  --from <YOUR_KEY_NAME> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
 ```
+
+A 1-hour idle period (no pending submissions) is enforced on-chain.
 
 ---
 
@@ -132,7 +153,7 @@ If the submitter's original proof was correct, the bond contract will find the c
 
 ## Bridge User Guide
 
-> **Note:** Full bridge UI documentation will be added in Phase 9 when the frontend is built. The steps below describe the protocol-level operations.
+The steps below describe the protocol-level (CLI / `cast` / `neutrond`) flow. For UI users see [tUSDC Bridge → UI walkthrough](./09-tusdc-bridge#ui).
 
 ### Lock tUSDC (Sepolia → Neutron)
 
@@ -152,15 +173,18 @@ If the submitter's original proof was correct, the bond contract will find the c
 
 ### Claim Test Tokens
 
-Both chains have a `claim()` function on the tUSDC contract. Rate-limited to once per address per 24 hours, maximum 1000 tUSDC per claim.
+Both chains have a no-argument `claim()` entry point on the tUSDC contract that mints 1000 tUSDC to `msg.sender` (per-address 24h cooldown).
 
 ```bash
-# Sepolia
-cast send <TUSDC_SEPOLIA> "claim(address,uint256)" <YOUR_ADDRESS> 1000000000000000000000 \
-  --private-key <KEY> --rpc-url <SEPOLIA_RPC>
+# Sepolia — claim() takes no arguments; tokens go to msg.sender
+cast send <TUSDC_SEPOLIA> "claim()" \
+  --private-key <KEY> \
+  --rpc-url <SEPOLIA_RPC>
 
-# Neutron
+# Neutron — Claim {} takes no fields; tokens go to the message sender
 neutrond tx wasm execute <TUSDC_NEUTRON> \
-  '{"claim":{"recipient":"<YOUR_NEUTRON_ADDRESS>","amount":"1000000000"}}' \
-  --from <KEY> --chain-id pion-1
+  '{"claim":{}}' \
+  --from <KEY> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
 ```

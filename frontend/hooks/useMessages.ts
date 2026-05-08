@@ -308,10 +308,31 @@ export function useMessagesRealtime(limit = 10): HookState<MessageRow[]> {
           });
         }
       )
-      .subscribe();
+      // Audit fix PROD-03: surface channel state changes so a silent
+      // disconnect can at least log + refetch instead of leaving the page
+      // visibly fresh while the data goes stale. CHANNEL_ERROR / TIMED_OUT
+      // trigger a one-shot fetch so the dashboard self-heals when the
+      // websocket comes back. CLOSED is expected during cleanup; ignore.
+      .subscribe((status) => {
+        if (cancelled) return;
+        if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+          console.warn(`[useMessagesRealtime] channel ${status} — refetching`);
+          initialFetch();
+        }
+      });
+
+    // Tab-visibility refetch: when the user comes back to the tab, refresh
+    // the list in case any realtime events were dropped while hidden.
+    function onVisibility() {
+      if (document.visibilityState === 'visible' && !cancelled) {
+        initialFetch();
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility);
 
     return () => {
       cancelled = true;
+      document.removeEventListener('visibilitychange', onVisibility);
       supabase.removeChannel(channel);
     };
   }, [limit]);

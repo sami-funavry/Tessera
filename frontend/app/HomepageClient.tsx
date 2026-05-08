@@ -795,6 +795,10 @@ function BridgeWidget({
     formState: { errors },
   } = useForm<BridgeFormValues>({
     resolver: zodResolver(bridgeSchema),
+    // Audit fix UX-19: validate on blur so users get inline feedback as soon
+    // as they leave a field, not only on submit (which never fires until both
+    // wallets are connected — see UX-03).
+    mode: 'onBlur',
     defaultValues: {
       amount: '',
       fromChain: 'sepolia',
@@ -970,35 +974,45 @@ function BridgeWidget({
           ))}
         </div>
 
-        {/* Connection prompt or bridge button */}
-        {!isFullyConnected ? (
-          <div className="mt-4 rounded-sm bg-stone-950/50 border border-stone-800 px-4 py-3 text-center">
-            <p className="text-sm text-stone-400">
-              {needsEvm
-                ? 'Connect MetaMask to bridge'
-                : needsKeplr
-                ? 'Connect Keplr wallet for Neutron'
-                : 'Connect both wallets to bridge'}
-            </p>
-          </div>
-        ) : (
-          <button
-            type="submit"
-            disabled={!canBridge}
-            className={cn(
-              'mt-4 w-full py-3 rounded-sm font-medium transition-colors',
-              canBridge
-                ? 'bg-orange-400 hover:bg-orange-300 text-stone-950'
-                : 'bg-stone-800 text-stone-500 cursor-not-allowed'
-            )}
-          >
-            {txActive
-              ? 'Bridge in progress…'
-              : amount && !isNaN(parseFloat(amount)) && parseFloat(amount) > 0
-              ? `Bridge ${amount} tUSDC`
-              : 'Enter an amount'}
-          </button>
-        )}
+        {/*
+          * Audit fix UX-03: always render a single primary button with the
+          * right disabled state. Old logic replaced the button with a static
+          * prompt when no wallet was connected, so onBlur validation errors
+          * never surfaced and the user had no submit affordance. Label now
+          * reflects which step is missing.
+          */}
+        {(() => {
+          const fullyConnected = isFullyConnected;
+          const disabled = !fullyConnected || !canBridge;
+          let label: string;
+          if (txActive) {
+            label = 'Bridge in progress…';
+          } else if (needsEvm && needsKeplr) {
+            label = 'Connect MetaMask + Keplr to bridge';
+          } else if (needsEvm) {
+            label = 'Connect MetaMask to bridge';
+          } else if (needsKeplr) {
+            label = 'Connect Keplr to bridge';
+          } else if (amount && !isNaN(parseFloat(amount)) && parseFloat(amount) > 0) {
+            label = `Bridge ${amount} tUSDC`;
+          } else {
+            label = 'Enter an amount';
+          }
+          return (
+            <button
+              type="submit"
+              disabled={disabled}
+              className={cn(
+                'mt-4 w-full py-3 rounded-sm font-medium transition-colors',
+                !disabled
+                  ? 'bg-orange-400 hover:bg-orange-300 text-stone-950'
+                  : 'bg-stone-800 text-stone-400 cursor-not-allowed',
+              )}
+            >
+              {label}
+            </button>
+          );
+        })()}
       </form>
     </div>
   );
@@ -1015,7 +1029,6 @@ function ChainPill({ chain }: { chain: 'sepolia' | 'neutron' }) {
     <div className="flex items-center gap-2 px-3 py-2 bg-stone-900 border border-stone-800 rounded-sm shrink-0">
       <span className={cn('w-5 h-5 rounded-full bg-gradient-to-br shrink-0', gradient)} />
       <span className="text-sm text-stone-200">{label}</span>
-      <ChevronDown size={14} strokeWidth={1.5} className="text-stone-500" />
     </div>
   );
 }
@@ -1228,7 +1241,8 @@ export default function HomepageClient({
               functionName: 'approve',
               args: [ADDRESSES.sepolia.bridgeVault as `0x${string}`, maxUint256],
             });
-            await publicClient.waitForTransactionReceipt({ hash: approveHash });
+            // Audit fix PROD-06: bound the receipt wait.
+            await publicClient.waitForTransactionReceipt({ hash: approveHash, timeout: 90_000 });
             toast({ title: 'Approval confirmed', description: 'BridgeVault can now move your tUSDC.', variant: 'info' });
           }
 
@@ -1248,7 +1262,7 @@ export default function HomepageClient({
           setLiveLockHash(lockHash);
           setTxProgress(1);
 
-          const lockReceipt = await publicClient.waitForTransactionReceipt({ hash: lockHash });
+          const lockReceipt = await publicClient.waitForTransactionReceipt({ hash: lockHash, timeout: 90_000 });
           await refetchSepoliaBalance();
           toast({ title: 'Locked on Sepolia', description: `${data.amount} tUSDC locked. Relayer is now translating the proof.`, variant: 'success' });
 

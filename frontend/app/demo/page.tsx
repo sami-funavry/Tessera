@@ -458,7 +458,7 @@ export default function DemoPage() {
     <div className="max-w-7xl mx-auto px-4 sm:px-6 py-10 page-enter">
       {/* Page header */}
       <div className="mb-10">
-        <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-orange-400 mb-2">
+        <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-stone-500 mb-2">
           Demo Control
         </div>
         <h1 className="font-display text-4xl sm:text-5xl text-stone-100 mb-3">

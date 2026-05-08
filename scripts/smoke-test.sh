@@ -34,14 +34,21 @@ if [ -f "$ROOT/.env" ]; then
   set -a; source "$ROOT/.env"; set +a
 fi
 
-for var in ETHERUM_SEPOLIA_ENDPOINT NEUTRON_RPC_URL NEUTRON_REST_URL \
+# Audit fix PROD-04: accept either the correctly-spelled
+# ETHEREUM_SEPOLIA_ENDPOINT or the historic ETHERUM_SEPOLIA_ENDPOINT typo so
+# the smoke test passes for an operator who only set the correct name.
+if [ -z "${ETHEREUM_SEPOLIA_ENDPOINT:-}" ] && [ -n "${ETHERUM_SEPOLIA_ENDPOINT:-}" ]; then
+  export ETHEREUM_SEPOLIA_ENDPOINT="$ETHERUM_SEPOLIA_ENDPOINT"
+fi
+
+for var in ETHEREUM_SEPOLIA_ENDPOINT NEUTRON_RPC_URL NEUTRON_REST_URL \
            SUPABASE_PROJECT_URL SUPABASE_SERVICE_ROLE_KEY \
            ETHERSCAN_API_KEY ETHERSCAN_API_URL; do
   check_env "$var"
 done
 
 # Sepolia RPC
-CHAIN_ID=$(curl -sf -X POST "$ETHERUM_SEPOLIA_ENDPOINT" \
+CHAIN_ID=$(curl -sf -X POST "$ETHEREUM_SEPOLIA_ENDPOINT" \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' \
   | python3 -c "import sys,json; print(json.load(sys.stdin)['result'])" 2>/dev/null || echo "")

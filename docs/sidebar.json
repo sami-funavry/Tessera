@@ -1,6 +1,13 @@
 {
   "sections": [
     {
+      "section": 0,
+      "title": "PM Brief",
+      "slug": "pm-brief",
+      "file": "00-pm-brief.mdx",
+      "description": "Who Tessera is for, what problem it solves, and the success metrics."
+    },
+    {
       "section": 1,
       "title": "Overview",
       "slug": "overview",

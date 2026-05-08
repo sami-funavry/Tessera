@@ -4,6 +4,35 @@ Trust-minimized cross-chain infrastructure. Assets and messages move between EVM
 
 Built for the **ChainGPT Let's AI Hackathon** (May 7–9, 2026).
 
+- **Live demo:** `<LIVE_URL>` (operator fills in once Vercel deploy lands)
+- **Documentation:** [`docs/`](docs/) (in-app docs at `/docs`) · [Notion export](docs/notion-export.md)
+- **Audit findings:** [`docs/audit-findings.md`](docs/audit-findings.md)
+
+---
+
+## Quick Start
+
+Five steps from `git clone` to a working in-process scenario, no funds required:
+
+```bash
+# 1. Configure
+cp .env.example .env   # then fill in RPC URLs, deployer/relayer keys, Supabase
+
+# 2. Solidity contracts
+cd contracts-evm && forge install && forge test
+
+# 3. Go relayer
+cd ../relayer && go build ./... && go test -short ./...
+
+# 4. In-process honest scenario (no real funds)
+go run ./cmd/tessera test-scenario mock
+
+# 5. Frontend (separate terminal)
+cd ../frontend && pnpm install && pnpm dev   # → http://localhost:3000
+```
+
+For the four real-testnet scenarios, see [`scripts/scenarios/0N-*.sh`](scripts/scenarios/) and the [Demo Scenarios doc](docs/05-demo-scenarios.mdx).
+
 ---
 
 ## Architecture at a Glance
@@ -31,25 +60,29 @@ Three things that make this different:
 
 ### Sepolia (Ethereum testnet)
 
+Click any address to open it on Etherscan.
+
 | Contract | Address |
 |----------|---------|
-| tUSDC | `0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0` |
-| Bond | `0x8c7dc28559B75AF8c3d59B62C87309E65cb37912` |
-| RelayerRegistry | `0x43677d5Da5701E061Eefa65e36A4fF6D4BFC1109` |
-| Verifier | `0x2EfAB8cC7ed7C11cfC23C215731aaFA2A602F72a` |
-| BridgeVault | `0x2C3544434185DD65F058494816bB816e5314a29E` |
-| BridgeMint | `0x61cab20856b16003b6a3FB213F86355515AD43cd` |
+| tUSDC | [`0x7dcA…EC5B0`](https://sepolia.etherscan.io/address/0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0) |
+| Bond | [`0x8c7d…7912`](https://sepolia.etherscan.io/address/0x8c7dc28559B75AF8c3d59B62C87309E65cb37912) |
+| RelayerRegistry | [`0x4367…1109`](https://sepolia.etherscan.io/address/0x43677d5Da5701E061Eefa65e36A4fF6D4BFC1109) |
+| Verifier | [`0x2EfA…F72a`](https://sepolia.etherscan.io/address/0x2EfAB8cC7ed7C11cfC23C215731aaFA2A602F72a) |
+| BridgeVault | [`0x2C35…a29E`](https://sepolia.etherscan.io/address/0x2C3544434185DD65F058494816bB816e5314a29E) |
+| BridgeMint | [`0x61ca…43cd`](https://sepolia.etherscan.io/address/0x61cab20856b16003b6a3FB213F86355515AD43cd) |
 
 ### Neutron (pion-1 testnet)
 
+Click any address to open it on Celatone.
+
 | Contract | Address |
 |----------|---------|
-| tUSDC | `neutron16ket7npnkekn76nzhfjauwkwsea49rssp9fkn7fyxu35fwavfrxqxp5qnz` |
-| Bond | `neutron1nnz9j6c3d25wnwj4h3jqkvazgawcmgjjk5unysvf6e0j90gavvsseunvg8` |
-| RelayerRegistry | `neutron1jq5kku3r0sxdkcxvkx7ke4dlcwq4my0m2gncrx4zf7g37hxtwj7qfrya5k` |
-| Verifier | `neutron1sda4ucdq06de7h7lxg66n6sq29ft9hk76a5mpjwehk3a8wfga0eqf002f0` |
-| BridgeVault | `neutron12z7xqgwgp6vsk5s96z4n6vjupqjg3zmvv5v068vvy3n69gshvhaq8j7dam` |
-| BridgeMint | `neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7` |
+| tUSDC | [`neutron1fw6…sck0vld`](https://neutron.celat.one/pion-1/contracts/neutron1fw6unz7a9j4zf9gnvhup5qe6dlftytdc0y0rwyn3lyxdazz22rtsck0vld) |
+| Bond | [`neutron1nnz…seunvg8`](https://neutron.celat.one/pion-1/contracts/neutron1nnz9j6c3d25wnwj4h3jqkvazgawcmgjjk5unysvf6e0j90gavvsseunvg8) |
+| RelayerRegistry | [`neutron1jq5…qfrya5k`](https://neutron.celat.one/pion-1/contracts/neutron1jq5kku3r0sxdkcxvkx7ke4dlcwq4my0m2gncrx4zf7g37hxtwj7qfrya5k) |
+| Verifier | [`neutron1sda…qf002f0`](https://neutron.celat.one/pion-1/contracts/neutron1sda4ucdq06de7h7lxg66n6sq29ft9hk76a5mpjwehk3a8wfga0eqf002f0) |
+| BridgeVault | [`neutron12z7…aq8j7dam`](https://neutron.celat.one/pion-1/contracts/neutron12z7xqgwgp6vsk5s96z4n6vjupqjg3zmvv5v068vvy3n69gshvhaq8j7dam) |
+| BridgeMint | [`neutron18am…ksq8ltt7`](https://neutron.celat.one/pion-1/contracts/neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7) |
 
 Machine-readable: [`scripts/addresses.json`](scripts/addresses.json)
 
@@ -61,15 +94,15 @@ Machine-readable: [`scripts/addresses.json`](scripts/addresses.json)
 
 ```bash
 cd contracts-evm
-forge test -vvv          # 77 tests
-forge coverage           # 91% line coverage
+forge test -vvv          # 88 tests
+forge coverage           # ~91% line coverage
 ```
 
 ### CosmWasm (requires Rust + wasm32 target)
 
 ```bash
 cd contracts-cosmwasm
-cargo test               # 28 tests
+cargo test --workspace   # full workspace incl. 4 demo scenarios
 cargo clippy -- -D warnings
 ```
 
@@ -84,42 +117,48 @@ go test -race ./...      # includes 100x determinism tests on transform layer
 
 ## Running the Relayer
 
-Requires `.env` populated. See `.env.example`.
+Requires `.env` populated. See `.env.example`. All runtime config is via env vars; copy `.env.example` to `.env` and fill in. To run a second relayer instance, set `RELAYER_PRIVATE_KEY` to the second key and rerun.
 
 ```bash
 cd relayer
 
 # Register and bond (first time only)
-go run ./cmd/relayer bond deposit  --config configs/relayer-a.yaml
-go run ./cmd/relayer bond register --config configs/relayer-a.yaml
+go run ./cmd/tessera bond register
+go run ./cmd/tessera bond deposit --chain sepolia --amount 20000000000000000
+go run ./cmd/tessera bond deposit --chain neutron --amount 80000
 
-# Run
-go run ./cmd/relayer relayer --config configs/relayer-a.yaml
+# Run the daemon
+go run ./cmd/tessera relayer
 ```
 
 ---
 
 ## Demo Scenarios
 
-Four scenarios demonstrate the complete economic enforcement model:
+These run as in-process simulations. For testnet runs, see `scripts/scenarios/0N-*.sh`.
 
 ```bash
-go run ./cmd/relayer test-scenario s1-honest    # honest delivery
-go run ./cmd/relayer test-scenario s2-lying     # fraud detected, 50% slashed
-go run ./cmd/relayer test-scenario s3-silent    # absence slashed, successor submits
-go run ./cmd/relayer test-scenario s4-frivolous # baseless challenge, challenger slashed 25%
+go run ./cmd/tessera test-scenario 1   # S-1 honest delivery
+go run ./cmd/tessera test-scenario 2   # S-2 fraud detected, 50% slashed
+go run ./cmd/tessera test-scenario 3   # S-3 absence slashed, successor submits
+go run ./cmd/tessera test-scenario 4   # S-4 baseless challenge, challenger slashed 25%
 ```
 
-Each script reads on-chain rotation state at runtime — roles are not hardcoded.
+Each scenario reads on-chain rotation state at runtime — roles are not hardcoded. The matching shell scripts at `scripts/scenarios/` exercise the same flows against live testnets.
 
 ---
 
 ## Documentation
 
-- **In-app docs** (this repo): [`docs/`](docs/) — 11 sections, MDX format
-- **Notion** (whitepaper depth): [link TBD — published at P-11 polish]
+- **In-app docs** (this repo): [`docs/`](docs/) — 13 sections, MDX format (PM brief, Overview, Architecture, Economics, Demo scenarios, Repo structure, Developer guide, Protocol user guide, tUSDC bridge, Limitations, Future work, Technical decisions)
+- **Notion submission deliverable** (PM brief + Architecture + Technical decisions + Post-hackathon roadmap): [`docs/notion-export.md`](docs/notion-export.md) — copy/paste import to Notion
+- **Audit findings** (Phase 10 gating doc): [`docs/audit-findings.md`](docs/audit-findings.md)
+- **Reflection** (Form-2 deliverable): [`docs/reflection.md`](docs/reflection.md)
+- **Post-hackathon roadmap** (Form-2 deliverable): [`docs/post-hackathon-roadmap.md`](docs/post-hackathon-roadmap.md)
 - **SPEC.md**: full requirements + build plan (authoritative)
 - **PROMPT_LOG.md**: per-prompt build history (hackathon deliverable)
+- **Cost log**: [`docs/cost-log.md`](docs/cost-log.md) — per-phase spend, model discipline notes
+- **Prompt-log highlights** (5 best + 3 worst): [`docs/prompt-log-highlights.md`](docs/prompt-log-highlights.md)
 
 ---
 
@@ -129,7 +168,7 @@ Each script reads on-chain rotation state at runtime — roles are not hardcoded
 contracts-evm/       Solidity contracts (Foundry)
 contracts-cosmwasm/  Rust + CosmWasm contracts
 relayer/             Go service (plugin-based)
-frontend/            Next.js 14 app (P-9)
+frontend/            Next.js 14 app (live at <LIVE_URL>)
 scripts/             Deploy + scenario scripts
 docs/                In-app documentation (MDX)
 supabase/            Schema migrations
@@ -153,6 +192,6 @@ Both relayers registered and bonded on both chains.
 - Solidity 0.8.24 + Foundry
 - Rust + CosmWasm 2.1.4 + cw-multi-test
 - Go 1.22 + go-ethereum + cometbft
-- Next.js 14 (App Router) — frontend in P-9
+- Next.js 14 (App Router) — wagmi + viem + Keplr + Supabase realtime
 - Supabase (state + realtime)
 - Claude Code (Anthropic) — AI-assisted build, hackathon rules compliant
