@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@cosmjs/cosmwasm-stargate": "^0.38.1",
+    "@cosmjs/proto-signing": "^0.39.0",
     "@cosmjs/stargate": "^0.39.0",
     "@hookform/resolvers": "^5.2.2",
     "@keplr-wallet/types": "^0.13.28",

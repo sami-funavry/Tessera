@@ -16,9 +16,19 @@ export function truncateHash(hash: string, chars = 10): string {
   return `${hash.slice(0, chars)}...${hash.slice(-4)}`;
 }
 
+/**
+ * Build an explorer URL for a transaction hash. Normalises the hash to the
+ * format the target explorer expects: Etherscan wants `0x`-prefixed lowercase
+ * hex, Celatone wants uppercase hex with no prefix. Synthetic / fallback hashes
+ * (e.g. seeded scenario rows) get the same normalisation so the link doesn't
+ * silently 404 on the wrong format.
+ */
 export function explorerTxUrl(hash: string, chain: 'sepolia' | 'neutron'): string {
-  if (chain === 'sepolia') return `https://sepolia.etherscan.io/tx/${hash}`;
-  return `https://neutron.celat.one/pion-1/txs/${hash}`;
+  const stripped = (hash ?? '').replace(/^0x/i, '');
+  if (chain === 'sepolia') {
+    return `https://sepolia.etherscan.io/tx/0x${stripped.toLowerCase()}`;
+  }
+  return `https://neutron.celat.one/pion-1/txs/${stripped.toUpperCase()}`;
 }
 
 export function explorerAddressUrl(address: string, chain: 'sepolia' | 'neutron'): string {

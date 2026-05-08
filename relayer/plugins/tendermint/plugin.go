@@ -4,7 +4,9 @@ package tendermint
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	abci "github.com/cometbft/cometbft/abci/types"
 	rpcclient "github.com/cometbft/cometbft/rpc/client"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
@@ -38,6 +41,17 @@ type Plugin struct {
 	mu         sync.Mutex
 	client     *rpchttp.HTTP
 	cwc        *cosmwasm.Client // nil if no private key
+
+	// subIDs maps the relayer-internal [32]byte submission ID (sha256 of the
+	// CosmWasm-emitted submission_id string) back to the original string the
+	// contract uses as its state map key. The chain.Plugin interface forces a
+	// fixed-width [32]byte ID, but the verifier contract emits and accepts a
+	// variable-length string of the form "sub:msg:<chain>:<app>:<nonce>:<addr>:<nanos>"
+	// (see contracts-cosmwasm/packages/tessera-types/src/envelope.rs::submission_id).
+	// We hash it deterministically for in-memory tracking and look up the
+	// original string when we need to call back into the contract.
+	subIDsMu sync.RWMutex
+	subIDs   map[[32]byte]string
 }
 
 // New returns a new Tendermint plugin.
@@ -48,6 +62,7 @@ func New(rpcURL, chainID, restURL string, addrs config.Addresses, privKeyHex str
 		chainID:    chainID,
 		addrs:      addrs,
 		privKeyHex: privKeyHex,
+		subIDs:     make(map[[32]byte]string),
 	}
 }
 
@@ -364,9 +379,105 @@ func (p *Plugin) SubmitMessage(ctx context.Context, env chain.MessageEnvelope, p
 		return "", [32]byte{}, fmt.Errorf("tendermint SubmitMessage: %w", err)
 	}
 
-	slog.Info("tendermint SubmitMessage success", "tx_hash", txHash, "nonce", env.Nonce)
-	// submissionId returned as zero — extracted from receipt by caller if needed.
-	return txHash, [32]byte{}, nil
+	// Pull the submission_id attribute out of the wasm event. The contract emits
+	// a variable-length string ID; we hash it sha256 to fit the [32]byte
+	// chain.Plugin contract while caching the original for ExecuteMessage etc.
+	subIDStr, err := p.fetchSubmissionIDFromTx(ctx, txHash)
+	if err != nil {
+		// Graceful degradation: log and return zero ID. The submitter has a
+		// guard for the zero ID and will skip pending-registration; the tx
+		// itself is still on-chain so no funds are stuck.
+		slog.Warn("tendermint SubmitMessage: could not extract submission_id from tx",
+			"tx_hash", txHash, "err", err)
+		return txHash, [32]byte{}, nil
+	}
+
+	subID := sha256.Sum256([]byte(subIDStr))
+	p.rememberSubID(subID, subIDStr)
+
+	slog.Info("tendermint SubmitMessage success",
+		"tx_hash", txHash,
+		"nonce", env.Nonce,
+		"submission_id_str", subIDStr,
+		"submission_id_hash", hex.EncodeToString(subID[:]))
+	return txHash, subID, nil
+}
+
+// rememberSubID stores the mapping from the relayer-internal [32]byte
+// submission ID to the original CosmWasm string ID. Concurrency-safe.
+func (p *Plugin) rememberSubID(id [32]byte, raw string) {
+	p.subIDsMu.Lock()
+	p.subIDs[id] = raw
+	p.subIDsMu.Unlock()
+}
+
+// lookupSubID returns the original CosmWasm submission_id string for a given
+// hashed ID. Returns ("", false) if the mapping is not present (e.g. after a
+// relayer restart, since the cache is in-process only).
+func (p *Plugin) lookupSubID(id [32]byte) (string, bool) {
+	p.subIDsMu.RLock()
+	raw, ok := p.subIDs[id]
+	p.subIDsMu.RUnlock()
+	return raw, ok
+}
+
+// fetchSubmissionIDFromTx polls Cometbft RPC for the tx by hash and extracts
+// the wasm/submission_id attribute. It retries because broadcast-mode SYNC
+// returns once the tx is in the mempool, before block inclusion.
+func (p *Plugin) fetchSubmissionIDFromTx(ctx context.Context, txHashHex string) (string, error) {
+	hashBytes, err := hex.DecodeString(strings.TrimPrefix(txHashHex, "0x"))
+	if err != nil {
+		return "", fmt.Errorf("decode tx hash hex: %w", err)
+	}
+
+	// Poll for up to ~30 s; Neutron blocks are ~2 s so this leaves headroom.
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		default:
+		}
+		res, err := p.client.Tx(ctx, hashBytes, false)
+		if err != nil {
+			lastErr = err
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if res == nil {
+			lastErr = fmt.Errorf("nil ResultTx")
+			time.Sleep(2 * time.Second)
+			continue
+		}
+		if res.TxResult.Code != 0 {
+			return "", fmt.Errorf("tx failed on chain: code=%d log=%s",
+				res.TxResult.Code, res.TxResult.Log)
+		}
+		id, ok := extractSubmissionID(res.TxResult.Events)
+		if !ok {
+			return "", fmt.Errorf("submission_id attribute not found in wasm events")
+		}
+		return id, nil
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("timeout fetching tx: %w", lastErr)
+	}
+	return "", fmt.Errorf("timeout fetching tx")
+}
+
+// resolveSubID returns the original CosmWasm submission_id string for the
+// given relayer-internal [32]byte ID. Falls back to hex encoding when the
+// in-process cache has no entry (e.g. relayer restart). The fallback path
+// is logged because it will not match any contract state — callers should
+// treat it as best-effort recovery, not a correct success path.
+func (p *Plugin) resolveSubID(id [32]byte, op string) string {
+	if raw, ok := p.lookupSubID(id); ok {
+		return raw
+	}
+	slog.Warn("tendermint: submission_id cache miss; falling back to hex (likely will not match contract state)",
+		"op", op, "submission_id_hash", hex.EncodeToString(id[:]))
+	return fmt.Sprintf("%x", id)
 }
 
 // ExecuteMessage calls Verifier execute_message after the challenge window elapses.
@@ -377,9 +488,10 @@ func (p *Plugin) ExecuteMessage(ctx context.Context, submissionID [32]byte, proo
 	if p.cwc == nil {
 		return "", fmt.Errorf("tendermint ExecuteMessage: not configured")
 	}
+	subIDStr := p.resolveSubID(submissionID, "ExecuteMessage")
 	msg := map[string]any{
 		"execute_message": map[string]any{
-			"submission_id": fmt.Sprintf("%x", submissionID),
+			"submission_id": subIDStr,
 			"proof":         proof.ProofBytes,
 		},
 	}
@@ -389,7 +501,7 @@ func (p *Plugin) ExecuteMessage(ctx context.Context, submissionID [32]byte, proo
 		return "", fmt.Errorf("tendermint ExecuteMessage: %w", err)
 	}
 	slog.Info("tendermint ExecuteMessage success",
-		"tx_hash", txHash, "submission_id", fmt.Sprintf("%x", submissionID))
+		"tx_hash", txHash, "submission_id", subIDStr)
 	return txHash, nil
 }
 
@@ -403,9 +515,10 @@ func (p *Plugin) SubmitChallenge(ctx context.Context, submissionID [32]byte, cou
 	}
 	var correct [32]byte
 	copy(correct[:], counterProof.StateRoot)
+	subIDStr := p.resolveSubID(submissionID, "SubmitChallenge")
 	msg := map[string]any{
 		"challenge": map[string]any{
-			"submission_id":       fmt.Sprintf("%x", submissionID),
+			"submission_id":       subIDStr,
 			"correct_fingerprint": fmt.Sprintf("%x", correct),
 			"evidence_proof":      counterProof.ProofBytes,
 		},
@@ -422,9 +535,10 @@ func (p *Plugin) ClaimAbsenceSlash(ctx context.Context, submissionID [32]byte) (
 	if p.cwc == nil {
 		return "", fmt.Errorf("tendermint ClaimAbsenceSlash: not configured")
 	}
+	subIDStr := p.resolveSubID(submissionID, "ClaimAbsenceSlash")
 	msg := map[string]any{
 		"claim_absence_slash": map[string]any{
-			"submission_id": fmt.Sprintf("%x", submissionID),
+			"submission_id": subIDStr,
 		},
 	}
 	msgJSON, _ := json.Marshal(msg)
@@ -458,6 +572,44 @@ func (p *Plugin) DepositBond(ctx context.Context, amountUNTRN string) (string, e
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// extractSubmissionID scans ABCI events for the wasm event emitted by the
+// verifier's submit_message handler and returns the submission_id attribute
+// value. Multiple wasm events may exist in a single tx; we match the first
+// one whose action attribute is "submit_message" (or, as a fallback, any
+// wasm event that has a submission_id attribute).
+func extractSubmissionID(events []abci.Event) (string, bool) {
+	var fallback string
+	var fallbackFound bool
+	for _, ev := range events {
+		if ev.Type != "wasm" {
+			continue
+		}
+		var action, subID string
+		for _, attr := range ev.Attributes {
+			switch attr.Key {
+			case "action":
+				action = attr.Value
+			case "submission_id":
+				subID = attr.Value
+			}
+		}
+		if subID == "" {
+			continue
+		}
+		if action == "submit_message" {
+			return subID, true
+		}
+		if !fallbackFound {
+			fallback = subID
+			fallbackFound = true
+		}
+	}
+	if fallbackFound {
+		return fallback, true
+	}
+	return "", false
+}
 
 type cwEnvelope struct {
 	SourceChainID string `json:"source_chain_id"`

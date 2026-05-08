@@ -11,6 +11,9 @@ importers:
       '@cosmjs/cosmwasm-stargate':
         specifier: ^0.38.1
         version: 0.38.1
+      '@cosmjs/proto-signing':
+        specifier: ^0.39.0
+        version: 0.39.0
       '@cosmjs/stargate':
         specifier: ^0.39.0
         version: 0.39.0

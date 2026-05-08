@@ -1,6 +1,6 @@
 'use client';
 
-import { use } from 'react';
+import { use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowRight, Layers, GitBranch, ArrowLeftRight, Inbox } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -9,10 +9,32 @@ import SectionLabel from '@/components/SectionLabel';
 import CopyableHash from '@/components/CopyableHash';
 import SkeletonLoader from '@/components/SkeletonLoader';
 import { useMessage } from '@/hooks/useMessages';
+import { useSubmissions } from '@/hooks/useRelayers';
 import { cn, timeAgo, statusToColor } from '@/lib/utils';
+import { supabase } from '@/lib/supabase';
 import type { Database } from '@/types';
 
 type MessageRow = Database['public']['Tables']['messages']['Row'];
+type EventRow = Database['public']['Tables']['events']['Row'];
+
+// Hook: pull all events tied to a message via raw_data->>nonce.
+function useEventsForMessage(nonce: number | null): EventRow[] {
+  const [rows, setRows] = useState<EventRow[]>([]);
+  useEffect(() => {
+    if (nonce == null) { setRows([]); return; }
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('events')
+        .select('*')
+        .filter('raw_data->>nonce', 'eq', String(nonce))
+        .order('indexed_at', { ascending: true });
+      if (!cancelled && data) setRows(data);
+    })();
+    return () => { cancelled = true; };
+  }, [nonce]);
+  return rows;
+}
 
 // ---------------------------------------------------------------------------
 // Meta cell — used in the metadata grid
@@ -168,13 +190,18 @@ function deriveDestExplorer(msg: MessageRow): 'sepolia' | 'neutron' {
 }
 
 // ---------------------------------------------------------------------------
-// Static proof root placeholders derived from source_tx_hash
-// These are synthetic display values — real proofs come from the relayer.
+// Format helpers
 // ---------------------------------------------------------------------------
 
-function syntheticRoot(hash: string, seed: string): string {
-  if (!hash || hash.length < 16) return '0x0000000000000000000000000000000000000000000000000000000000000000';
-  return hash.slice(0, 18) + seed + hash.slice(-14);
+/** Convert raw wei amount string (18 decimals) to a human-readable display. */
+function formatAmount(rawWei: string | null | undefined): string {
+  if (!rawWei) return '—';
+  try {
+    const n = Number(rawWei) / 1e18;
+    return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  } catch {
+    return rawWei;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -187,8 +214,29 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
   const srcExplorer = deriveSourceExplorer(msg);
   const dstExplorer = deriveDestExplorer(msg);
 
-  const sourceRoot = syntheticRoot(msg.source_tx_hash, 'c4e9d5b7a3f1e6d8');
-  const transformedRoot = syntheticRoot(msg.source_tx_hash, '4e7d2a5b8f3e1d6c');
+  // Real data: latest submission row for this message + events stream.
+  const submissions = useSubmissions(id);
+  const events = useEventsForMessage(msg.nonce);
+
+  const latestSubmission = submissions.data?.[0] ?? null;
+  const destTxHash = latestSubmission?.dest_tx_hash ?? null;
+
+  // Pull source_root and transformed_root from the ProofTransformed event
+  // (set by the relay-helper / scenario API). Falls back to the
+  // ProofFetched event for source_root if Transformed is missing.
+  const proofTransformed = events.find((e) => e.event_type === 'ProofTransformed');
+  const proofFetched = events.find((e) => e.event_type === 'ProofFetched');
+  const executedEvent = events.find((e) => e.event_type === 'Executed');
+
+  const sourceRoot =
+    (proofTransformed?.raw_data as { source_root?: string } | null)?.source_root ??
+    (proofFetched?.raw_data as { source_root?: string } | null)?.source_root ??
+    null;
+  const transformedRoot =
+    (proofTransformed?.raw_data as { transformed_root?: string } | null)?.transformed_root ??
+    latestSubmission?.fingerprint ??
+    null;
+  const destBlock = executedEvent?.block_number ?? null;
 
   const statusColor = statusToColor(msg.status);
   const statusColorMap: Record<string, string> = {
@@ -252,10 +300,16 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
         transition={{ delay: 0.08, duration: 0.35 }}
       >
         <Meta label="Route" value={dir} />
-        <Meta label="Asset" value={`${msg.amount} tUSDC`} />
+        <Meta label="Asset" value={`${formatAmount(msg.amount)} tUSDC`} />
         <Meta
           label="Relayer"
-          value={msg.sender ? msg.sender.slice(0, 12) + '…' : '—'}
+          value={
+            latestSubmission
+              ? latestSubmission.submitter_address.slice(0, 12) + '…'
+              : msg.sender
+                ? msg.sender.slice(0, 12) + '…'
+                : '—'
+          }
         />
         <Meta label="Nonce" value={msg.nonce} mono />
         <Meta label="Source block" value={msg.source_block?.toLocaleString()} mono />
@@ -264,10 +318,20 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
           hash={msg.source_tx_hash || null}
           explorer={srcExplorer}
         />
-        <Meta label="Destination block" value="—" mono />
-        <Meta label="Destination tx" value="—" placeholder="Pending" />
-        <Meta label="Source root" hash={sourceRoot} />
-        <Meta label="Transformed root" hash={transformedRoot} />
+        <Meta
+          label="Destination block"
+          value={destBlock != null ? destBlock.toLocaleString() : null}
+          mono
+          placeholder={msg.status === 'executed' ? '—' : 'Pending'}
+        />
+        <Meta
+          label="Destination tx"
+          hash={destTxHash}
+          explorer={dstExplorer}
+          placeholder={msg.status === 'executed' ? '—' : 'Pending'}
+        />
+        <Meta label="Source root" hash={sourceRoot} placeholder="Pending" />
+        <Meta label="Transformed root" hash={transformedRoot} placeholder="Pending" />
         <Meta label="Gas (source)" value="~142k" mono />
         <Meta label="Gas (destination)" value="~218k" mono />
       </motion.div>
@@ -300,7 +364,7 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
                     '├─ Branch (depth 2) — 16 children',
                     '└─ Leaf (depth 3) — value 0x...64',
                   ]}
-                  root={sourceRoot}
+                  root={sourceRoot ?? 'Pending'}
                   size="1247 bytes"
                   hashFn="Keccak-256"
                 />
@@ -313,7 +377,7 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
                     '├─ Inner (height 2)',
                     '└─ Leaf — value 0x...64',
                   ]}
-                  root={transformedRoot}
+                  root={transformedRoot ?? 'Pending'}
                   size="1389 bytes"
                   hashFn="SHA-256"
                 />
@@ -329,7 +393,7 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
                     '├─ Inner (height 2)',
                     '└─ Leaf — value 0x...64',
                   ]}
-                  root={sourceRoot}
+                  root={sourceRoot ?? 'Pending'}
                   size="1389 bytes"
                   hashFn="SHA-256"
                 />
@@ -342,7 +406,7 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
                     '├─ Branch (depth 2) — 16 children',
                     '└─ Leaf (depth 3) — value 0x...64',
                   ]}
-                  root={transformedRoot}
+                  root={transformedRoot ?? 'Pending'}
                   size="1247 bytes"
                   hashFn="Keccak-256"
                 />
@@ -354,7 +418,7 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
           <div className="p-4 bg-orange-400/5 border border-orange-400/20 rounded-sm text-sm text-stone-300">
             Both proofs commit to the same logical claim:{' '}
             <span className="font-mono text-orange-300">
-              &ldquo;Vault contract storage slot 0x4 has value {msg.amount || '100,000,000'} at
+              &ldquo;Vault contract storage slot 0x4 has value {formatAmount(msg.amount)} tUSDC at
               block {msg.source_block ?? 'N'}&rdquo;
             </span>{' '}
             — anchored differently for each chain&apos;s native verification path.

@@ -20,6 +20,16 @@ pub enum ExecuteMsg {
     Transfer { recipient: String, amount: Uint128 },
 }
 
+/// CW20-compatible token metadata response — required by Keplr "Add Token" flow
+/// and the CosmJS CW20 client.
+#[cw_serde]
+pub struct TokenInfoResponse {
+    pub name: String,
+    pub symbol: String,
+    pub decimals: u8,
+    pub total_supply: Uint128,
+}
+
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum QueryMsg {
@@ -27,4 +37,7 @@ pub enum QueryMsg {
     Balance { addr: String },
     #[returns(Uint128)]
     TotalSupply {},
+    /// CW20-compatible token metadata — required by Keplr "Add Token" flow.
+    #[returns(TokenInfoResponse)]
+    TokenInfo {},
 }

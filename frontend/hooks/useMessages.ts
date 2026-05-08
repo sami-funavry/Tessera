@@ -270,7 +270,7 @@ export function useMessagesRealtime(limit = 10): HookState<MessageRow[]> {
      * rather than re-fetching everything on every event.
      */
     const channel = supabase
-      .channel('messages-realtime')
+      .channel(`messages-realtime-${Math.random().toString(36).slice(2)}`)
       .on<MessageRow>(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'messages' },

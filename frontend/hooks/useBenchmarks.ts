@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import type { Database } from '@/types';
 
 type BenchmarkRun = Database['public']['Tables']['benchmark_runs']['Row'];
+type MessageRow = Database['public']['Tables']['messages']['Row'];
 
 // ---------- generic hook state shape ----------
 
@@ -75,11 +76,15 @@ export function useBenchmarkRuns(limit = 20): HookState<BenchmarkRun[]> {
 // ---------- useBenchmarkStats ----------
 
 /**
- * Aggregates benchmark_runs into summary statistics.
+ * Aggregates bridge latency and gas usage from the actual messages table.
  *
- * Averaging is done client-side over at most 100 rows so we do not need a
- * custom Postgres RPC for the demo. Phase 10 can replace this with a
- * server-side aggregate if row counts grow.
+ * Latency = updated_at − created_at, computed only for rows that reached
+ * status 'executed' (i.e. fully delivered cross-chain). This single source
+ * of truth means the dashboard auto-fills as messages flow through —
+ * no separate benchmark_runs writes required.
+ *
+ * The `benchmark_runs` table remains for future dedicated benchmarking
+ * (P-10/P-11 scope) and is exposed via useBenchmarkRuns above.
  */
 export function useBenchmarkStats(): HookState<BenchmarkStats> {
   const [state, setState] = useState<HookState<BenchmarkStats>>(initialState);
@@ -90,13 +95,11 @@ export function useBenchmarkStats(): HookState<BenchmarkStats> {
     async function fetch() {
       setState(initialState);
 
-      // Fetch up to 100 rows for the aggregate — sufficient for the demo.
-      // Using select('*') to preserve the full typed BenchmarkRun row shape;
-      // a partial column list causes the Supabase client to infer `never`.
       const { data, error } = await supabase
-        .from('benchmark_runs')
-        .select('*')
-        .order('run_at', { ascending: false })
+        .from('messages')
+        .select('id, created_at, updated_at, status')
+        .eq('status', 'executed')
+        .order('updated_at', { ascending: false })
         .limit(100);
 
       if (cancelled) return;
@@ -106,24 +109,34 @@ export function useBenchmarkStats(): HookState<BenchmarkStats> {
         return;
       }
 
-      // The Supabase typed client occasionally infers `never[]` in the stats
-      // path — casting through the concrete row type is safe because we own
-      // the Database type definition.
-      const rows = (data ?? []) as BenchmarkRun[];
+      const rows = (data ?? []) as Pick<
+        MessageRow,
+        'id' | 'created_at' | 'updated_at' | 'status'
+      >[];
 
-      function avg(values: (number | null)[]): number | null {
-        const valid = values.filter((v): v is number => v !== null);
-        if (valid.length === 0) return null;
-        return valid.reduce((a, b) => a + b, 0) / valid.length;
-      }
+      const latencies: number[] = rows
+        .map((r) => {
+          const start = new Date(r.created_at).getTime();
+          const end = new Date(r.updated_at).getTime();
+          const diff = end - start;
+          return Number.isFinite(diff) && diff >= 0 ? diff : NaN;
+        })
+        .filter((n) => Number.isFinite(n));
+
+      const avgLatencyMs =
+        latencies.length > 0
+          ? latencies.reduce((a, b) => a + b, 0) / latencies.length
+          : null;
 
       setState({
         data: {
           count: rows.length,
-          avgLatencyMs: avg(rows.map((r) => r.total_latency_ms)),
-          avgSourceGas: avg(rows.map((r) => r.source_gas_used)),
-          avgDestGas: avg(rows.map((r) => r.dest_gas_used)),
-          avgProofTransformMs: avg(rows.map((r) => r.proof_transform_ms)),
+          avgLatencyMs,
+          // Gas data is not derivable from the messages table; fall back to
+          // null. A future benchmark_runs population pass can fill these.
+          avgSourceGas: null,
+          avgDestGas: null,
+          avgProofTransformMs: null,
         },
         loading: false,
         error: null,

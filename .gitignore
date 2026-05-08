@@ -40,6 +40,16 @@ frontend/tsconfig.tsbuildinfo
 
 # Go binaries
 relayer/bin/
+/bin/
 
 # Foundry gas snapshots (committed intentionally per convention — but not broadcast)
 broadcast/
+
+# Playwright debug output (transient)
+.playwright-mcp/
+
+# UI testing screenshots (transient)
+*.png
+*.jpeg
+!frontend/public/**/*.png
+!frontend/public/**/*.jpeg

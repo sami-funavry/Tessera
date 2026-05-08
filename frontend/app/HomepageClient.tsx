@@ -11,14 +11,50 @@ import {
   Clock, ChevronDown, Copy, Check, ExternalLink,
 } from 'lucide-react';
 import { useWalletClient, usePublicClient, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits, toHex, padHex } from 'viem';
+import { parseUnits, formatUnits, toHex, padHex, maxUint256 } from 'viem';
 
 import { cn, explorerTxUrl } from '@/lib/utils';
-import { BRIDGE_PARAMS, ADDRESSES } from '@/lib/config';
+import { neutronFee } from '@/lib/keplr';
+import { BRIDGE_PARAMS, ADDRESSES, CHAIN_CONFIG } from '@/lib/config';
 import { ERC20_ABI, BRIDGE_VAULT_ABI } from '@/lib/bridgeAbis';
 import { useWalletContext } from '@/hooks/useWalletContext';
 import { useSystemStats } from '@/hooks/useMessages';
+import { useToast } from '@/hooks/useToast';
 import type { TxStage, BridgeFormValues } from '@/types';
+
+// ─── Neutron CW20 balance hook ────────────────────────────────────────────────
+// Uses CosmJS via the Tendermint RPC rather than the unreliable Cosmos REST API.
+
+function useNeutronTusdcBalance(neutronAddress: string | null) {
+  const [balance, setBalance] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!neutronAddress) { setBalance(null); return; }
+
+    let cancelled = false;
+    const rpc = process.env.NEXT_PUBLIC_NEUTRON_RPC_URL ?? 'https://neutron-testnet-rpc.polkachu.com';
+
+    async function fetchBalance() {
+      try {
+        const { CosmWasmClient } = await import('@cosmjs/cosmwasm-stargate');
+        const client = await CosmWasmClient.connect(rpc);
+        const raw = await client.queryContractSmart(ADDRESSES.neutron.tusdc, {
+          balance: { addr: neutronAddress },
+        });
+        if (!cancelled && raw != null) {
+          const amount = typeof raw === 'string' ? raw : String(raw);
+          setBalance((Number(amount) / 1_000_000).toFixed(2));
+        }
+      } catch { /* silently keep last known balance */ }
+    }
+
+    fetchBalance();
+    const id = setInterval(fetchBalance, 15_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [neutronAddress]);
+
+  return balance;
+}
 
 // ─── Zod schema ───────────────────────────────────────────────────────────────
 
@@ -50,56 +86,67 @@ const bridgeSchema = z.object({
 
 // ─── Static constants ──────────────────────────────────────────────────────────
 
-const TX_STAGES: TxStage[] = [
-  {
-    id: 'lock',
-    label: 'Locked on Sepolia',
-    detail: 'Block 12,345',
-    txHash: '0xabc12def4567890abcdef1234567890abcdef12d4f1',
-    explorer: 'sepolia',
-  },
-  {
-    id: 'proof',
-    label: 'Proof generated',
-    detail: '1,247 bytes · 8 nodes',
-    data: {
-      type: 'patricia',
-      root: '0xf2a8c4e9d5b7a3f1e6d8c2b9a4f7e3d1c8b6a5f2e9',
-      size: 1247,
-      hash: 'Keccak-256',
+/**
+ * Stage templates used by the live transaction roadmap. Real tx hashes are
+ * injected at runtime — the placeholders below are never shown unless the
+ * widget is in pure-demo mode (no wallet connected).
+ *
+ * `txHash: null` means "no on-chain tx for this stage yet"; the UI will
+ * render "Pending" instead of a clickable explorer link.
+ */
+function makeTxStages(direction: 'sepolia_to_neutron' | 'neutron_to_sepolia'): TxStage[] {
+  const sourceChain = direction === 'sepolia_to_neutron' ? 'sepolia' : 'neutron';
+  const destChain = direction === 'sepolia_to_neutron' ? 'neutron' : 'sepolia';
+  const sourceLabel = direction === 'sepolia_to_neutron' ? 'Locked on Sepolia' : 'Burned on Neutron';
+  const destLabel = direction === 'sepolia_to_neutron' ? 'Minted on Neutron' : 'Released on Sepolia';
+  const sourceFmt = direction === 'sepolia_to_neutron' ? 'Patricia/RLP/Keccak' : 'IAVL/Protobuf/SHA-256';
+  const destFmt = direction === 'sepolia_to_neutron' ? 'IAVL/Protobuf/SHA-256' : 'Patricia/RLP/Keccak';
+  const transformLabel = direction === 'sepolia_to_neutron'
+    ? 'Patricia → IAVL'
+    : 'IAVL → Patricia';
+  return [
+    {
+      id: 'lock',
+      label: sourceLabel,
+      detail: 'Awaiting confirmation',
+      txHash: undefined,
+      explorer: sourceChain,
     },
-  },
-  {
-    id: 'transform',
-    label: 'Transformed',
-    detail: 'Patricia → IAVL',
-    data: {
-      from: 'Patricia/RLP/Keccak',
-      to: 'IAVL/Protobuf/SHA-256',
-      transformedRoot: '0x9c4e7d2a5b8f3e1d6c4a9f2b7e5d8c1a3f6b4e2d3a2b',
+    {
+      id: 'proof',
+      label: 'Proof generated',
+      detail: 'Source-native fingerprint',
+      data: { type: 'patricia', size: 1247, hash: direction === 'sepolia_to_neutron' ? 'Keccak-256' : 'SHA-256' },
     },
-  },
-  {
-    id: 'submit',
-    label: 'Submitted to Neutron',
-    detail: 'Relayer A · nonce 48',
-    txHash: 'C8D2F4A9B12E3F4D5C6789ABCDEF0123456789A912',
-    explorer: 'neutron',
-  },
-  {
-    id: 'window',
-    label: 'Challenge window',
-    detail: '60s · uncontested',
-    data: { duration: '60s', remaining: '0s', status: 'closed', challenges: 0 },
-  },
-  {
-    id: 'mint',
-    label: 'Minted',
-    detail: '100 tUSDC delivered',
-    txHash: 'C8D2F4A9B12E3F4D5C6789ABCDEF0123456789A912',
-    explorer: 'neutron',
-  },
-];
+    {
+      id: 'transform',
+      label: 'Transformed',
+      detail: transformLabel,
+      data: { from: sourceFmt, to: destFmt },
+    },
+    {
+      id: 'submit',
+      label: 'Submitted by relayer',
+      detail: 'Awaiting destination tx',
+      txHash: undefined,
+      explorer: destChain,
+    },
+    {
+      id: 'window',
+      label: 'Challenge window',
+      detail: '60s · uncontested',
+      data: { duration: '60s', remaining: '0s', status: 'closed', challenges: 0 },
+    },
+    {
+      id: 'mint',
+      label: destLabel,
+      detail: 'Tokens delivered',
+      txHash: undefined,
+      explorer: destChain,
+    },
+  ];
+}
+
 
 const DIFFERENTIATORS = [
   {
@@ -540,6 +587,7 @@ function LiveTxSection({
   amount,
   onReset,
   liveLockHash,
+  liveDestHash,
   nonce,
   direction,
 }: {
@@ -547,15 +595,24 @@ function LiveTxSection({
   amount: string;
   onReset: () => void;
   liveLockHash?: string | null;
+  liveDestHash?: string | null;
   nonce?: bigint | null;
   direction?: string;
 }) {
   const [inspectorOpen, setInspectorOpen] = useState(false);
-  const done = progress >= TX_STAGES.length;
 
-  // Build stages array with real tx hash injected into lock stage when available.
-  const stages: TxStage[] = TX_STAGES.map((s, i) => {
+  // Direction-aware stage list — labels reflect actual chain and proof flow.
+  const directionKey: 'sepolia_to_neutron' | 'neutron_to_sepolia' =
+    direction === 'Neutron → Sepolia' ? 'neutron_to_sepolia' : 'sepolia_to_neutron';
+  const stageTemplates = makeTxStages(directionKey);
+  const done = progress >= stageTemplates.length;
+
+  // Stages with real on-chain hashes injected. Stage 0 = source lock/burn,
+  // stages 3 & 5 = destination submit/mint. Hashes are filled progressively
+  // as the relay completes.
+  const stages: TxStage[] = stageTemplates.map((s, i) => {
     if (i === 0 && liveLockHash) return { ...s, txHash: liveLockHash };
+    if ((i === 3 || i === 5) && liveDestHash) return { ...s, txHash: liveDestHash };
     return s;
   });
 
@@ -711,12 +768,14 @@ function BridgeWidget({
   onSubmit,
   txActive,
   initialStats,
-  balance,
+  sepoliaBalance,
+  neutronBalance,
 }: {
   onSubmit: (data: BridgeFormValues) => void;
   txActive: boolean;
   initialStats: BridgeStats;
-  balance?: string | null;
+  sepoliaBalance?: string | null;
+  neutronBalance?: string | null;
 }) {
   const { isFullyConnected, isEvmConnected, isKeplrConnected, evmAddress, neutronAddress } =
     useWalletContext();
@@ -799,8 +858,8 @@ function BridgeWidget({
               Balance:{' '}
               <span className="text-stone-300 font-mono">
                 {fromChain === 'sepolia'
-                  ? (balance != null ? balance : '—')
-                  : '—'}
+                  ? (sepoliaBalance != null ? `${sepoliaBalance} tUSDC` : '—')
+                  : (neutronBalance != null ? `${neutronBalance} tUSDC` : '—')}
               </span>
             </span>
           </div>
@@ -849,7 +908,11 @@ function BridgeWidget({
             </span>
             <span className="text-xs text-stone-500">
               Balance:{' '}
-              <span className="text-stone-300 font-mono">—</span>
+              <span className="text-stone-300 font-mono">
+                {toChain === 'neutron'
+                  ? (neutronBalance != null ? `${neutronBalance} tUSDC` : '—')
+                  : (sepoliaBalance != null ? `${sepoliaBalance} tUSDC` : '—')}
+              </span>
             </span>
           </div>
           <div className="flex items-center gap-3 mb-3">
@@ -1060,31 +1123,63 @@ export default function HomepageClient({
   const [bridgeAmount, setBridgeAmount] = useState('');
   const [bridgeDirection, setBridgeDirection] = useState<'Sepolia → Neutron' | 'Neutron → Sepolia'>('Sepolia → Neutron');
   const [liveLockHash, setLiveLockHash] = useState<string | null>(null);
+  const [liveDestHash, setLiveDestHash] = useState<string | null>(null);
   const [txNonce, setTxNonce] = useState<bigint | null>(null);
   const [txError, setTxError] = useState<string | null>(null);
   const timeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  const { evmAddress } = useWalletContext();
+  const { evmAddress, neutronAddress, cosmWasmClient } = useWalletContext();
   const { data: walletClient } = useWalletClient();
   const publicClient = usePublicClient();
-  const { toast } = useWalletContext() as unknown as { toast?: (t: { type: string; message: string }) => void };
+  const { toast } = useToast();
 
-  // Live tUSDC balance for connected wallet.
-  const { data: rawBalance } = useReadContract({
+  // Live tUSDC balance on Sepolia for connected EVM wallet.
+  const { data: rawBalance, refetch: refetchSepoliaBalance } = useReadContract({
     address: ADDRESSES.sepolia.tusdc as `0x${string}`,
     abi: ERC20_ABI,
     functionName: 'balanceOf',
     args: evmAddress ? [evmAddress as `0x${string}`] : undefined,
     query: { enabled: !!evmAddress, refetchInterval: 15_000 },
   });
-  const tusdcBalance = rawBalance !== undefined
+  const sepoliaBalance = rawBalance !== undefined
     ? parseFloat(formatUnits(rawBalance as bigint, 18)).toFixed(2)
     : null;
 
+  // Live tUSDC balance on Neutron for connected Keplr wallet.
+  const neutronBalance = useNeutronTusdcBalance(neutronAddress);
+
+  /**
+   * Posts to /api/bridge/relay so the server-side simulator delivers tokens
+   * on the destination chain. Returns the real destination tx hash.
+   */
+  async function callRelayer(body: {
+    direction: 'sepolia_to_neutron' | 'neutron_to_sepolia';
+    amount: string;
+    sender: string;
+    recipient: string;
+    sourceTxHash: string;
+    sourceBlock: number;
+    nonce: number;
+  }): Promise<{ destTxHash: string; destExplorerUrl: string }> {
+    const res = await fetch('/api/bridge/relay', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const json = await res.json();
+    if (!res.ok || !json.success) {
+      // Prefer `detail` over `error`: the route returns a short generic error
+      // ("Destination relay failed") plus a long actionable detail containing
+      // the actual cause (e.g. "Relayer A wallet has only 1908 untrn"). Show
+      // the detail so users can act on it.
+      throw new Error(json.detail ?? json.error ?? 'Relay failed');
+    }
+    return { destTxHash: json.destTxHash, destExplorerUrl: json.destExplorerUrl };
+  }
+
   const handleBridge = useCallback(
     async (data: BridgeFormValues) => {
-      if (!walletClient || !publicClient) return;
-
+      // Reset UI state for a fresh run.
       setBridgeAmount(data.amount);
       setBridgeDirection(
         data.fromChain === 'sepolia' ? 'Sepolia → Neutron' : 'Neutron → Sepolia'
@@ -1092,82 +1187,201 @@ export default function HomepageClient({
       setTxActive(true);
       setTxProgress(0);
       setLiveLockHash(null);
+      setLiveDestHash(null);
       setTxError(null);
       timeoutsRef.current.forEach(clearTimeout);
       timeoutsRef.current = [];
 
-      if (data.fromChain !== 'sepolia') {
-        // Neutron → Sepolia: CosmWasm burn path — show educational animation only
-        setTxActive(true);
-        const ids = [
-          setTimeout(() => setTxProgress(1), 1500),
-          setTimeout(() => setTxProgress(2), 4000),
-          setTimeout(() => setTxProgress(3), 8000),
-          setTimeout(() => setTxProgress(4), 15000),
-          setTimeout(() => setTxProgress(5), 25000),
-          setTimeout(() => setTxProgress(6), 40000),
-        ];
-        timeoutsRef.current = ids;
+      // ─── Sepolia → Neutron ────────────────────────────────────────────
+      if (data.fromChain === 'sepolia') {
+        if (!walletClient || !publicClient || !evmAddress) {
+          setTxError('Connect MetaMask first');
+          setTxActive(false);
+          toast({ title: 'Wallet not connected', description: 'Connect MetaMask to bridge from Sepolia.', variant: 'error' });
+          return;
+        }
+        if (!data.recipient.startsWith('neutron1')) {
+          setTxError('Recipient must be a neutron1... address');
+          setTxActive(false);
+          toast({ title: 'Invalid recipient', description: 'Sepolia→Neutron requires a neutron1... address.', variant: 'error' });
+          return;
+        }
+        try {
+          const amountWei = parseUnits(data.amount, 18);
+
+          // Step 1 — Approve tUSDC to BridgeVault, but only if the existing
+          // allowance is insufficient. Saves the user one MetaMask popup on
+          // every subsequent bridge from the same wallet. We approve max
+          // (2^256 - 1) so the next bridge skips this step entirely; this is
+          // the standard pattern used by every major dex front-end.
+          const currentAllowance = (await publicClient.readContract({
+            address: ADDRESSES.sepolia.tusdc as `0x${string}`,
+            abi: ERC20_ABI,
+            functionName: 'allowance',
+            args: [evmAddress, ADDRESSES.sepolia.bridgeVault as `0x${string}`],
+          })) as bigint;
+
+          if (currentAllowance < amountWei) {
+            const approveHash = await walletClient.writeContract({
+              address: ADDRESSES.sepolia.tusdc as `0x${string}`,
+              abi: ERC20_ABI,
+              functionName: 'approve',
+              args: [ADDRESSES.sepolia.bridgeVault as `0x${string}`, maxUint256],
+            });
+            await publicClient.waitForTransactionReceipt({ hash: approveHash });
+            toast({ title: 'Approval confirmed', description: 'BridgeVault can now move your tUSDC.', variant: 'info' });
+          }
+
+          // Step 2 — Lock in BridgeVault
+          const nonce = BigInt(Date.now());
+          setTxNonce(nonce);
+          const destChainId32 = padHex(toHex('pion-1'), { size: 32, dir: 'right' }) as `0x${string}`;
+          const destAppHex = toHex(new TextEncoder().encode(ADDRESSES.neutron.bridgeMint)) as `0x${string}`;
+
+          const lockHash = await walletClient.writeContract({
+            address: ADDRESSES.sepolia.bridgeVault as `0x${string}`,
+            abi: BRIDGE_VAULT_ABI,
+            functionName: 'lock',
+            args: [amountWei, nonce as unknown as bigint, destChainId32, destAppHex],
+          });
+
+          setLiveLockHash(lockHash);
+          setTxProgress(1);
+
+          const lockReceipt = await publicClient.waitForTransactionReceipt({ hash: lockHash });
+          await refetchSepoliaBalance();
+          toast({ title: 'Locked on Sepolia', description: `${data.amount} tUSDC locked. Relayer is now translating the proof.`, variant: 'success' });
+
+          // Optimistic stage advance while the server-side relayer runs.
+          const stageTimeouts = [
+            setTimeout(() => setTxProgress(2), 2_500),
+            setTimeout(() => setTxProgress(3), 5_000),
+          ];
+          timeoutsRef.current = stageTimeouts;
+
+          // Step 3 — Call /api/bridge/relay to deliver on Neutron.
+          const relayResult = await callRelayer({
+            direction: 'sepolia_to_neutron',
+            amount: amountWei.toString(),
+            sender: evmAddress,
+            recipient: data.recipient,
+            sourceTxHash: lockHash,
+            sourceBlock: Number(lockReceipt.blockNumber),
+            nonce: Number(nonce),
+          });
+
+          setLiveDestHash(relayResult.destTxHash);
+          setTxProgress(4); // submitted on Neutron
+          setTxProgress(5); // window closed (instant in demo)
+          setTxProgress(6); // executed + minted
+
+          // Refresh both balances now that destination tokens exist.
+          await refetchSepoliaBalance();
+          // Neutron balance polls every 15s; we don't have a refetch handle, but the
+          // poll will catch up. The toast confirms the action.
+          toast({
+            title: 'Minted on Neutron',
+            description: `${data.amount} tUSDC delivered. View on Celatone.`,
+            variant: 'success',
+          });
+        } catch (err: unknown) {
+          const msg = err instanceof Error
+            ? (err.message.includes('User rejected') ? 'Transaction rejected' : err.message.slice(0, 400))
+            : 'Transaction failed';
+          setTxError(msg);
+          setTxActive(false);
+          setTxProgress(0);
+          toast({ title: 'Bridge failed', description: msg, variant: 'error' });
+        }
         return;
       }
 
+      // ─── Neutron → Sepolia ────────────────────────────────────────────
+      if (!cosmWasmClient || !neutronAddress) {
+        setTxError('Connect Keplr first');
+        setTxActive(false);
+        toast({ title: 'Wallet not connected', description: 'Connect Keplr to bridge from Neutron.', variant: 'error' });
+        return;
+      }
+      if (!data.recipient.startsWith('0x')) {
+        setTxError('Recipient must be a 0x... EVM address');
+        setTxActive(false);
+        toast({ title: 'Invalid recipient', description: 'Neutron→Sepolia requires a 0x... address.', variant: 'error' });
+        return;
+      }
       try {
-        const amountWei = parseUnits(data.amount, 18);
-
-        // Step 1 — Approve tUSDC to BridgeVault
-        const approveHash = await walletClient.writeContract({
-          address: ADDRESSES.sepolia.tusdc as `0x${string}`,
-          abi: ERC20_ABI,
-          functionName: 'approve',
-          args: [ADDRESSES.sepolia.bridgeVault as `0x${string}`, amountWei],
-        });
-        await publicClient.waitForTransactionReceipt({ hash: approveHash });
-
-        // Step 2 — Lock in BridgeVault
+        // Burn / send: amount in 6-decimal uTUSDC.
+        const amountUtusdc = (BigInt(Math.floor(parseFloat(data.amount) * 1_000_000))).toString();
         const nonce = BigInt(Date.now());
         setTxNonce(nonce);
-        const destChainId32 = padHex(toHex('pion-1'), { size: 32, dir: 'right' }) as `0x${string}`;
-        const destAppHex = toHex(new TextEncoder().encode(ADDRESSES.neutron.bridgeMint)) as `0x${string}`;
 
-        const lockHash = await walletClient.writeContract({
-          address: ADDRESSES.sepolia.bridgeVault as `0x${string}`,
-          abi: BRIDGE_VAULT_ABI,
-          functionName: 'lock',
-          args: [amountWei, nonce as unknown as bigint, destChainId32, destAppHex],
+        // Step 1 — User signs a CW20 transfer to the BridgeMint contract.
+        // For the simulator this is just an outgoing transfer; the destination
+        // delivery is handled server-side. The on-chain action is real and
+        // visible on Celatone.
+        const burnRes = await cosmWasmClient.execute(
+          neutronAddress,
+          ADDRESSES.neutron.tusdc,
+          {
+            transfer: {
+              recipient: ADDRESSES.neutron.bridgeMint,
+              amount: amountUtusdc,
+            },
+          },
+          neutronFee(250_000),
+        );
+
+        setLiveLockHash(burnRes.transactionHash);
+        setTxProgress(1);
+        toast({ title: 'Burned on Neutron', description: `${data.amount} tUSDC sent to BridgeMint. Relayer is now releasing on Sepolia.`, variant: 'success' });
+
+        // Optimistic stage advance while the server-side relayer runs.
+        const stageTimeouts = [
+          setTimeout(() => setTxProgress(2), 2_500),
+          setTimeout(() => setTxProgress(3), 5_000),
+        ];
+        timeoutsRef.current = stageTimeouts;
+
+        // Step 2 — Call /api/bridge/relay to deliver on Sepolia.
+        const relayResult = await callRelayer({
+          direction: 'neutron_to_sepolia',
+          amount: amountUtusdc,
+          sender: neutronAddress,
+          recipient: data.recipient,
+          sourceTxHash: burnRes.transactionHash,
+          sourceBlock: burnRes.height,
+          nonce: Number(nonce),
         });
 
-        setLiveLockHash(lockHash);
-        setTxProgress(1); // lock confirmed on-chain
+        setLiveDestHash(relayResult.destTxHash);
+        setTxProgress(4);
+        setTxProgress(5);
+        setTxProgress(6);
 
-        await publicClient.waitForTransactionReceipt({ hash: lockHash });
-        setTxProgress(1);
-
-        // Relayer picks up the event and handles proof/submit/execute.
-        // Advance stages on an optimistic timeline (relayer ~90s total).
-        const ids = [
-          setTimeout(() => setTxProgress(2), 5_000),   // proof fetched
-          setTimeout(() => setTxProgress(3), 15_000),  // proof transformed
-          setTimeout(() => setTxProgress(4), 30_000),  // submitted to Neutron
-          setTimeout(() => setTxProgress(5), 90_000),  // challenge window closed
-          setTimeout(() => setTxProgress(6), 100_000), // executed + minted
-        ];
-        timeoutsRef.current = ids;
+        await refetchSepoliaBalance();
+        toast({
+          title: 'Released on Sepolia',
+          description: `${data.amount} tUSDC delivered. View on Etherscan.`,
+          variant: 'success',
+        });
       } catch (err: unknown) {
         const msg = err instanceof Error
-          ? (err.message.includes('User rejected') ? 'Transaction rejected' : err.message.slice(0, 120))
+          ? (err.message.includes('rejected') || err.message.includes('Request rejected') ? 'Transaction rejected' : err.message.slice(0, 400))
           : 'Transaction failed';
         setTxError(msg);
         setTxActive(false);
         setTxProgress(0);
+        toast({ title: 'Bridge failed', description: msg, variant: 'error' });
       }
     },
-    [walletClient, publicClient]
+    [walletClient, publicClient, evmAddress, neutronAddress, cosmWasmClient, refetchSepoliaBalance, toast]
   );
 
   const handleReset = useCallback(() => {
     setTxActive(false);
     setTxProgress(0);
     setLiveLockHash(null);
+    setLiveDestHash(null);
     setTxNonce(null);
     setTxError(null);
     timeoutsRef.current.forEach(clearTimeout);
@@ -1260,12 +1474,13 @@ export default function HomepageClient({
         </motion.div>
 
         {/* Bridge widget — centered */}
-        <motion.div variants={item}>
+        <motion.div variants={item} id="bridge">
           <BridgeWidget
             onSubmit={handleBridge}
             txActive={txActive}
             initialStats={bridgeStats}
-            balance={tusdcBalance}
+            sepoliaBalance={sepoliaBalance}
+            neutronBalance={neutronBalance}
           />
         </motion.div>
       </motion.div>
@@ -1279,6 +1494,7 @@ export default function HomepageClient({
               amount={bridgeAmount}
               onReset={handleReset}
               liveLockHash={liveLockHash}
+              liveDestHash={liveDestHash}
               nonce={txNonce}
               direction={bridgeDirection}
             />

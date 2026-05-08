@@ -65,6 +65,10 @@ export interface EventLogEntry {
   tag: string;
   actor: string;
   msg: string;
+  /** Optional: show as clickable link in the event log. */
+  txHash?: string;
+  /** Which explorer to link the tx hash to. */
+  chain?: 'sepolia' | 'neutron';
 }
 
 export type ToastVariant = 'success' | 'error' | 'warning' | 'info';

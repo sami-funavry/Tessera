@@ -4,7 +4,7 @@ use cosmwasm_std::{
 };
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg};
+use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, TokenInfoResponse};
 use crate::state::{
     BALANCES, BRIDGE_MINT, CLAIM_AMOUNT, CLAIM_COOLDOWN, LAST_CLAIM, OWNER, TOTAL_SUPPLY,
 };
@@ -169,6 +169,15 @@ pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
         QueryMsg::TotalSupply {} => {
             let supply = TOTAL_SUPPLY.load(deps.storage)?;
             to_json_binary(&supply)
+        }
+        QueryMsg::TokenInfo {} => {
+            let supply = TOTAL_SUPPLY.load(deps.storage)?;
+            to_json_binary(&TokenInfoResponse {
+                name: "Tessera USDC".to_string(),
+                symbol: "tUSDC".to_string(),
+                decimals: 6,
+                total_supply: supply,
+            })
         }
     }
 }

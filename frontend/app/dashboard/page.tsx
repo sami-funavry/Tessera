@@ -8,13 +8,28 @@ import CopyableHash from '@/components/CopyableHash';
 import SectionLabel from '@/components/SectionLabel';
 import SkeletonLoader from '@/components/SkeletonLoader';
 import StatusBadge from '@/components/StatusBadge';
+import { useEffect, useState } from 'react';
 import { useMessagesRealtime, useSystemStats } from '@/hooks/useMessages';
 import { useRelayerStats } from '@/hooks/useRelayers';
 import { useBenchmarkStats } from '@/hooks/useBenchmarks';
+import { supabase } from '@/lib/supabase';
 import { RELAYER_ADDRESSES } from '@/lib/config';
 import type { Database, RelayerInfo } from '@/types';
 
 type MessageRow = Database['public']['Tables']['messages']['Row'];
+type SubmissionRow = Database['public']['Tables']['submissions']['Row'];
+
+/**
+ * Returns the human-readable amount for a message, respecting the source
+ * chain's decimals:
+ *   - Sepolia source (chain '11155111') → 1e18 wei
+ *   - Neutron source (chain 'pion-1')   → 1e6 uTUSDC
+ */
+function formatAmount(msg: Pick<MessageRow, 'amount' | 'source_chain_id'>): string {
+  const decimals = msg.source_chain_id === '11155111' ? 1e18 : 1e6;
+  const n = parseFloat(String(msg.amount || '0')) / decimals;
+  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
 
 // Correct on-chain bond amounts (0.02 ETH / 80 000 uNTRN = 0.08 NTRN per relayer)
 const STATIC_RELAYERS: RelayerInfo[] = [
@@ -143,21 +158,55 @@ export default function DashboardPage() {
 
   const messages: MessageRow[] = messagesData.data ?? [];
 
-  /* Total bridged volume — sum real messages or show 0. */
+  /* Pull submissions for the messages on screen so we can show real
+   * destination tx hashes in the recent-submissions table. Refetches
+   * whenever the message list changes. */
+  const [submissionsByMsg, setSubmissionsByMsg] = useState<Record<number, SubmissionRow>>({});
+
+  useEffect(() => {
+    if (messages.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const ids = messages.map((m) => m.id);
+      const { data } = await supabase
+        .from('submissions')
+        .select('*')
+        .in('message_id', ids)
+        .order('id', { ascending: false });
+      if (cancelled || !data) return;
+      const rows = data as SubmissionRow[];
+      const map: Record<number, SubmissionRow> = {};
+      for (const s of rows) {
+        // Keep the first (most recent) submission per message_id.
+        if (!map[s.message_id]) map[s.message_id] = s;
+      }
+      setSubmissionsByMsg(map);
+    })();
+    return () => { cancelled = true; };
+  }, [messages]);
+
+  /* Total bridged volume — sum real messages, decimals-aware per source chain. */
   const totalVolume =
     systemStats.loading
       ? null
       : messages.length > 0
-        ? `${messages.reduce((acc, m) => acc + parseFloat(String(m.amount || '0')), 0).toLocaleString()} tUSDC`
+        ? `${messages.reduce((acc, m) => acc + parseFloat(formatAmount(m).replace(/,/g, '')), 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} tUSDC`
         : '0 tUSDC';
 
-  /* Avg bridge time — from benchmark runs or "--" */
-  const avgBridgeTime =
-    benchStats.loading
-      ? null
-      : benchStats.data && benchStats.data.count > 0 && benchStats.data.avgLatencyMs
-        ? `${Math.round(benchStats.data.avgLatencyMs / 1000)}s`
-        : '—';
+  /* Avg bridge time — derived from messages (updated_at − created_at).
+   * Show seconds, with sub-second precision so very fast demo runs still
+   * read as a real number. Falls back to em dash only when no executed
+   * messages exist at all. */
+  const avgBridgeTime = (() => {
+    if (benchStats.loading) return null;
+    if (!benchStats.data || benchStats.data.count === 0) return '—';
+    const ms = benchStats.data.avgLatencyMs;
+    if (ms == null) return '—';
+    const seconds = ms / 1000;
+    if (seconds < 1) return `${ms.toFixed(0)} ms`;
+    if (seconds < 60) return `${seconds.toFixed(1)} s`;
+    return `${Math.round(seconds)} s`;
+  })();
 
   const activeRelayerCount =
     relayers.filter((r) => r.activityType !== 'deregistered').length;
@@ -339,7 +388,7 @@ export default function DashboardPage() {
                         {routeLabel(msg)}
                       </td>
                       <td className="px-5 py-3.5 font-mono text-stone-200">
-                        {parseFloat(msg.amount || '0').toLocaleString()} tUSDC
+                        {formatAmount(msg)} tUSDC
                       </td>
                       <td className="px-5 py-3.5 text-stone-300">
                         {/* Map submitter address to A/B label if possible. */}
@@ -371,8 +420,20 @@ export default function DashboardPage() {
                         />
                       </td>
                       <td className="px-5 py-3.5">
-                        {/* Destination tx not yet available on MessageRow; show placeholder. */}
-                        <span className="text-stone-500 font-mono text-xs">—</span>
+                        {(() => {
+                          const sub = submissionsByMsg[msg.id];
+                          if (sub?.dest_tx_hash) {
+                            return (
+                              <CopyableHash
+                                value={sub.dest_tx_hash}
+                                displayLength={10}
+                                explorer={dstChain}
+                                className="text-stone-300"
+                              />
+                            );
+                          }
+                          return <span className="text-stone-500 font-mono text-xs">—</span>;
+                        })()}
                       </td>
                       <td className="px-5 py-3.5 text-stone-400 text-xs">
                         {new Date(msg.updated_at).toLocaleTimeString('en-US', {

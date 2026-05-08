@@ -36,6 +36,7 @@ type SectionId =
   | 'crypto'
   | 'architecture'
   | 'scenarios'
+  | 'wallets'
   | 'relayer'
   | 'addchain'
   | 'risks'
@@ -55,6 +56,7 @@ const DOC_SECTIONS: DocSection[] = [
   { id: 'crypto', icon: Cpu, title: 'Cryptography' },
   { id: 'architecture', icon: Network, title: 'Architecture' },
   { id: 'scenarios', icon: Play, title: 'Demo scenarios' },
+  { id: 'wallets', icon: CheckCircle2, title: 'Wallet setup & tUSDC' },
   { id: 'relayer', icon: FileCog, title: 'Run a relayer' },
   { id: 'addchain', icon: Plus, title: 'Add a chain' },
   { id: 'risks', icon: AlertCircle, title: 'Limitations & risks' },
@@ -623,6 +625,108 @@ function ScenariosContent() {
   );
 }
 
+// ─── Wallet setup & tUSDC claim guide ───────────────────────────────────────
+
+function WalletsContent() {
+  const NEW_TUSDC_NEUTRON = 'neutron1fw6unz7a9j4zf9gnvhup5qe6dlftytdc0y0rwyn3lyxdazz22rtsck0vld';
+  const TUSDC_SEPOLIA = '0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0';
+
+  return (
+    <div>
+      <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-stone-500 mb-3">
+        Wallet setup & tUSDC
+      </div>
+      <h1 className="font-display text-4xl sm:text-5xl text-stone-100 mb-6">
+        Get tUSDC, bridge it.
+      </h1>
+      <p className="text-stone-400 leading-relaxed mb-8">
+        tUSDC is Tessera's testnet token. It is freely claimable (1 000 tUSDC per wallet every 24 hours)
+        on both Sepolia and Neutron. You need both wallets connected to initiate a transfer.
+      </p>
+
+      <ProseSection label="1 — MetaMask (Sepolia)">
+        <div className="space-y-3 text-stone-400 text-sm leading-relaxed">
+          <p>
+            <strong className="text-stone-200">Connect:</strong> Click &ldquo;Connect MetaMask&rdquo; on the homepage. Select Sepolia in your wallet.
+          </p>
+          <p>
+            <strong className="text-stone-200">Claim tUSDC:</strong> After connecting, click the tUSDC balance pill or call{' '}
+            <code className="bg-stone-950 px-1.5 py-0.5 rounded text-xs text-orange-400">claim()</code> on Etherscan.
+            Each claim gives you 1 000 tUSDC (with 18 decimal places). Cooldown: 24 hours.
+          </p>
+          <p>
+            <strong className="text-stone-200">Add tUSDC to MetaMask:</strong>
+          </p>
+          <ul className="list-disc list-inside space-y-1 pl-2 text-stone-500 text-xs font-mono">
+            <li>Network: Sepolia</li>
+            <li>Contract: <code className="text-stone-300">{TUSDC_SEPOLIA}</code></li>
+            <li>Symbol: tUSDC</li>
+            <li>Decimals: 18</li>
+          </ul>
+        </div>
+      </ProseSection>
+
+      <ProseSection label="2 — Keplr (Neutron pion-1)">
+        <div className="space-y-3 text-stone-400 text-sm leading-relaxed">
+          <p>
+            <strong className="text-stone-200">Connect:</strong> Click &ldquo;Connect Keplr&rdquo; after MetaMask. Approve the
+            Neutron Testnet chain suggestion if prompted.
+          </p>
+          <p>
+            <strong className="text-stone-200">Claim tUSDC:</strong> Run the claim script once per wallet. Each claim gives
+            1 000 tUSDC (1 000 000 000 base units at 6 decimals). Cooldown: 24 hours.
+          </p>
+          <p>
+            <strong className="text-stone-200">Add tUSDC to Keplr:</strong> In Keplr, go to{' '}
+            <em>Manage Tokens → Add Token</em> and enter:
+          </p>
+          <ul className="list-disc list-inside space-y-1 pl-2 text-stone-500 text-xs font-mono">
+            <li>Chain: Neutron Testnet (pion-1)</li>
+            <li>Contract: <code className="text-stone-300 break-all">{NEW_TUSDC_NEUTRON}</code></li>
+          </ul>
+          <p className="text-stone-500 text-xs">
+            Keplr will auto-populate the name (Tessera USDC), symbol (tUSDC), and decimals (6) from
+            the contract&apos;s <code className="bg-stone-950 px-1 rounded">token_info</code> query.
+          </p>
+        </div>
+      </ProseSection>
+
+      <ProseSection label="Claim sequence (all wallets)">
+        <p className="text-stone-400 text-sm mb-3">
+          During a fresh deployment or after a contract upgrade, claim in this order:
+        </p>
+        <CodeBlock>{`# 1. User wallet (you)
+#    MetaMask: tUSDC.claim() via Etherscan or the Tessera UI
+#    Keplr: tUSDC.Claim{} via Keplr or the claim script
+
+# 2. Relayer A & B (pre-funded by the deployer)
+node scripts/fund-all-neutron-v2.js   # funds all Neutron wallets in one pass
+
+# 3. Sepolia relayer wallets (ERC20 transfer from deployer)
+cast send $TUSDC "transfer(address,uint256)" $RELAYER_A 500000000000000000000 \\
+  --private-key $DEPLOYER_KEY --rpc-url $SEPOLIA_RPC
+
+# Verify
+cast call $TUSDC "balanceOf(address)(uint256)" $USER_WALLET --rpc-url $SEPOLIA_RPC`}</CodeBlock>
+      </ProseSection>
+
+      <ProseSection label="Decimals reference">
+        <ComparisonTable
+          headers={['Chain', 'Token', 'Decimals', 'Example: 1000 tUSDC']}
+          rows={[
+            ['Sepolia (EVM)', 'tUSDC', '18', '1 000 000 000 000 000 000 000'],
+            ['Neutron (CosmWasm)', 'tUSDC', '6', '1 000 000 000'],
+          ]}
+        />
+        <p className="text-stone-500 text-xs mt-2">
+          The bridge UI handles conversion automatically. The on-chain amount in the{' '}
+          <em>Locked</em> event is always in wei (18 decimals); relayer transforms before submitting.
+        </p>
+      </ProseSection>
+    </div>
+  );
+}
+
 function RelayerContent() {
   return (
     <div>
@@ -914,6 +1018,7 @@ function DocContent({ section }: { section: SectionId }) {
     case 'crypto': return <CryptoContent />;
     case 'architecture': return <ArchitectureContent />;
     case 'scenarios': return <ScenariosContent />;
+    case 'wallets': return <WalletsContent />;
     case 'relayer': return <RelayerContent />;
     case 'addchain': return <AddChainContent />;
     case 'risks': return <RisksContent />;

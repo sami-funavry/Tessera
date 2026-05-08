@@ -7,7 +7,15 @@ import type { Database, RelayerInfo } from '@/types';
 
 type BondRow = Database['public']['Tables']['bonds']['Row'];
 type SubmissionRow = Database['public']['Tables']['submissions']['Row'];
+type DisputeRow = Database['public']['Tables']['disputes']['Row'];
 type EventRow = Database['public']['Tables']['events']['Row'];
+
+// Per-message reward (testnet demo values; not from chain state).
+// SPEC §1.5: relayer earns a small fee per honest submission on Sepolia,
+// plus 100% of any successfully-challenged submitter's slash.
+const PER_SUBMISSION_FEE_ETH = 0.0005; // base reward per confirmed submission
+const SLASH_REWARD_FROM_LIAR_ETH = 0.01; // 50% of 0.02 ETH initial bond
+const SLASH_REWARD_FROM_FRIVOLOUS_ETH = 0.005; // 25% of 0.02 ETH
 
 // ---------- generic hook state shape ----------
 
@@ -98,13 +106,16 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
       setState(initialState);
 
       /*
-       * Execute the two queries sequentially rather than via Promise.all so
-       * TypeScript can narrow the inferred row types correctly.  The Supabase
-       * typed client loses the row type inside Promise.all's tuple inference,
-       * resulting in `never[]` arrays.
+       * Run all three queries concurrently with Promise.all. We assign the
+       * results to typed locals immediately to preserve the row types — the
+       * Supabase typed client's tuple inference inside Promise.all loses
+       * narrowing if you destructure directly.
        */
-      const bondsResult = await supabase.from('bonds').select('*');
-      const submissionsResult = await supabase.from('submissions').select('*');
+      const [bondsResult, submissionsResult, disputesResult] = await Promise.all([
+        supabase.from('bonds').select('*'),
+        supabase.from('submissions').select('*'),
+        supabase.from('disputes').select('*'),
+      ]);
 
       if (cancelled) return;
 
@@ -120,9 +131,18 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
         });
         return;
       }
+      if (disputesResult.error) {
+        setState({
+          data: null,
+          loading: false,
+          error: disputesResult.error.message,
+        });
+        return;
+      }
 
       const bonds: BondRow[] = bondsResult.data ?? [];
       const submissions: SubmissionRow[] = submissionsResult.data ?? [];
+      const disputes: DisputeRow[] = disputesResult.data ?? [];
 
       /*
        * Build one RelayerInfo per known relayer id.  Bond rows are keyed by
@@ -188,6 +208,47 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
         };
         const activity = ACTIVITY_LABELS[activityType];
 
+        // ─── Earned (ETH) ─────────────────────────────────────────────
+        // Per-submission fee for confirmed submissions, plus 100% of any
+        // upheld dispute (this relayer was the challenger), and 25% reward
+        // when an upheld dispute means a frivolous challenger paid this
+        // submitter.
+        const submissionIds = new Set(relayerSubmissions.map((s) => s.id));
+
+        // Disputes filed BY this relayer that succeeded (earned 50% slash)
+        const upheldDisputesByThis = disputes.filter(
+          (d) =>
+            d.outcome === 'upheld' &&
+            (d.challenger_address.toLowerCase() === addrs.sepolia.toLowerCase() ||
+              d.challenger_address.toLowerCase() === addrs.neutron.toLowerCase())
+        ).length;
+
+        // Disputes filed AGAINST a submission of this relayer where outcome
+        // was 'rejected' (frivolous challenge — this submitter earned 25%)
+        const rejectedDisputesProtectingThis = disputes.filter(
+          (d) =>
+            d.outcome === 'rejected' &&
+            submissionIds.has(d.submission_id)
+        ).length;
+
+        const earned =
+          confirmedSubmissions * PER_SUBMISSION_FEE_ETH +
+          upheldDisputesByThis * SLASH_REWARD_FROM_LIAR_ETH +
+          rejectedDisputesProtectingThis * SLASH_REWARD_FROM_FRIVOLOUS_ETH;
+
+        // ─── Slashed (count) ─────────────────────────────────────────
+        // Count of submissions where this relayer was slashed plus
+        // count of disputes filed by this relayer that were rejected.
+        const slashedSubmissions = relayerSubmissions.filter(
+          (s) => s.status === 'slashed'
+        ).length;
+        const rejectedDisputesByThis = disputes.filter(
+          (d) =>
+            d.outcome === 'rejected' &&
+            (d.challenger_address.toLowerCase() === addrs.sepolia.toLowerCase() ||
+              d.challenger_address.toLowerCase() === addrs.neutron.toLowerCase())
+        ).length;
+
         return {
           id,
           name: `Relayer ${id}`,
@@ -207,8 +268,8 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
               bond: neutronBond ? Number(neutronBond.balance) / 1e6 : 0,
             },
           },
-          earned: 0,   // Placeholder — fee accounting not yet in DB schema.
-          slashed: relayerSubmissions.filter((s) => s.status === 'slashed').length,
+          earned,
+          slashed: slashedSubmissions + rejectedDisputesByThis,
           submissions: totalSubmissions,
           successRate,
         } satisfies RelayerInfo;

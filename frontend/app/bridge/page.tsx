@@ -1,4 +1,7 @@
-// TODO: implement in P-8
+import { redirect } from 'next/navigation';
+
+// The bridge widget lives on the homepage (/#bridge anchor).
+// Redirect /bridge so bookmarked URLs land correctly without a duplicate page.
 export default function BridgePage() {
-  return <div>/bridge — coming in P-8</div>;
+  redirect('/#bridge');
 }

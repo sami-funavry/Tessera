@@ -91,3 +91,25 @@ fn test_bridge_mint_burn_round_trip() {
     ).unwrap();
     assert_eq!(res, Uint128::zero());
 }
+
+#[test]
+fn test_token_info_query() {
+    let mut deps = mock_dependencies();
+    setup(&mut deps);
+
+    // Verify token_info returns CW20-compatible metadata (required by Keplr).
+    let raw = query(deps.as_ref(), mock_env(), QueryMsg::TokenInfo {}).unwrap();
+    let info: crate::msg::TokenInfoResponse = cosmwasm_std::from_json(raw).unwrap();
+    assert_eq!(info.name, "Tessera USDC");
+    assert_eq!(info.symbol, "tUSDC");
+    assert_eq!(info.decimals, 6);
+    assert_eq!(info.total_supply, Uint128::zero()); // no mints yet
+
+    // After a claim, total_supply should reflect minted amount.
+    let user1 = deps.api.addr_make("user1").to_string();
+    let claim_info = mock_info(&user1, &[]);
+    execute(deps.as_mut(), mock_env(), claim_info, ExecuteMsg::Claim {}).unwrap();
+    let raw2 = query(deps.as_ref(), mock_env(), QueryMsg::TokenInfo {}).unwrap();
+    let info2: crate::msg::TokenInfoResponse = cosmwasm_std::from_json(raw2).unwrap();
+    assert_eq!(info2.total_supply, Uint128::new(1_000_000_000));
+}

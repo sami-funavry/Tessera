@@ -8,7 +8,7 @@ export const ADDRESSES = {
     bridgeMint: '0x61cab20856b16003b6a3FB213F86355515AD43cd',
   },
   neutron: {
-    tusdc: 'neutron16ket7npnkekn76nzhfjauwkwsea49rssp9fkn7fyxu35fwavfrxqxp5qnz',
+    tusdc: 'neutron1fw6unz7a9j4zf9gnvhup5qe6dlftytdc0y0rwyn3lyxdazz22rtsck0vld',
     bond: 'neutron1nnz9j6c3d25wnwj4h3jqkvazgawcmgjjk5unysvf6e0j90gavvsseunvg8',
     relayerRegistry: 'neutron1jq5kku3r0sxdkcxvkx7ke4dlcwq4my0m2gncrx4zf7g37hxtwj7qfrya5k',
     verifier: 'neutron1sda4ucdq06de7h7lxg66n6sq29ft9hk76a5mpjwehk3a8wfga0eqf002f0',
@@ -39,7 +39,7 @@ export const CHAIN_CONFIG = {
   neutron: {
     chainId: 'pion-1',
     name: 'Neutron',
-    rpcUrl: process.env.NEXT_PUBLIC_NEUTRON_RPC_URL ?? 'https://rpc-falcron.pion-1.ntrn.tech',
+    rpcUrl: process.env.NEXT_PUBLIC_NEUTRON_RPC_URL ?? 'https://neutron-testnet-rpc.polkachu.com',
     explorer: 'https://neutron.celat.one/pion-1',
     nativeCurrency: { name: 'NTRN', symbol: 'NTRN', decimals: 6 },
   },
