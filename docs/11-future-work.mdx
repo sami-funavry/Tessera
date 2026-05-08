@@ -1,0 +1,104 @@
+---
+title: "Future Work"
+description: "Concrete next steps: new chains, new apps, sync committee, production tightening, and the validator reward mechanism."
+section: 11
+slug: "future-work"
+---
+
+# Future Work
+
+The architecture was designed for extension. Everything on this list is additive — none of it requires changing deployed contracts.
+
+---
+
+## Near-Term (Production Readiness)
+
+### Fix Known Limitations
+
+See [Limitations](./10-limitations) for the full list. Priority order for production:
+
+1. **Testnet → production parameters** — bond thresholds and windows to production values. Config change only.
+2. **Neutron submissionId parsing** — parse `tessera.MessageSubmitted` event after broadcast. Go change only.
+3. **Sync committee verification for Sepolia** — eliminate RPC trust. BLS aggregation in the EthereumPlugin.
+
+### Production Operational Requirements
+
+- Multi-region relayer deployment (eliminate single point of liveness failure)
+- On-call alerting for bond threshold breaches
+- Relayer key rotation playbook
+- RPC fallback chain (primary → secondary → tertiary)
+- Automated bond top-up from a separate treasury wallet
+
+---
+
+## Medium-Term (Expansion)
+
+### Additional Source Chains
+
+Each new chain is one Go plugin file. Highest-value candidates:
+
+| Chain | Plugin type | Note |
+|-------|-------------|------|
+| Polygon | `EthereumPlugin` variant | Same EVM code; different chain ID |
+| Arbitrum | `EthereumPlugin` variant | Same; different L2 proof structure |
+| Osmosis | `TendermintPlugin` variant | CosmWasm-capable; Cosmos IBC neighbor |
+| Cosmos Hub | `TendermintPlugin` variant | Highest Cosmos TVL |
+
+**What changes:** one new plugin file. No contract changes. No other Go changes.
+
+### Additional Destination VMs
+
+Any VM where you can deploy contracts and verify Merkle proofs natively is supportable. The proof transformation layer already produces Patricia or IAVL proofs — a new VM just needs a verifier for one of those formats (or we add a new output format to the transform layer).
+
+### Additional Applications
+
+Any cross-chain application can plug in by implementing `IApp`:
+- NFT bridges
+- Cross-chain governance (vote on chain A, execute on chain B)
+- Cross-chain lending (collateral on one chain, borrow on another)
+- Cross-chain oracle updates
+
+**What changes:** one new contract per chain. No Verifier, Bond, Registry, or relayer changes.
+
+---
+
+## Long-Term (Research)
+
+### ZK Option
+
+The proof transformation step (Patricia ↔ IAVL) could be replaced by a ZK proof of correct transformation. This would eliminate the need for challengers to re-run the transformation and would make fraud detection instant rather than relying on the challenge window.
+
+**Trade-off:** ZK proof generation requires dedicated hardware and adds latency measured in minutes. The current optimistic approach is faster and cheaper at the cost of a 60-second window.
+
+This is future work, not a current priority. The current system is already trustless for the destination chain — the ZK option would also make the transformation step trustless, which is an additional (not foundational) improvement.
+
+### Validator Reward Mechanism
+
+Currently, relayers earn fees for honest submissions and slash rewards for catching fraud. Future work would formalize this into a more explicit reward model:
+
+**Proposed design:**
+- Do good (honest submission, correct challenge, successful catch) → earn reward
+- Do bad (fraud, frivolous challenge, absence) → get punished
+- Punishment > maximum possible gain from bad behavior → honest network by design
+
+This creates a formally analyzed incentive-compatible mechanism where:
+- Rational actors are honest because dishonesty has negative expected value
+- The network self-selects for honest operators
+- Bond requirements can be lower because the reward asymmetry does the security work
+
+**Key insight:** A relayer who stays honest over many messages earns more from accumulated fees than they could ever gain from a single fraud attempt (which costs 50% of their bond + reputation). The current implementation already has this property implicitly; the future work is to formalize and quantify it.
+
+---
+
+## What Will Never Be In Scope
+
+These are explicitly out of scope and would require a new product decision to include:
+
+- Real USDC integration (regulatory risk; use tUSDC as the interface, let the market decide what backs it)
+- Mainnet deployment without a formal security audit
+- Centralized components (no admin keys on deployed contracts beyond the `setVerifier` one-time setter)
+- Competitor integration or compatibility layers
+
+---
+
+> The architecture decisions that make this extensible are documented in [Architecture](./03-architecture) and [Repo Structure](./06-repo-structure).

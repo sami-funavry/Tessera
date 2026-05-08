@@ -43,7 +43,7 @@ These apply to every output. They are the most important content in this file.
 
 2. **No invented APIs.** When using a library, verify the method exists in the docs before calling it. If unsure, write a small test program first.
 
-3. **No invented numerical claims.** "This saves 60% gas" or "this is 3x faster" requires a measured benchmark. Use ranges or qualitative comparisons until Phase 9 measurements exist.
+3. **No invented numerical claims.** "This saves 60% gas" or "this is 3x faster" requires a measured benchmark. Use ranges or qualitative comparisons until Phase 10 measurements exist.
 
 4. **No mixed concepts.** The most common Tessera-specific failure mode:
    - **source root** ≠ **transformed root** (different 32-byte values)
@@ -88,9 +88,10 @@ Phases live in SPEC.md §2. One-line summary:
 - **P-5** — Deploy contracts to Sepolia + Neutron testnets, verify on Etherscan + Celatone.
 - **P-6** — Relayer registration, bond posting, end-to-end honest path on real testnets.
 - **P-7** — Challenger logic + 4 demo scenarios passing as integration tests.
-- **P-8** — Frontend mapped to real data per v2 mockup.
-- **P-9** — Audit pass (security, production-readiness, UX). **Gating** — must reach 99% with operator sign-off.
-- **P-10** — Polish, demo recording, final docs.
+- **P-8** — Documentation midway checkpoint: README update, Notion overview page, in-repo MDX doc stubs.
+- **P-9** — Frontend mapped to real data per v2 mockup.
+- **P-10** — Audit pass (security, production-readiness, UX). **Gating** — must reach 99% with operator sign-off.
+- **P-11** — Polish, demo recording, final docs.
 
 State the current phase at the start of any new working session. Skills load based on file paths, but the phase is what determines which requirements are in scope.
 
@@ -152,7 +153,7 @@ tessera/
 ├── contracts-evm/                   # Solidity (P-1)
 ├── contracts-cosmwasm/              # Rust + CosmWasm (P-2)
 ├── relayer/                         # Go service (P-3 to P-7)
-├── frontend/                        # Next.js (P-8)
+├── frontend/                        # Next.js (P-9)
 ├── scripts/                         # build, deploy, smoke, scenarios
 └── docs/                            # additional docs (audit findings, etc.)
 ```

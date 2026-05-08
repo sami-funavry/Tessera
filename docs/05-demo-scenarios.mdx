@@ -1,0 +1,163 @@
+---
+title: "Demo Scenarios"
+description: "Step-by-step walkthrough of all four demo scenarios with expected outcomes."
+section: 5
+slug: "demo-scenarios"
+---
+
+# Demo Scenarios
+
+Four scenarios cover the complete state space of the economic enforcement model. Each is a real on-testnet execution, not a simulation.
+
+Test scripts read on-chain rotation state at runtime to determine which physical relayer (A or B) is the assigned submitter for each scenario. Role assignment is never hardcoded.
+
+---
+
+## Outcome Summary
+
+| Scenario | Submitter action | Challenger action | User outcome | Relayer outcome |
+|----------|-----------------|-------------------|--------------|-----------------|
+| S-1 Honest | Correct proof | Verifies, stands down | Receives bridged tokens | Submitter earns fee |
+| S-2 Lying | Wrong fingerprint | Detects fraud, challenges | Source lock returned | Submitter slashed 50%; challenger +50% |
+| S-3 Silent | Does not act | — | Receives bridged tokens | Original slashed 50%; successor +fee +slash |
+| S-4 Frivolous | Correct proof | Challenges incorrectly | Receives bridged tokens | Challenger slashed 25%; submitter +25% |
+
+---
+
+## S-1: Honest Delivery
+
+**Setup:** Two relayers registered. Message #N assigned to relayer[0].
+
+```
+1. User: BridgeVault.lock(100 tUSDC, destinationChainId, recipient)
+   → Locked event emitted with nonce N
+
+2. Relayer A (assigned submitter):
+   → FetchProof(tx from step 1)
+   → VerifyConsensus (Ed25519 if Neutron→Sepolia; RPC trust if Sepolia→Neutron)
+   → TranslateProof (Patricia→IAVL or IAVL→Patricia)
+   → Verifier.submitMessage(envelope, transformedRoot, proof)
+
+3. Relayer B (challenger):
+   → Independently fetches same source proof
+   → Runs same transformation
+   → Computed root == submitted root → stands down
+
+4. Challenge window: 60 seconds — no challenge filed
+
+5. Anyone: Verifier.executeMessage(submissionId)
+   → Verifier walks Merkle proof natively
+   → Dispatches to IApp(destinationApp).onCrossChainMessage(...)
+   → BridgeMint.mint(recipient, 100 tUSDC)
+
+6. Relayer A: earns relay fee
+```
+
+**Pass condition:** User balance +100 tUSDC on destination. No slash events.
+
+---
+
+## S-2: Lying Relayer
+
+**Setup:** Relayer A is assigned submitter. A submits a deliberately wrong proof fingerprint.
+
+```
+1. User: BridgeVault.lock(100 tUSDC, ...)
+   → Locked event emitted
+
+2. Relayer A (lying submitter):
+   → Verifier.submitMessage(envelope, WRONG_FINGERPRINT, fabricated_proof)
+
+3. Relayer B (challenger):
+   → Independently fetches real source proof
+   → Runs real transformation → real_root
+   → real_root ≠ WRONG_FINGERPRINT → fraud detected
+   → Within 60s window:
+     Verifier.challenge(submissionId, real_root, real_evidence_proof)
+
+4. Bond contract verifies challenge:
+   → real_root matches independently verifiable source state ✓
+   → WRONG_FINGERPRINT does not ✗
+   → Slash: 50% of Relayer A's bond on destination chain
+   → Transfer: 100% of slashed amount → Relayer B
+
+5. Submission reverted.
+   User's source-chain lock returned.
+```
+
+**Pass condition:** Relayer A bond −50%. Relayer B balance +50% of A's slashed bond. User source balance restored. No mint on destination.
+
+---
+
+## S-3: Silent Relayer
+
+**Setup:** Relayer A is assigned submitter. A does not act within 30s handover period.
+
+```
+1. User: BridgeVault.lock(100 tUSDC, ...)
+   → Locked event emitted
+
+2. Relayer A (silent): does not submit within 30 seconds
+
+3. Rotation triggers:
+   assigned_index = (nonce + 1) % 2 = Relayer B
+
+4. Relayer B (successor submitter):
+   → FetchProof, TranslateProof, SubmitMessage (correct proof)
+   → Challenge window passes uncontested (A was silent, not lying)
+   → Verifier.executeMessage(submissionId)
+   → BridgeMint.mint(recipient, 100 tUSDC)
+   → Relayer B earns relay fee
+
+5. Anyone: Bond.claimAbsenceSlash(messageId, relayerA_address)
+   → Verifies A was assigned and did not submit in the handover window
+   → Slash: 50% of Relayer A's bond
+   → Transfer: 100% → whoever calls claimAbsenceSlash (typically Relayer B)
+```
+
+**Pass condition:** User receives 100 tUSDC on destination. Relayer A bond −50%. Relayer B earns fee + absence slash reward.
+
+---
+
+## S-4: Frivolous Challenge
+
+**Setup:** Relayer A submits a correct proof. Relayer B files a baseless challenge.
+
+```
+1. User: BridgeVault.lock(100 tUSDC, ...)
+
+2. Relayer A (honest submitter):
+   → Correct proof → Verifier.submitMessage(envelope, correct_root, correct_proof)
+
+3. Relayer B (frivolous challenger):
+   → Files Verifier.challenge(submissionId, wrong_claim, bad_evidence)
+   → Within 60s window
+
+4. Bond contract verifies challenge:
+   → Relayer A's submitted root is correct ✓
+   → Relayer B's claimed root is wrong ✗
+   → Frivolous challenge: slash 25% of Relayer B's bond
+   → Transfer: 100% of slashed amount → Relayer A
+
+5. Original submission reinstated. Challenge window resets.
+   Verifier.executeMessage(submissionId) proceeds normally.
+   → BridgeMint.mint(recipient, 100 tUSDC)
+```
+
+**Pass condition:** Relayer B bond −25%. Relayer A balance +25% of B's slashed bond. User receives 100 tUSDC. Original submission executed.
+
+---
+
+## Running Scenarios
+
+```bash
+# From repo root — runs against live testnets (requires .env populated)
+go run ./cmd/relayer test-scenario s1-honest
+go run ./cmd/relayer test-scenario s2-lying
+go run ./cmd/relayer test-scenario s3-silent
+go run ./cmd/relayer test-scenario s4-frivolous
+```
+
+Each script prints the assigned roles, transaction hashes, and final bond states.
+
+> See [Developer Guide](./07-developer-guide) for environment setup prerequisites.

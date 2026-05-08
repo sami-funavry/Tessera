@@ -1,0 +1,81 @@
+{
+  "sections": [
+    {
+      "section": 1,
+      "title": "Overview",
+      "slug": "overview",
+      "file": "01-overview.mdx",
+      "description": "What Tessera is, what problems it solves, and what makes it architecturally distinct."
+    },
+    {
+      "section": 2,
+      "title": "Background & Comparison",
+      "slug": "background",
+      "file": "02-background.mdx",
+      "description": "Where Tessera fits in the cross-chain landscape and what it does differently."
+    },
+    {
+      "section": 3,
+      "title": "Architecture",
+      "slug": "architecture",
+      "file": "03-architecture.mdx",
+      "description": "System components, contract layout, proof pipeline, message envelope, and trust model."
+    },
+    {
+      "section": 4,
+      "title": "Economics",
+      "slug": "economics",
+      "file": "04-economics.mdx",
+      "description": "Bond thresholds, per-message role assignment, slashing rules, and user protection guarantees."
+    },
+    {
+      "section": 5,
+      "title": "Demo Scenarios",
+      "slug": "demo-scenarios",
+      "file": "05-demo-scenarios.mdx",
+      "description": "Step-by-step walkthrough of all four demo scenarios with expected outcomes."
+    },
+    {
+      "section": 6,
+      "title": "Repo Structure & Scalability",
+      "slug": "repo-structure",
+      "file": "06-repo-structure.mdx",
+      "description": "Directory layout, design rationale, and how to add a new chain or application."
+    },
+    {
+      "section": 7,
+      "title": "Developer Guide",
+      "slug": "developer-guide",
+      "file": "07-developer-guide.mdx",
+      "description": "Prerequisites, local setup, test commands, adding a chain, adding an application."
+    },
+    {
+      "section": 8,
+      "title": "Protocol User Guide",
+      "slug": "protocol-user-guide",
+      "file": "08-protocol-user-guide.mdx",
+      "description": "How to register as a relayer, manage bonds, and understand dispute resolution."
+    },
+    {
+      "section": 9,
+      "title": "Reference App — tUSDC Bridge",
+      "slug": "tusdc-bridge",
+      "file": "09-tusdc-bridge.mdx",
+      "description": "What the tUSDC bridge demonstrates, the two transfer directions, and contract interactions."
+    },
+    {
+      "section": 10,
+      "title": "Limitations",
+      "slug": "limitations",
+      "file": "10-limitations.mdx",
+      "description": "Honest assessment of current constraints, their implications, and the mitigation path for each."
+    },
+    {
+      "section": 11,
+      "title": "Future Work",
+      "slug": "future-work",
+      "file": "11-future-work.mdx",
+      "description": "New chains, new apps, sync committee, production tightening, and the validator reward mechanism."
+    }
+  ]
+}

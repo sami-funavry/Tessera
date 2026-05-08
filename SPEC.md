@@ -39,11 +39,12 @@ PART 2 — Build Plan
   2.8 Phase 5 — Testnet deployment + verification
   2.9 Phase 6 — Relayer registration + end-to-end honest path
   2.10 Phase 7 — Challenger logic + 4 demo scenarios
-  2.11 Phase 8 — Frontend mapped to real data
-  2.12 Phase 9 — Audit pass (gating)
-  2.13 Phase 10 — Polish, recording, final docs
+  2.11 Phase 8 — Documentation (midway checkpoint)
+  2.12 Phase 9 — Frontend mapped to real data
+  2.13 Phase 10 — Audit pass (gating)
+  2.14 Phase 11 — Polish, recording, final docs
 
-PART 3 — UI Specification (referenced from Phase 8)
+PART 3 — UI Specification (referenced from Phase 9)
   3.1 Foundations (typography, colour, motion)
   3.2 Navigation & wallet connect
   3.3 Homepage
@@ -1060,14 +1061,45 @@ See §2.1.1 above.
 
 ---
 
-## 2.11 Phase 8 — Frontend mapped to real data
+## 2.11 Phase 8 — Documentation (midway checkpoint)
 
 **Phase ID:** P-8
+**Goal:** Produce mid-build documentation that keeps leadership and stakeholders updated and that will be used directly by the frontend (in-app docs). Covers README update, Notion overview page, and MDX doc stubs in the repo. This is a checkpoint, not a final-docs pass — Phase 11 (Polish) revisits and completes documentation.
+**Implements:** R-113 (Notion doc), R-114 partial (README, repo docs stubs).
+**Depends on:** P-7 (all on-chain components complete).
+
+### 2.11.1 Tasks
+
+1. **README.md update.** Top-level repo readme: project description, architecture diagram, how to run locally, how to run tests, deployed contract addresses (Sepolia + Neutron), links to live demo (placeholder until P-9 deploys), link to Notion docs, contributors.
+
+2. **Notion documentation page.** Single comprehensive page covering: PM brief (what Tessera is and why), architecture overview (diagram + narrative), technical decisions log (key choices made during build + rationale), current build status (phases complete, what's next), post-hackathon roadmap.
+
+3. **In-repo docs stubs.** Create `docs/` MDX files for each docs section referenced in the frontend spec (Part 3 §3.9): Overview, How It Works, Architecture, Trust Model, Economics, Demo Scenarios, API Reference, Security. Content at this stage: accurate headings + 2–4 sentence summaries per section. Full prose comes in P-11 Polish.
+
+4. **Cost log start.** Create `docs/cost-log.md` with all entries up to date through P-8.
+
+### 2.11.2 Success criteria
+
+- [ ] README.md updated with accurate contract addresses and run instructions.
+- [ ] Notion page created; share link verified to be publicly accessible.
+- [ ] `docs/*.mdx` stubs committed (all section files exist, none empty).
+- [ ] `docs/cost-log.md` exists and covers all phases through P-8.
+
+### 2.11.3 Pitfalls
+
+- **Don't write final-quality prose now.** Accurate stubs are more useful than polished paragraphs that will be rewritten in P-11.
+- **Verify the Notion share link before marking done.** A private page fails the rubric requirement.
+
+---
+
+## 2.12 Phase 9 — Frontend mapped to real data
+
+**Phase ID:** P-9
 **Goal:** The Next.js frontend (modeled on the v2 mockup, `info/mockup/tessera-mockup-v2.jsx`) is built with real data sources (Supabase via PostgREST/realtime; on-chain reads via wagmi/viem and CosmJS). All six pages are functional. All real-time updates work. Wallet connect/disconnect work. The four scenarios are observable from the frontend in real time.
 **Implements:** R-13, R-15, R-19, R-90 through R-99, plus all UI sub-requirements in Part 3.
 **Depends on:** P-7 (real data exists). Visual reference: v2 mockup.
 
-### 2.11.1 Tasks
+### 2.12.1 Tasks
 
 1. **Next.js init.** `pnpm create next-app frontend` (App Router, TypeScript, Tailwind). Add `shadcn/ui`, `wagmi`, `viem`, `@cosmjs/stargate`, `@cosmjs/cosmwasm-stargate`, `@keplr-wallet/cosmos`, `@supabase/supabase-js`.
 
@@ -1097,7 +1129,7 @@ See §2.1.1 above.
 
 14. **End-to-end frontend test.** Connect wallets, claim tokens, bridge 100 tUSDC, watch the lifecycle progress in the UI live, see balance update on destination chain, navigate to dashboard, click the recent submission, see the detail page render correctly with copyable hashes.
 
-### 2.11.2 Success criteria
+### 2.12.2 Success criteria
 
 - [ ] Frontend deployed to Vercel and reachable from public internet.
 - [ ] All six pages render without errors at all three responsive breakpoints.
@@ -1107,7 +1139,7 @@ See §2.1.1 above.
 - [ ] Every displayed hash copies correctly and links to the right explorer.
 - [ ] Realtime subscriptions update without manual refresh.
 
-### 2.11.3 Pitfalls
+### 2.12.3 Pitfalls
 
 - **Hydration errors.** Next.js App Router + wallet libraries can cause hydration mismatches. Use `'use client'` boundaries carefully.
 - **Keplr CosmWasm calls require enabling experimental chain.** Document the chain-config registration in the wallet connect flow.
@@ -1115,14 +1147,14 @@ See §2.1.1 above.
 
 ---
 
-## 2.12 Phase 9 — Audit pass (gating)
+## 2.13 Phase 10 — Audit pass (gating)
 
-**Phase ID:** P-9
-**Goal:** A multi-perspective review surfaces gaps. All findings are triaged, P0/P1 fixed, P2 either fixed or explicitly accepted. This phase is gating: documentation (Phase 10) does not start until this phase reaches 99% pass with operator sign-off.
+**Phase ID:** P-10
+**Goal:** A multi-perspective review surfaces gaps. All findings are triaged, P0/P1 fixed, P2 either fixed or explicitly accepted. This phase is gating: polish (Phase 11) does not start until this phase reaches 99% pass with operator sign-off.
 **Implements:** Validates all prior requirements; produces audit report.
-**Depends on:** P-8.
+**Depends on:** P-9.
 
-### 2.12.1 Tasks
+### 2.13.1 Tasks
 
 1. **Adversarial / security review.** Review the contract suite, the bond/slash logic, and the dispute resolution paths from an attacker's perspective. Consider: reentrancy, integer overflow, malformed proof inputs, race conditions in challenge windows, replay attacks on rotated keys, denial-of-service via bond depletion, sybil registration, edge cases in handover.
 
@@ -1136,7 +1168,7 @@ See §2.1.1 above.
 
 6. **Re-run the smoke test.** Should pass.
 
-### 2.12.2 Success criteria
+### 2.13.2 Success criteria
 
 - [ ] `docs/audit-findings.md` exists with all findings logged.
 - [ ] Zero P0 findings open.
@@ -1144,23 +1176,23 @@ See §2.1.1 above.
 - [ ] All four scenarios pass after fixes.
 - [ ] Operator (you) signs off in the audit findings doc.
 
-### 2.12.3 Pitfalls
+### 2.13.3 Pitfalls
 
 - **Don't skip P2 findings unconditionally.** Some are quick wins; fixing them is faster than documenting why they're acceptable.
 - **The temptation to "just ship" after the audit reveals real bugs.** The audit is the protection against shipping a broken bridge. Take the findings seriously.
 
 ---
 
-## 2.13 Phase 10 — Polish, recording, final docs
+## 2.14 Phase 11 — Polish, recording, final docs
 
-**Phase ID:** P-10
-**Goal:** Hackathon submission ready. Demo recorded. All required artifacts in place per `R-114` and §4.1.
+**Phase ID:** P-11
+**Goal:** Hackathon submission ready. Demo recorded. All required artifacts in place per `R-114` and §4.1. Revisits and completes documentation started in P-8.
 **Implements:** All documentation requirements.
-**Depends on:** P-9.
+**Depends on:** P-10.
 
-### 2.13.1 Tasks
+### 2.14.1 Tasks
 
-1. **Notion documentation.** Single comprehensive page covering: PM brief, architecture overview, technical decisions, post-hackathon roadmap. Mirrors the in-app docs at depth + adds research-paper-level commentary.
+1. **Notion documentation (final pass).** Single comprehensive page covering: PM brief, architecture overview, technical decisions, post-hackathon roadmap. Mirrors the in-app docs at depth + adds research-paper-level commentary.
 
 2. **In-app docs MDX.** Render the in-app `/docs` content from MDX files in `frontend/content/docs/`. Each section per Part 3 §3.9.
 
@@ -1178,7 +1210,7 @@ See §2.1.1 above.
 
 9. **Final smoke test.** End-to-end fresh user flow: open the deployed site, connect wallets, claim tokens, bridge, observe, all works.
 
-### 2.13.2 Success criteria
+### 2.14.2 Success criteria
 
 - [ ] Notion documentation comprehensive and shareable.
 - [ ] In-app docs render correctly at all breakpoints.
@@ -1462,9 +1494,10 @@ For navigation; scannable per Part 0.1.
 - P-5: Testnet deployment (§2.8)
 - P-6: Registration + honest path (§2.9)
 - P-7: Challenger + scenarios (§2.10)
-- P-8: Frontend on real data (§2.11)
-- P-9: Audit pass (§2.12)
-- P-10: Polish + docs (§2.13)
+- P-8: Documentation midway checkpoint (§2.11)
+- P-9: Frontend on real data (§2.12)
+- P-10: Audit pass (§2.13)
+- P-11: Polish + final docs (§2.14)
 
 **UI components:**
 - UI-wallet-button (§3.2.4)
@@ -1484,4 +1517,4 @@ For navigation; scannable per Part 0.1.
 
 ---
 Additional Rules
-Frontend integrates PostHog for event tracking (page views, bridge initiations, scenario triggers, wallet connects). Backend services integrate Sentry for error capture." Bake into Phase 8 + Phase 10 polish.
+Frontend integrates PostHog for event tracking (page views, bridge initiations, scenario triggers, wallet connects). Backend services integrate Sentry for error capture." Bake into Phase 9 + Phase 11 polish.

@@ -1,0 +1,172 @@
+---
+title: "Architecture"
+description: "System components, contract layout, proof pipeline, message envelope, and trust model."
+section: 3
+slug: "architecture"
+---
+
+# Architecture
+
+---
+
+## System Components
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         Tessera System                              │
+│                                                                     │
+│  Sepolia (EVM)            Go Relayer × 2        Neutron (CosmWasm) │
+│  ──────────────           ─────────────         ────────────────── │
+│  RelayerRegistry   ◀────  bond / register ────▶  RelayerRegistry   │
+│  Bond              ◀────  deposit / slash  ────▶  Bond              │
+│  Verifier          ◀────  submit / challenge ──▶  Verifier          │
+│  BridgeVault             EthereumPlugin           BridgeVault       │
+│  BridgeMint              TendermintPlugin         BridgeMint        │
+│  tUSDC (ERC20)           Transform Layer          tUSDC (CW20)      │
+│                          Supabase (state)                           │
+│                                                                     │
+│                        Next.js Frontend                             │
+│                        (reads Supabase)                             │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Six Contracts Per VM
+
+The same logical contract set deploys on every supported chain. Solidity on EVM; Rust + CosmWasm on Cosmos.
+
+| Contract | Role | Key entry points |
+|----------|------|-----------------|
+| `RelayerRegistry` | Identity + state tracking | `register`, `topUpBond`, `withdrawBond`, `rotateKey`, `recordSlash` |
+| `Bond` | Fund custody + slash execution | `deposit`, `slash` (onlyVerifier), `withdraw`, `getBond` |
+| `Verifier` | Proof verification + dispatch | `submitMessage`, `challenge`, `executeMessage`, `claimAbsenceSlash` |
+| `BridgeVault` | Source-side lock / release | `lock`, `release` (onlyVerifier) |
+| `BridgeMint` | Destination-side mint / burn | `mint` (onlyVerifier), `burn` |
+| `tUSDC` | Test token | `claim` (rate-limited), standard transfer |
+
+**Adding a new EVM chain:** deploy these six contracts. No new contract code.
+**Adding a new Cosmos chain:** deploy the CosmWasm versions. No new contract code.
+**Adding a new application:** implement `IApp` and register — no Verifier changes.
+
+---
+
+## Proof Pipeline
+
+### Sepolia → Neutron
+
+```
+1. User calls BridgeVault.lock() on Sepolia
+        ↓
+2. Relayer observes Locked event
+        ↓
+3. EthereumPlugin.FetchProof()
+   → eth_getProof (storage proof, Patricia / Keccak-256 / RLP)
+        ↓
+4. VerifyConsensus() — RPC trust (documented limitation; see §10)
+        ↓
+5. TranslateProofTo(targetChainType=Tendermint)
+   Patricia (Keccak-256/RLP) → IAVL (SHA-256/Protobuf)
+   Deterministic. Byte-identical for same input.
+        ↓
+6. TendermintPlugin.SubmitMessage()
+   → Verifier.submitMessage(envelope, transformedRoot, IAVLproof)
+        ↓
+7. Challenge window: 60s
+   Challenger independently replicates steps 3–5.
+   On mismatch → challenge(). On match → stand down.
+        ↓
+8. executeMessage() (anyone callable after window)
+   Verifier walks IAVL proof with SHA-256.
+   On valid → IApp(destinationApp).onCrossChainMessage(...)
+        ↓
+9. BridgeMint.mint() → user receives tUSDC on Neutron
+```
+
+### Neutron → Sepolia (Ed25519 bypass)
+
+```
+1. User calls BridgeMint.burn() on Neutron
+        ↓
+2. Relayer observes Burned event
+        ↓
+3. TendermintPlugin.FetchProof()
+   → ABCI query (IAVL proof, SHA-256/Protobuf)
+        ↓
+4. VerifyConsensus()
+   → cometbft.NewValidatorSet.VerifyCommit()
+   → validates 2/3+ Ed25519 validator signatures off-chain in Go
+   ← EVM never sees Ed25519
+        ↓
+5. TranslateProofTo(targetChainType=EVM)
+   IAVL (SHA-256/Protobuf) → Patricia (Keccak-256/RLP)
+        ↓
+6. EthereumPlugin.SubmitMessage()
+   → Verifier.submitMessage(envelope, transformedRoot, patriciaProof)
+        ↓
+7–9. Same challenge + execute flow as above (Solidity Verifier walks Patricia proof)
+        ↓
+9. BridgeVault.release() → user receives tUSDC on Sepolia
+```
+
+---
+
+## Message Envelope
+
+Every cross-chain message uses this canonical structure:
+
+```solidity
+struct MessageEnvelope {
+    bytes32 sourceChainId;
+    bytes   sourceApp;          // contract that emitted source event
+    bytes32 destinationChainId;
+    bytes   destinationApp;     // IApp-implementing contract to dispatch to
+    bytes4  action;             // function selector + encoding scheme
+    bytes   payload;            // recipient, amount, etc.
+    uint64  nonce;              // monotonic, per source chain + source app
+}
+```
+
+The `nonce` drives per-message role assignment (see [Economics](./04-economics)).
+The `destinationApp` field is what makes the system application-agnostic — any IApp-implementing contract can receive messages without Verifier changes.
+
+---
+
+## Relayer Plugin Model
+
+```go
+type ChainPlugin interface {
+    ChainID() string
+    ChainType() ChainType           // EVM | Tendermint
+
+    FetchBlockFingerprint(ctx, height) (Fingerprint, error)
+    FetchProof(ctx, txHash, eventIdx, proofKind) (RawProof, error)
+    VerifyConsensus(ctx, blockHeader, validatorSet) error
+    TranslateProofTo(rawProof, fingerprint, targetChainType) (CanonicalProof, Fingerprint, error)
+
+    SubmitMessage(ctx, envelope, proof, fingerprint, bondRef) (TxHash, error)
+    SubmitChallenge(ctx, submissionId, correctFingerprint, evidenceProof) (TxHash, error)
+    SubscribeEvents(ctx, contractAddrs, fromBlock) (<-chan Event, error)
+    GetBondStatus(ctx, relayer) (BondStatus, error)
+}
+```
+
+Adding a new source chain = implementing this interface in a new Go file. Nothing else in the repository changes.
+
+---
+
+## Trust Model
+
+| Layer | Trust assumption |
+|-------|----------------|
+| Source consensus (Neutron) | Go relayer verifies 2/3+ Ed25519 validator signatures. Cryptographic. |
+| Source consensus (Sepolia) | RPC trust — relayer trusts its configured RPC node. Documented limitation; future work: sync committee. |
+| Proof transformation | Deterministic. Any party can replicate. Fraud = detectable by challenger. |
+| Destination verification | On-chain Merkle proof walk. No trust. |
+| Economic enforcement | Bond at risk. Punishment > gain. Honest behavior is the rational strategy. |
+
+> Liveness assumption: at least one honest, online relayer in the registered set.
+
+---
+
+> Related: [Economics](./04-economics) · [Limitations](./10-limitations) · [Developer Guide](./07-developer-guide)

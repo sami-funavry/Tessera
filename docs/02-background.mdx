@@ -1,0 +1,70 @@
+---
+title: "Background & Comparison"
+description: "Where Tessera fits in the cross-chain landscape and what it does differently."
+section: 2
+slug: "background"
+---
+
+# Background & Comparison
+
+Cross-chain infrastructure is a solved problem in many ways — dozens of bridges exist. Tessera is not competing with them. It makes different trade-offs, and those trade-offs are the point.
+
+---
+
+## The Design Space
+
+Every bridge sits somewhere on two axes:
+
+**Trust axis:** who do you trust to relay the message?
+- **Trusted relay:** operator promises not to lie. Fast, cheap, fragile.
+- **Multisig / MPC:** N-of-M committee. More robust, still requires honesty of a majority.
+- **Economic enforcement (Tessera):** operators are bonded. Lying costs more than it can gain.
+- **ZK proof:** cryptographic correctness, no trust. Expensive, slow, hardware-dependent.
+- **Light client / sync committee:** trustless on-chain consensus verification. Requires native support on destination chain.
+
+**Verification axis:** how does the destination know the source event really happened?
+- **Oracle attestation:** authorized signers attest to the event. Off-chain trust.
+- **Optimistic:** assume correct, dispute if wrong. Cheap but slow (7-day windows).
+- **ZK proof:** verifiable computation. Trustless but resource-intensive.
+- **Native proof (Tessera):** destination contract verifies a proof in its own native format. No ZK, no oracle. The proof itself is the evidence.
+
+Tessera occupies the **economic enforcement + native proof** corner. This combination has a specific profile:
+
+---
+
+## Comparison Table
+
+| Property | Trusted bridge | Optimistic bridge | ZK bridge | Tessera |
+|----------|---------------|-------------------|-----------|---------|
+| Relayer trust | Full | Minority honest assumed | None | None (bonded economic) |
+| Proof verification | Oracle attestation | Dispute game | ZK verifier on-chain | Native Merkle proof in destination VM format |
+| Ed25519 on EVM | N/A or skipped | N/A or skipped | ZK circuit | Off-chain in Go (bypass) |
+| Latency | ~30s | 7 days | ~10 min (proof gen) | 75–90s (challenge window) |
+| New chain cost | Config change | Config change | New ZK circuit | New Go plugin module |
+| New app cost | N/A | N/A | N/A | Implement `IApp`, no contract change |
+| On-chain gas | Low | Low | High (verifier) | Medium (Merkle walk) |
+| Hardware requirement | Relayer server | Relayer server | GPU prover | Commodity server |
+
+> **Note:** Tessera's 75–90s latency is driven by the 60-second challenge window — a configurable parameter, not an architectural limit. Production deployments with higher bond thresholds can reasonably tighten this.
+
+---
+
+## What Tessera Does Not Try to Be
+
+- **Not a ZK bridge.** ZK provers require dedicated hardware and produce latency measured in minutes. Tessera's proof transformation is CPU-only and deterministic.
+- **Not a light-client bridge.** Full on-chain light clients require the destination chain to implement the source chain's consensus mechanism natively. Tessera's Ed25519 bypass avoids this without sacrificing cryptographic security — the relayer does the Ed25519 work and the destination verifies the resulting Merkle proof.
+- **Not a generalized message bus.** Tessera's envelope format supports arbitrary `action` + `payload`, so it can carry arbitrary messages — but the reference application is a token bridge, and the demo is scoped to that.
+
+---
+
+## Where the Architecture Argument Is
+
+The case for Tessera is not "we're better than X." It's that the **combination** of:
+1. Native-format proof verification (no ZK, no oracle)
+2. Deterministic cross-format proof transformation (Patricia ↔ IAVL)
+3. Bonded economic enforcement with per-message role rotation
+
+...produces a system where fraud is detectable by anyone, punishable on-chain, and economically irrational — without requiring ZK hardware, a trusted committee, or chain-native light client support.
+
+> See [Architecture](./03-architecture) for how the pieces connect.
+> See [Economics](./04-economics) for the incentive model in detail.

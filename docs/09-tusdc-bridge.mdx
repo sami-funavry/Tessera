@@ -1,0 +1,119 @@
+---
+title: "Reference App — tUSDC Bridge"
+description: "What the tUSDC bridge demonstrates, the two transfer directions, and contract interactions."
+section: 9
+slug: "tusdc-bridge"
+---
+
+# Reference App — tUSDC Bridge
+
+The tUSDC bridge is Tessera's reference application. It demonstrates the full cross-chain lifecycle — both directions — using a custom ERC20/CW20 test token. It is not real USDC.
+
+The bridge exists to prove that the Tessera infrastructure works end-to-end. Every piece of the system is exercised: proof fetch, transformation, on-chain verification, `IApp` dispatch, economic enforcement.
+
+---
+
+## What It Demonstrates
+
+| Capability | Demonstrated by |
+|-----------|----------------|
+| EVM → Cosmos asset transfer | Sepolia lock → Neutron mint |
+| Cosmos → EVM asset transfer | Neutron burn → Sepolia release |
+| Fraud prevention | S-2: challenger catches lying relayer |
+| Liveness enforcement | S-3: successor submits; original slashed |
+| Frivolous challenge prevention | S-4: bad challenger slashed |
+| Ed25519 bypass | Neutron→Sepolia direction; Go verifies off-chain |
+| Patricia ↔ IAVL transformation | Both directions |
+| IApp dispatch pattern | BridgeMint + BridgeVault implement IApp |
+
+---
+
+## Sepolia → Neutron Flow
+
+```
+User (Sepolia)
+  │
+  ├─ tUSDC.approve(BridgeVault, amount)
+  └─ BridgeVault.lock(amount, "pion-1", neutronRecipient)
+       │
+       └─ emits Locked(user, recipient, amount, nonce, destinationChainId)
+
+Relayer (Go)
+  │
+  ├─ Observes Locked event
+  ├─ EthereumPlugin.FetchProof(tx) → Patricia/Keccak proof
+  ├─ VerifyConsensus (RPC trust — see Limitations)
+  ├─ TranslateProofTo(Tendermint) → IAVL/SHA-256 proof
+  └─ TendermintPlugin.SubmitMessage(envelope, transformedRoot, proof)
+       │
+       └─ Neutron: Verifier.submitMessage(...)
+           → challenge window: 60s
+           → Verifier.executeMessage(submissionId)
+           → IApp(BridgeMint).onCrossChainMessage(...)
+           → BridgeMint.mint(recipient, amount)
+
+User (Neutron)
+  └─ +amount tUSDC in Keplr wallet
+```
+
+---
+
+## Neutron → Sepolia Flow
+
+```
+User (Neutron)
+  └─ BridgeMint.burn(amount, "sepolia", sepoliaRecipient)
+       └─ emits Burned(user, recipient, amount, nonce, destinationChainId)
+
+Relayer (Go)
+  │
+  ├─ Observes Burned event
+  ├─ TendermintPlugin.FetchProof(tx) → IAVL/SHA-256 proof
+  ├─ VerifyConsensus → cometbft.NewValidatorSet.VerifyCommit()
+  │    └─ validates 2/3+ Ed25519 validator signatures in Go
+  ├─ TranslateProofTo(EVM) → Patricia/Keccak proof
+  └─ EthereumPlugin.SubmitMessage(envelope, transformedRoot, proof)
+       │
+       └─ Sepolia: Verifier.submitMessage(...)
+           → challenge window: 60s
+           → Verifier.executeMessage(submissionId)
+           → IApp(BridgeVault).onCrossChainMessage(...)
+           → BridgeVault.release(recipient, amount)
+
+User (Sepolia)
+  └─ +amount tUSDC in MetaMask wallet
+```
+
+---
+
+## Token Details
+
+| Property | Sepolia (ERC20) | Neutron (CW20) |
+|----------|----------------|---------------|
+| Name | tUSDC | tUSDC |
+| Symbol | tUSDC | tUSDC |
+| Decimals | 18 | 6 |
+| Claim limit | 1000 tUSDC / address / 24h | 1000 tUSDC / address / 24h |
+| Real USDC? | No | No |
+
+Contract addresses:
+- Sepolia: `0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0`
+- Neutron: `neutron16ket7npnkekn76nzhfjauwkwsea49rssp9fkn7fyxu35fwavfrxqxp5qnz`
+
+---
+
+## UI
+
+> **Note:** The bridge UI is being built in Phase 9. This section will be expanded with wallet connection flow, live transaction visualization, and the Proof Inspector component when the frontend is complete.
+
+The bridge will be accessible at the root route (`/`). Key UI elements:
+- Bridge widget with lock/burn form
+- MetaMask + Keplr wallet connect
+- Live transaction visualization (progress path fills as stages complete)
+- Proof Inspector (expandable, shows real cryptographic content per stage)
+- Transaction hash display with Etherscan / Celatone explorer links
+
+---
+
+> See [Demo Scenarios](./05-demo-scenarios) for step-by-step S-1 through S-4 walkthroughs.
+> See [Protocol User Guide](./08-protocol-user-guide) for CLI-level bridge operations.

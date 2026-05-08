@@ -1,0 +1,105 @@
+---
+title: "Economics"
+description: "Bond thresholds, per-message role assignment, slashing rules, and user protection guarantees."
+section: 4
+slug: "economics"
+---
+
+# Economics
+
+Tessera's security model is economic. Relayers are bonded; wrong behavior costs more than it can gain. This section covers the full incentive structure.
+
+---
+
+## Roles Are Per-Message, Not Per-Relayer
+
+Every running relayer is simultaneously a potential submitter and a potential challenger. There is no dedicated "challenger" instance.
+
+**Per-message role assignment (on-chain, deterministic):**
+
+```
+assigned_index = (nonce + floor(elapsed_since_event / handover_period)) % registered_relayer_count
+```
+
+- `handover_period` = 30 seconds (testnet)
+- With 2 relayers: message #1 → relayer[0] submits, message #2 → relayer[1] submits, alternating by nonce
+- If the assigned relayer doesn't act within 30s, assignment rotates to the next. The original is slashed for absence.
+- Every non-assigned relayer independently verifies the submission and challenges if wrong.
+
+---
+
+## Bond Thresholds
+
+*Testnet values — intentionally low due to daily faucet limits (~0.05 ETH/day Sepolia, ~2 NTRN/day Neutron).*
+
+| Threshold | Sepolia | Neutron (uNTRN) | Meaning |
+|-----------|---------|-----------------|---------|
+| **Initial bond** (register) | 0.02 ETH | 80,000 uNTRN | Required to join the registry |
+| **Operating** (50% of initial) | 0.01 ETH | 40,000 uNTRN | Below this: no new submissions accepted |
+| **Deregistration** (25% of initial) | 0.005 ETH | 20,000 uNTRN | Below this: fully removed from registry |
+
+> **Production note:** These values would be significantly higher in production (e.g., 0.5 ETH / 100 NTRN). The slashing ratios and all mechanisms are identical — only the absolute amounts change.
+
+Both submission slashing and challenge slashing draw from **one bond per relayer per chain**. There is no separate challenger deposit.
+
+---
+
+## Slashing Rules
+
+| Trigger | Who is slashed | Amount | Who receives it | Outcome |
+|---------|---------------|--------|-----------------|---------|
+| Wrong submission (fraud) | Submitter | 50% of submitter's bond | 100% to challenger | Submission reverts; user refunded |
+| Frivolous challenge | Challenger | 25% of challenger's bond | 100% to submitter | Submission executes normally; user receives tokens |
+| Absence (no submission in handover window) | Original assigned submitter | 50% of their bond | 100% to whoever submitted instead | Submission executes normally |
+
+**Dispute settlement is on-chain.** The Bond contract verifies which party is right by checking the submitted evidence. No off-chain coordination decides outcomes.
+
+---
+
+## User Protection
+
+In all four scenarios, the user is made whole:
+
+- Honest delivery → user receives bridged tokens.
+- Lying relayer → submission reverts; source-chain lock is returned to user.
+- Silent relayer → successor submits; user receives bridged tokens.
+- Frivolous challenge → original honest submission executes; user receives bridged tokens.
+
+The bond is the financial guarantee. Slashing is the enforcement mechanism.
+
+---
+
+## Relayer Lifecycle
+
+```
+Register (post initial bond)
+        ↓
+Active — can submit and challenge
+        ↓
+[after one slash]
+Benched — bond at operating threshold (50%)
+→ cannot submit new messages
+→ pending submissions still settle
+→ can topUpBond() to return to Active
+        ↓
+[after second slash]
+Deregistered — bond at deregistration threshold (25%)
+→ fully removed from registry
+→ 1-hour cooldown (testnet) before re-registration
+        ↓
+Re-register (post new initial bond after cooldown)
+```
+
+**Voluntary exit:** call `withdrawBond()` after 1-hour idle period (no pending submissions).
+
+---
+
+## Why the Network Stays Honest
+
+For fraud to be profitable, a lying relayer would need:
+- The challenger to be offline or corrupted (liveness assumption: at least one honest relayer is online)
+- The benefit of fraud to exceed 50% of their bond
+
+If the bridge is handling meaningful volume, the bond must be meaningful. At any reasonable bond size, fraud is economically irrational. The network is honest not because operators are trusted, but because dishonesty is reliably punished.
+
+> See [Demo Scenarios](./05-demo-scenarios) for each slash trigger played out step-by-step.

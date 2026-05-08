@@ -1,0 +1,230 @@
+---
+title: "Developer Guide"
+description: "Prerequisites, local setup, test commands, adding a chain, adding an application."
+section: 7
+slug: "developer-guide"
+---
+
+# Developer Guide
+
+---
+
+## Prerequisites
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Go | ≥ 1.22 | Relayer |
+| Rust + `wasm32-unknown-unknown` target | ≥ 1.78 | CosmWasm contracts |
+| Foundry (`forge`, `cast`, `anvil`) | latest | Solidity contracts |
+| Docker | ≥ 24 | CosmWasm optimizer (required for Neutron deploy) |
+| Node.js + pnpm | ≥ 20 / ≥ 9 | Frontend |
+| `neutrond` CLI | v4.x | Neutron transactions |
+
+Required environment variables — copy `.env.example` to `.env` and fill in:
+
+```bash
+# RPC endpoints
+SEPOLIA_RPC_URL=<alchemy or infura URL>
+NEUTRON_RPC_URL=https://rpc-palvus.pion-1.ntrn.tech:443
+
+# Deployer keys (never commit)
+DEPLOYER_PRIVATE_KEY_SEPOLIA=<hex>
+DEPLOYER_MNEMONIC_NEUTRON=<12 or 24 words>
+
+# Relayer keys
+RELAYER_A_PRIVATE_KEY=<hex>
+RELAYER_B_PRIVATE_KEY=<hex>
+
+# Supabase
+SUPABASE_URL=<project URL>
+SUPABASE_SERVICE_KEY=<service role key>
+```
+
+---
+
+## Local Setup
+
+```bash
+git clone <repo>
+cd tessera
+
+# Solidity (Foundry)
+cd contracts-evm && forge install && forge build
+
+# CosmWasm
+cd contracts-cosmwasm && cargo build
+
+# Go relayer
+cd relayer && go mod download && go build ./...
+
+# Frontend
+cd frontend && pnpm install
+```
+
+---
+
+## Running Tests
+
+### Solidity (Foundry)
+
+```bash
+cd contracts-evm
+
+# All tests with verbose output
+forge test -vvv
+
+# Coverage report
+forge coverage
+
+# Gas snapshot (run after any contract change)
+forge snapshot
+```
+
+Expected: 77 tests, 91% line coverage.
+
+### CosmWasm
+
+```bash
+cd contracts-cosmwasm
+
+# Unit + integration tests
+cargo test
+
+# Lint (warnings = errors)
+cargo clippy -- -D warnings
+
+# Check wasm targets build
+cargo wasm
+```
+
+Expected: 28 tests pass, clippy clean.
+
+### Go Relayer
+
+```bash
+cd relayer
+
+# All tests including race detector
+go test -race ./...
+
+# Transform layer specifically (determinism tests run 100x)
+go test -race -run TestPatriciaToIAVL ./internal/transform/...
+go test -race -run TestIAVLToPatricia ./internal/transform/...
+```
+
+Expected: transform tests pass both directions, 100x determinism confirmed.
+
+---
+
+## Running the Relayer (Against Testnets)
+
+Requires `.env` populated and contracts deployed (addresses in `scripts/addresses.json`).
+
+```bash
+cd relayer
+
+# Run Relayer A
+go run ./cmd/relayer relayer --config configs/relayer-a.yaml
+
+# Run Relayer B (separate terminal)
+go run ./cmd/relayer relayer --config configs/relayer-b.yaml
+
+# Check bond status
+go run ./cmd/relayer bond status --config configs/relayer-a.yaml
+
+# Manually fetch and decode a proof (debugging)
+go run ./cmd/relayer fetch --tx <tx-hash> --chain sepolia
+```
+
+---
+
+## Running Demo Scenarios
+
+```bash
+# Each reads on-chain rotation state to assign roles dynamically
+go run ./cmd/relayer test-scenario s1-honest    --config configs/relayer-a.yaml
+go run ./cmd/relayer test-scenario s2-lying     --config configs/relayer-a.yaml
+go run ./cmd/relayer test-scenario s3-silent    --config configs/relayer-a.yaml
+go run ./cmd/relayer test-scenario s4-frivolous --config configs/relayer-a.yaml
+```
+
+---
+
+## Adding a New Chain Plugin
+
+1. Create `relayer/plugins/<chain-name>/plugin.go`
+2. Implement `chain.ChainPlugin` interface (all methods required — see `internal/chain/plugin.go`)
+3. Register with a unique key in `cmd/relayer/main.go`:
+   ```go
+   pluginRegistry.Register("polygon", polygon.New)
+   ```
+4. Add chain config block to the relayer YAML (see `R-85` in SPEC.md for schema)
+5. Run `go test -race ./plugins/<chain-name>/...`
+
+The proof transformation layer (`internal/transform/`) handles both directions automatically. The plugin only needs to know how to fetch and submit in its chain's native format.
+
+---
+
+## Adding a New Application
+
+**Solidity (EVM):**
+
+```solidity
+import {IApp} from "./interfaces/IApp.sol";
+
+contract MyApp is IApp {
+    address public immutable verifier;
+
+    constructor(address _verifier) {
+        verifier = _verifier;
+    }
+
+    modifier onlyVerifier() {
+        require(msg.sender == verifier, "not verifier");
+        _;
+    }
+
+    function onCrossChainMessage(
+        bytes32 sourceChainId,
+        bytes calldata sourceApp,
+        bytes4 action,
+        bytes calldata payload
+    ) external override onlyVerifier {
+        // decode payload, execute application logic
+    }
+}
+```
+
+**CosmWasm (Neutron):**
+
+```rust
+// In execute.rs
+pub fn execute_on_cross_chain_message(
+    deps: DepsMut,
+    env: Env,
+    info: MessageInfo,
+    source_chain_id: String,
+    source_app: String,
+    action: [u8; 4],
+    payload: Binary,
+) -> Result<Response, ContractError> {
+    // Enforce only-verifier
+    if info.sender != VERIFIER_ADDR.load(deps.storage)? {
+        return Err(ContractError::Unauthorized {});
+    }
+    // application logic
+}
+```
+
+No changes to Verifier, Bond, Registry, BridgeVault, or BridgeMint. Deploy the app contract and use its address as `destinationApp` in the message envelope.
+
+---
+
+## Contract Verification
+
+Sepolia contracts are verified on Etherscan. Neutron contracts are verified on Celatone.
+
+- Etherscan Sepolia: `https://sepolia.etherscan.io/address/<address>`
+- Celatone Neutron pion-1: `https://testnet.celatone.com/pion-1/contracts/<address>`
+
+> Full address list: [Repo Structure → Contract Addresses](./06-repo-structure#contract-addresses-deployed)

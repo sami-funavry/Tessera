@@ -1,0 +1,73 @@
+---
+title: "Limitations"
+description: "Honest assessment of current constraints, their implications, and the mitigation path for each."
+section: 10
+slug: "limitations"
+---
+
+# Limitations
+
+Tessera is a hackathon build. These are the real constraints — not limitations to hide, but trade-offs that were made deliberately to ship a working system within the build window. Each has a clear mitigation path.
+
+---
+
+## L-1: RPC Trust on Sepolia
+
+**What it means:** The relayer trusts the data returned by its configured Sepolia RPC node when verifying source events. If the RPC node lies about a block's state root, the relayer will relay a fraudulent message.
+
+**Why we accept it for now:** Ethereum's sync committee (a set of 512 validators who sign block headers every ~27 hours using BLS signatures) provides a trustless verification mechanism. Implementing sync committee verification requires BLS signature aggregation and beacon chain header tracking — non-trivial additional work beyond the hackathon scope.
+
+**Mitigation path:** Integrate sync committee verification in the EthereumPlugin. The relayer would fetch and verify a sync committee signature on the block header before trusting the state root. This is a pure off-chain Go change; no contract changes required.
+
+**Current exposure:** Low in practice — Alchemy and Infura, the standard RPCs, would not lie about block state. This is an assumption about RPC provider honesty, not about the relayer network's honesty.
+
+---
+
+## L-2: Liveness Assumption
+
+**What it means:** The system is secure only if at least one honest, online relayer is in the registered set. If all registered relayers collude or go offline simultaneously, messages can be delayed or fraudulently relayed.
+
+**Why this is acceptable:** This is the standard liveness assumption for all optimistic and bonded relay systems. It is explicit, documented, and enforced by the bond mechanism — anyone can register as a relayer, so the registered set can grow without permission.
+
+**Mitigation path:** As more independent relayers register (with independent bond sources and independent infrastructure), the probability of simultaneous collusion or outage approaches zero. The bond threshold can be tuned upward to raise the cost of Sybil attacks.
+
+---
+
+## L-3: Testnet Parameters Are Deliberately Low
+
+**What it means:** Bond thresholds (0.02 ETH / 80,000 uNTRN) and the challenge window (60s) are set for testnet conditions. Production deployments require significantly tighter parameters.
+
+| Parameter | Testnet | Production recommendation |
+|-----------|---------|--------------------------|
+| Initial bond (ETH) | 0.02 ETH | 0.5 ETH |
+| Initial bond (NTRN) | 80,000 uNTRN | 100 NTRN (100,000,000 uNTRN) |
+| Challenge window | 60 seconds | 10 minutes |
+| Handover period | 30 seconds | 5 minutes |
+| Re-registration cooldown | 1 hour | 24 hours |
+
+**Why testnet values are low:** Sepolia faucets yield ~0.05 ETH/day. Neutron pion-1 faucets yield ~2 NTRN/day. Setting bonds at production levels would make the demo non-repeatable within the hackathon window.
+
+**All slashing ratios (50%/25%) and economic mechanisms are identical between testnet and production.** Only the absolute amounts change.
+
+---
+
+## L-4: Neutron submissionId Parsing
+
+**What it means:** The Go relayer currently returns a zero `[32]byte{}` submissionId after a Neutron `SubmitMessage` call because it does not parse the `MessageSubmitted` event from the CosmWasm `TxResponse.Events`. The submissionId is emitted in the event but not read back.
+
+**Current impact:** Works correctly for the demo because only one message is in flight at a time. If multiple messages were pending simultaneously, submissionId collisions (all-zeros key) would cause incorrect challenger lookups.
+
+**Mitigation path:** Parse `TxResponse.Events` in the TendermintPlugin after broadcast, extract the `submission_id` attribute from the `tessera.MessageSubmitted` event, and return it. Pure Go change; no contract changes.
+
+---
+
+## Summary
+
+| Limitation | Current impact | Production risk | Fix complexity |
+|-----------|---------------|----------------|----------------|
+| RPC trust (Sepolia) | Low (trusted RPC providers) | Medium | Medium (BLS sync committee in Go) |
+| Liveness assumption | Low (2 independent relayers running) | Low (grows better with more relayers) | N/A (inherent to model) |
+| Testnet parameters | Demo only — not production-safe bond amounts | High if deployed as-is | Low (config change) |
+| Neutron submissionId | Safe for single in-flight message | Medium (concurrent messages) | Low (event parsing) |
+
+> See [Future Work](./11-future-work) for the full roadmap beyond these mitigations.

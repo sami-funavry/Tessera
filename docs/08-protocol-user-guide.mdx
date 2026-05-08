@@ -1,0 +1,166 @@
+---
+title: "Protocol User Guide"
+description: "How to register as a relayer, manage bonds, and understand dispute resolution."
+section: 8
+slug: "protocol-user-guide"
+---
+
+# Protocol User Guide
+
+This section covers two audiences: **relayer operators** (who run the Go binary and post bonds) and **bridge users** (who lock/burn tokens). The bridge UI covers the user path visually — this page covers the protocol-level mechanics.
+
+---
+
+## Relayer Operator Guide
+
+### Prerequisites
+
+- A secp256k1 private key (same key works for both Sepolia and Neutron — it derives both `0x...` and `neutron1...` addresses)
+- ETH on Sepolia for gas + bond: minimum 0.02 ETH bond + ~0.005 ETH gas
+- NTRN on Neutron for gas + bond: minimum 80,000 uNTRN (0.08 NTRN) bond + ~5,000 uNTRN gas
+- Tessera relayer binary built (see [Developer Guide](./07-developer-guide))
+
+---
+
+### Register and Bond
+
+**Sepolia:**
+
+```bash
+# 1. Deposit bond to Bond contract
+cast send <BOND_ADDRESS> "deposit(address)" <YOUR_ADDRESS> \
+  --value 20000000000000000 \
+  --private-key <YOUR_PRIVATE_KEY> \
+  --rpc-url <SEPOLIA_RPC>
+
+# 2. Register on RelayerRegistry
+cast send <REGISTRY_ADDRESS> "register(bytes)" <YOUR_PUBKEY_HEX> \
+  --private-key <YOUR_PRIVATE_KEY> \
+  --rpc-url <SEPOLIA_RPC>
+
+# 3. Verify active status
+cast call <REGISTRY_ADDRESS> "isActive(address)(bool)" <YOUR_ADDRESS> \
+  --rpc-url <SEPOLIA_RPC>
+```
+
+**Neutron (via neutrond CLI):**
+
+```bash
+# Deposit bond
+neutrond tx wasm execute <BOND_ADDRESS> \
+  '{"deposit":{"relayer":"<YOUR_NEUTRON_ADDRESS>"}}' \
+  --amount 80000untrn \
+  --from <YOUR_KEY_NAME> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
+
+# Register
+neutrond tx wasm execute <REGISTRY_ADDRESS> \
+  '{"register":{"pubkey":"<YOUR_PUBKEY_BASE64>"}}' \
+  --from <YOUR_KEY_NAME> \
+  --chain-id pion-1 \
+  --node <NEUTRON_RPC>
+```
+
+Or use the relayer CLI which handles both chains:
+
+```bash
+go run ./cmd/relayer bond deposit --config configs/my-relayer.yaml
+go run ./cmd/relayer bond register --config configs/my-relayer.yaml
+```
+
+---
+
+### Monitor Bond Status
+
+```bash
+go run ./cmd/relayer bond status --config configs/my-relayer.yaml
+```
+
+Output shows:
+- Current bond on each chain
+- Threshold status (Active / Benched / Deregistered)
+- Pending submissions count
+- Slash history
+
+---
+
+### Top Up Bond
+
+If your bond falls below the operating threshold (50% of initial):
+
+```bash
+go run ./cmd/relayer bond topup --amount 0.01eth --config configs/my-relayer.yaml
+# or for Neutron
+go run ./cmd/relayer bond topup --amount 40000untrn --config configs/my-relayer.yaml
+```
+
+---
+
+### Withdraw Bond
+
+After a 1-hour idle period (no pending submissions):
+
+```bash
+go run ./cmd/relayer bond withdraw --config configs/my-relayer.yaml
+```
+
+---
+
+## How Disputes Work
+
+When a challenge is filed, the Bond contract resolves it on-chain. No off-chain arbitration.
+
+**Filing a challenge (automated — relayer does this):**
+
+```
+1. Challenger independently fetches source proof
+2. Runs same deterministic transformation
+3. Computes expected transformed root
+4. If expected_root != submitted_root:
+   → Verifier.challenge(submissionId, expected_root, evidence_proof)
+5. Bond contract:
+   → Verifies evidence_proof against source state
+   → Correct party identified on-chain
+   → Incorrect party slashed
+```
+
+**Challenging a challenge (S-4 scenario):**
+If the submitter's original proof was correct, the bond contract will find the challenger's "evidence" to be wrong and slash the challenger instead.
+
+---
+
+## Bridge User Guide
+
+> **Note:** Full bridge UI documentation will be added in Phase 9 when the frontend is built. The steps below describe the protocol-level operations.
+
+### Lock tUSDC (Sepolia → Neutron)
+
+1. Connect MetaMask (Sepolia)
+2. Approve `BridgeVault` to spend your tUSDC: `tUSDC.approve(BRIDGE_VAULT, amount)`
+3. Call `BridgeVault.lock(amount, destinationChainId, recipientNeutronAddress)`
+4. Note the `nonce` emitted in the `Locked` event — this is your message ID
+5. Wait for the relayer to submit and the challenge window to pass (~75–90s)
+6. tUSDC appears in your Neutron wallet
+
+### Burn tUSDC (Neutron → Sepolia)
+
+1. Connect Keplr (Neutron)
+2. Call `BridgeMint.burn(amount, destinationChainId, recipientSepoliaAddress)`
+3. Wait for relay + challenge window (~75–90s)
+4. tUSDC released from BridgeVault on Sepolia
+
+### Claim Test Tokens
+
+Both chains have a `claim()` function on the tUSDC contract. Rate-limited to once per address per 24 hours, maximum 1000 tUSDC per claim.
+
+```bash
+# Sepolia
+cast send <TUSDC_SEPOLIA> "claim(address,uint256)" <YOUR_ADDRESS> 1000000000000000000000 \
+  --private-key <KEY> --rpc-url <SEPOLIA_RPC>
+
+# Neutron
+neutrond tx wasm execute <TUSDC_NEUTRON> \
+  '{"claim":{"recipient":"<YOUR_NEUTRON_ADDRESS>","amount":"1000000000"}}' \
+  --from <KEY> --chain-id pion-1
+```
