@@ -362,3 +362,50 @@
 **Notes:** Notion child pages at whitepaper depth (narrative + decisions + context); MDX files at reference depth (concise + task-oriented + code snippets). sidebar.json uses numbered slug convention for direct frontend consumption. UI sections in §9 and §8 marked as short stubs — expand at P-11 when frontend is live. Cost log tracks daily spend well within $75 soft cap.
 
 ---
+### [P-9] build shared UI components — 2026-05-08
+
+**Prompt:** Build all eight shared UI components for the Tessera frontend: CopyableHash, StatusBadge, SectionLabel, Card, SkeletonLoader, WalletConnectModal, Nav, Footer. Full specs provided including exact Tailwind classes, prop types, design tokens, Radix Dialog, framer-motion AnimatePresence, wagmi/Keplr integration via useWalletContext.
+
+**Actions:** Read globals.css, lib/utils.ts, hooks/useWalletContext.tsx, package.json, and Next.js docs in node_modules to verify APIs before writing. Replaced the three stub files (CopyableHash, StatusBadge, SectionLabel) with full implementations. Created five new files: Card.tsx, SkeletonLoader.tsx, WalletConnectModal.tsx, Nav.tsx, Footer.tsx. Key decisions: wallet context uses `connectKeplrWallet` (not `connectEvm`/`connectKeplr`); WalletConnectModal detects missing extensions inline rather than via toast; Nav WalletButton manages its own dropdown state; Footer is a pure server component (no 'use client'); Card uses a conditional `button` tag when `onClick` is provided for semantic HTML.
+
+**Outcome:** worked — `tsc --noEmit` shows zero errors in `components/`.
+
+**Files:** `frontend/components/CopyableHash.tsx`, `frontend/components/StatusBadge.tsx`, `frontend/components/SectionLabel.tsx`, `frontend/components/Card.tsx`, `frontend/components/SkeletonLoader.tsx`, `frontend/components/WalletConnectModal.tsx`, `frontend/components/Nav.tsx`, `frontend/components/Footer.tsx`
+
+**Tokens:** ~8,000
+
+**Notes:** AGENTS.md warning about Next.js breaking changes was heeded — verified `Link`, `usePathname`, and `AnimatePresence` APIs from node_modules docs before use. Pre-existing TS errors in hooks/useBenchmarks.ts and lib/keplr.ts (peer-dep version mismatch for @cosmjs) are not introduced by this work.
+
+---
+
+### [P-9] build Benchmark, Docs, and Submission Detail pages — 2026-05-08
+
+**Prompt:** Build three full-featured frontend pages: `/benchmark` (comparison table with live Supabase data, BoldSection analysis blocks), `/docs` (11-section sidebar + per-section content derived from MDX docs), `/submissions/[id]` (detail view with metadata grid, cryptographic roadmap pipeline, dual proof visualization).
+
+**Actions:** Read mockup lines 1165–1520 for Benchmark and Docs exact spec. Read SubmissionDetailPage (mockup lines 780–888). Read all component interfaces (Card, CopyableHash, SectionLabel, SkeletonLoader), hook signatures (useBenchmarkStats, useBenchmarkRuns, useMessage), types/supabase.ts, lib/utils.ts, and docs MDX files (01-overview, 02-background, 03-architecture, 04-economics, 10-limitations, 11-future-work) for content. Wrote three files: (1) benchmark/page.tsx — `'use client'`, reads useBenchmarkStats, shows Live/Reference badge depending on count>0, BoldSection with framer-motion staggered items; (2) docs/page.tsx — `'use client'` with useState for active section, 11 full content sections (no placeholders), AnimatePresence key-transition, ProseSection/CodeBlock/ComparisonTable helpers; (3) submissions/[id]/page.tsx — `'use client'` with `use(params)` for Promise params (Next.js 16 pattern), useMessage hook, Meta grid, PipelineNodeCard array, dual ProofBox visualization, synthetic root display derived from source_tx_hash. All three: zero TypeScript errors confirmed via `tsc --noEmit --skipLibCheck`.
+
+**Outcome:** worked — three files written, zero type errors in the new files. Pre-existing build errors (missing HomepageClient, Footer named export) are unrelated to this work.
+
+**Files:** `frontend/app/benchmark/page.tsx`, `frontend/app/docs/page.tsx`, `frontend/app/submissions/[id]/page.tsx`
+
+**Tokens:** ~18,000
+
+**Notes:** Docs page has full prose content for all 11 sections sourced from the MDX files — not placeholders. Submission detail uses `use(params)` (React 19 / Next.js 16 pattern) rather than async params unwrap, which is correct for client components. Synthetic proof roots are display-only computed values; real roots come from the relayer and would be stored in Supabase. The `'use client'` directive on all three pages is required: benchmark uses a hook, docs uses useState, submissions uses hooks + useRouter.
+
+---
+
+### [P-9] full frontend build — env, foundation, all 6 pages, audit, Playwright — 2026-05-08
+
+**Prompt:** Build the entire Next.js frontend end-to-end: commit P-8, set up env/CSS/providers/types, build all shared components, wire all 6 pages to Supabase + wagmi + Keplr, full security audit, Playwright verification. Target: "menace level" UI with animations and 3D effects, better than the mockup.
+
+**Actions:** Committed P-8 docs. Installed all frontend deps (wagmi v3, viem, @cosmjs/cosmwasm-stargate, framer-motion, react-hook-form, zod, lucide-react). Built complete design system in globals.css (animations: fade-up, pulse-ring, float, shimmer, glow-pulse, bg-pan, spin-slow; card-tilt 3D hover; font-display; bg-grid dot pattern). Created full type system (types/supabase.ts with Database generic, types/index.ts with RelayerInfo, BridgeFormValues, SystemStats, Toast). Built all hooks: useWalletContext (wagmi v3 useConnection API, silent Keplr restore), useToast (5s auto-dismiss, max 3), useMessages (useRecentMessages, useMessage, useMessageByNonce, useSystemStats, useMessagesRealtime with postgres_changes), useRelayers (useBonds, useRelayerStats, useSubmissions, useEvents, useEventsRealtime), useBenchmarks. Built lib layer: wagmi.ts (injected() connector, SSR mode), keplr.ts (GasPrice `as any` fix for @cosmjs version mismatch), supabase.ts (typed client), config.ts (addresses, chain config, bond thresholds), utils.ts (cn, timeAgo, formatUSDC, statusToColor). Built 8 shared components: CopyableHash, StatusBadge, SectionLabel, Card, SkeletonLoader, WalletConnectModal, Nav (sticky + wallet pills + mobile hamburger), Footer. Built 6 pages: Homepage with BridgeWidget (react-hook-form + Zod validation, CurvyRoadmap SVG, ProofInspector, framer-motion stagger), Demo (relayer cards with real bond data, 4 scenario buttons → server API proxy), Dashboard (metrics grid, relayer table, realtime submissions), Benchmark (comparison table with live data + BoldSection analysis), Docs (sticky sidebar 11 sections, AnimatePresence transitions), Submission Detail (metadata grid, 5-node pipeline, dual proof visualization). Built 2 API routes: /api/scenarios/[type] (type allowlist, 5s timeout, offline fallback), /api/bridge-stats (30s revalidation, Alchemy gas price, fallback values). Fixed 6 bugs during build: CSS @import ordering, Footer named export, Nav named export, ToastContainer not exported, GasPrice type mismatch, NEXT_PUBLIC_ on admin URL. Security audit fixed: RELAYER_ADMIN_URL leaked to client (CRITICAL, fixed), image hostname wildcard ** (HIGH, fixed to explicit allowlist). Playwright tested all 6 routes — zero console errors. Fixed NaN submission ID bug (useMessage guard + NotFound display).
+
+**Outcome:** worked — build clean (9 routes, TypeScript strict, Turbopack), all 6 pages render correctly, zero console errors across all routes, 2 security findings fixed.
+
+**Files:** `frontend/.env.local`, `frontend/app/globals.css`, `frontend/app/layout.tsx`, `frontend/app/page.tsx`, `frontend/app/HomepageClient.tsx`, `frontend/app/demo/page.tsx`, `frontend/app/dashboard/page.tsx`, `frontend/app/benchmark/page.tsx`, `frontend/app/docs/page.tsx`, `frontend/app/submissions/[id]/page.tsx`, `frontend/app/api/scenarios/[type]/route.ts`, `frontend/app/api/bridge-stats/route.ts`, `frontend/components/Card.tsx`, `frontend/components/CopyableHash.tsx`, `frontend/components/Footer.tsx`, `frontend/components/Nav.tsx`, `frontend/components/Providers.tsx`, `frontend/components/SectionLabel.tsx`, `frontend/components/SkeletonLoader.tsx`, `frontend/components/StatusBadge.tsx`, `frontend/components/WalletConnectModal.tsx`, `frontend/hooks/useWalletContext.tsx`, `frontend/hooks/useToast.tsx`, `frontend/hooks/useMessages.ts`, `frontend/hooks/useRelayers.ts`, `frontend/hooks/useBenchmarks.ts`, `frontend/lib/config.ts`, `frontend/lib/utils.ts`, `frontend/lib/wagmi.ts`, `frontend/lib/keplr.ts`, `frontend/lib/supabase.ts`, `frontend/types/supabase.ts`, `frontend/types/index.ts`, `frontend/next.config.ts`, `frontend/package.json`
+
+**Tokens:** ~180,000
+
+**Notes:** wagmi v3 uses `useConnection()` not `useAccount()` — verified from node_modules before writing. Next.js 16 `params` is a Promise — use `use(params)` in client components. GasPrice type conflict between @cosmjs/stargate 0.38.x and 0.39.x resolved with `as any`. The NEXT_PUBLIC_ RELAYER_ADMIN_URL leak was a critical security find — the admin proxy is now server-side only. CurvyRoadmap SVG driven by strokeDashoffset with framer-motion scroll-driven animation is the visual centrepiece of the homepage.
+
+---

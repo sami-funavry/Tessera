@@ -1,26 +1,167 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap');
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
+/* ─── Tessera design tokens ─── */
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', Consolas, monospace;
+  --font-display: 'Instrument Serif', 'Cormorant Garamond', Georgia, serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* ─── Animations ─── */
+@keyframes draw-line {
+  from { stroke-dashoffset: 100%; }
+  to { stroke-dashoffset: 0; }
+}
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(2.4); opacity: 0; }
+}
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(251, 146, 60, 0.2); }
+  50% { box-shadow: 0 0 40px rgba(251, 146, 60, 0.4), 0 0 60px rgba(251, 146, 60, 0.1); }
+}
+@keyframes bg-pan {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Utility classes ─── */
+.font-display { font-family: var(--font-display); font-weight: 400; }
+
+.animate-pulse-ring { animation: pulse-ring 2s ease-out infinite; }
+.animate-float { animation: float 3s ease-in-out infinite; }
+.animate-fade-up { animation: fade-up 0.4s ease-out both; }
+.animate-fade-in { animation: fade-in 0.3s ease-out both; }
+.animate-shimmer { animation: shimmer 2s linear infinite; }
+.animate-glow-pulse { animation: glow-pulse 3s ease-in-out infinite; }
+.animate-bg-pan { animation: bg-pan 8s ease infinite; }
+.animate-spin-slow { animation: spin-slow 8s linear infinite; }
+
+/* 3D card tilt on hover */
+.card-tilt {
+  transition: transform 0.4s cubic-bezier(0.2, 0.8, 0.2, 1), border-color 0.3s;
+  transform-style: preserve-3d;
+}
+.card-tilt:hover {
+  transform: perspective(1000px) rotateX(2deg) rotateY(-2deg) translateY(-2px);
+}
+
+/* ─── Global base ─── */
+* {
+  box-sizing: border-box;
+}
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background-color: #0c0a09; /* stone-950 */
+  color: #f5f5f4; /* stone-100 */
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  min-height: 100vh;
 }
+
+/* Decorative grain texture overlay */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* ─── Typography helpers ─── */
+.gradient-text {
+  background: linear-gradient(135deg, #fb923c, #fbbf24);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ─── Custom scrollbar ─── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #292524; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #44403c; }
+
+/* ─── Selection ─── */
+::selection { background: rgba(251, 146, 60, 0.2); color: #fef3c7; }
+
+/* ─── Focus rings ─── */
+:focus-visible {
+  outline: 2px solid rgba(251, 146, 60, 0.6);
+  outline-offset: 2px;
+}
+
+/* ─── Background grid pattern ─── */
+.bg-grid {
+  background-image: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* ─── Gradient borders ─── */
+.border-gradient {
+  position: relative;
+  background: #1c1917;
+  border-radius: 8px;
+}
+.border-gradient::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, rgba(251, 146, 60, 0.4), rgba(52, 211, 153, 0.2));
+  z-index: -1;
+}
+
+/* ─── Shimmer skeleton ─── */
+.skeleton {
+  background: linear-gradient(90deg, #1c1917 25%, #292524 50%, #1c1917 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* ─── Glow effects ─── */
+.glow-orange { box-shadow: 0 0 30px rgba(251, 146, 60, 0.15); }
+.glow-emerald { box-shadow: 0 0 30px rgba(52, 211, 153, 0.15); }
+
+/* ─── Prose overrides for docs ─── */
+.prose-tessera h1 { font-family: var(--font-display); color: #f5f5f4; }
+.prose-tessera h2 { font-family: var(--font-display); color: #e7e5e4; }
+.prose-tessera h3 { color: #d6d3d1; }
+.prose-tessera p { color: #a8a29e; line-height: 1.75; }
+.prose-tessera code { font-family: var(--font-mono); background: #1c1917; padding: 2px 6px; border-radius: 3px; font-size: 0.875em; color: #fb923c; }
+.prose-tessera pre { background: #0c0a09; border: 1px solid #292524; border-radius: 6px; padding: 1.25rem; overflow-x: auto; }
+.prose-tessera a { color: #fb923c; text-decoration: underline; text-underline-offset: 3px; }
+.prose-tessera blockquote { border-left: 2px solid #fb923c; padding-left: 1rem; color: #a8a29e; }
+
+/* ─── Page transitions ─── */
+.page-enter { animation: fade-up 0.4s ease-out both; }
