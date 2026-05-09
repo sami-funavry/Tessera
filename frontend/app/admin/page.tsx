@@ -183,8 +183,18 @@ export default function AdminPage() {
       });
       await refreshBalances();
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message.slice(0, 200) : 'Failed';
-      toast({ title: 'Neutron claim failed', description: msg, variant: 'error' });
+      const raw = err instanceof Error ? err.message : 'Failed';
+      // The contract returns "ClaimRateLimit" (or similar) when called twice
+      // in 24 h, and Keplr surfaces "insufficient funds" when the wallet has
+      // no NTRN for gas. Translate both into something users can act on.
+      const lower = raw.toLowerCase();
+      let hint = raw.slice(0, 200);
+      if (lower.includes('ratelimit') || lower.includes('rate limit') || lower.includes('cooldown')) {
+        hint = 'Already claimed in the last 24 h. The tUSDC contract enforces one claim per address per day — try again tomorrow.';
+      } else if (lower.includes('insufficient funds') || lower.includes('account does not exist') || lower.includes('untrn')) {
+        hint = 'Keplr wallet has no NTRN for gas. Get pion-1 NTRN from a Neutron testnet faucet first, then retry.';
+      }
+      toast({ title: 'Neutron claim failed', description: hint, variant: 'error' });
     } finally {
       setBusy(null);
     }
@@ -216,6 +226,42 @@ export default function AdminPage() {
       const msg = err instanceof Error ? err.message : 'Failed';
       toast({
         title: `Relayer ${relayer.toUpperCase()} ${chain} claim failed`,
+        description: msg,
+        variant: 'error',
+      });
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // ─── Reverse-direction demo (Neutron → Sepolia) ────────────────────────────
+
+  async function triggerBurn(which: 'a' | 'b') {
+    const key = `triggerBurn${which.toUpperCase()}`;
+    setBusy(key);
+    try {
+      const res = await fetch('/api/admin/trigger-burn', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ amount: 10, relayer: which }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error ?? 'trigger-burn failed');
+      }
+      const tx = data.tx_hash as string | undefined;
+      toast({
+        title: `Relayer ${which.toUpperCase()} burned 10 tUSDC on Neutron`,
+        description: tx
+          ? `Tx ${tx.slice(0, 10)}… — relayer will now submit to Sepolia Verifier.`
+          : 'Burn submitted; watch the dashboard for the Sepolia destination tx.',
+        variant: 'success',
+      });
+      setTimeout(() => refreshBalances(), 4000);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed';
+      toast({
+        title: `Relayer ${which.toUpperCase()} burn failed`,
         description: msg,
         variant: 'error',
       });
@@ -341,13 +387,39 @@ export default function AdminPage() {
         </table>
       </Card>
 
+      <SectionLabel className="mb-3">Demo · Neutron → Sepolia</SectionLabel>
+      <Card className="mb-8 p-5">
+        <p className="text-sm text-stone-400 mb-4">
+          Trigger a real <code className="font-mono text-xs bg-stone-900 px-1">BridgeMint.Burn</code> from the
+          relayer&rsquo;s own wallet on Neutron. The relayer&rsquo;s
+          <code className="font-mono text-xs bg-stone-900 px-1 mx-1">SubscribeEvents</code>
+          loop scans for <code className="font-mono text-xs bg-stone-900 px-1">wasm.action=&apos;burn&apos;</code>,
+          fetches an IAVL proof, transforms it to Patricia/Keccak, and submits to the Sepolia Verifier — same
+          pipeline as the Sepolia → Neutron direction, just reversed.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <ClaimButton
+            label="Burn 10 tUSDC · Relayer A"
+            busy={busy === 'triggerBurnA'}
+            disabled={busy !== null}
+            onClick={() => triggerBurn('a')}
+          />
+          <ClaimButton
+            label="Burn 10 tUSDC · Relayer B"
+            busy={busy === 'triggerBurnB'}
+            disabled={busy !== null}
+            onClick={() => triggerBurn('b')}
+          />
+        </div>
+      </Card>
+
       <SectionLabel className="mb-3">Notes</SectionLabel>
       <div className="text-sm text-stone-400 space-y-2">
         <p>
           <strong className="text-stone-200">Daily rate limit:</strong> the tUSDC contract enforces 1 claim per address per 24 h. If a claim fails, the wallet probably already claimed today.
         </p>
         <p>
-          <strong className="text-stone-200">Native gas:</strong> Sepolia ETH and Neutron NTRN are NOT topped up here — those need a faucet (Sepolia faucets, Neutron pion-1 faucet at https://docs.neutron.org/neutron/faq/#how-do-i-get-test-tokens). If a claim fails with &ldquo;insufficient funds&rdquo;, get gas first.
+          <strong className="text-stone-200">Native gas:</strong> Sepolia ETH and Neutron NTRN are NOT topped up here — those need a faucet (Sepolia faucets, Neutron pion-1 faucet at https://docs.neutron.org/). If a claim fails with &ldquo;insufficient funds&rdquo;, get gas first.
         </p>
         <p>
           <strong className="text-stone-200">Relayer B:</strong> requires <code className="font-mono text-xs bg-stone-900 px-1">RELAYER_B_ADMIN_URL</code> on the frontend. If unset, the relayer-B claim button returns 503.
@@ -357,7 +429,7 @@ export default function AdminPage() {
       <div className="mt-10 flex items-center gap-2">
         <Coins size={14} className="text-orange-400" />
         <a
-          href="https://docs.neutron.org/neutron/faq/#how-do-i-get-test-tokens"
+          href="https://docs.neutron.org/"
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs text-orange-400 hover:text-orange-300 flex items-center gap-1.5"

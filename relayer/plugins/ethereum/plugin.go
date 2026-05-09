@@ -115,6 +115,11 @@ func (p *Plugin) connect(ctx context.Context) error {
 // ChainID returns the canonical chain identifier.
 func (p *Plugin) ChainID() string { return p.chainID }
 
+// SepoliaBridgeVaultAddr returns the deployed Sepolia BridgeVault address as
+// a 0x-prefixed hex string. Used by the admin /trigger-burn handler to default
+// the destination_app on Neutron→Sepolia demos.
+func (p *Plugin) SepoliaBridgeVaultAddr() string { return p.addrs.SepoliaBridgeVault }
+
 // PubKeyBytes derives the 33-byte compressed secp256k1 public key from the private key.
 // Returns nil if no private key is configured.
 func (p *Plugin) PubKeyBytes() []byte {
@@ -316,8 +321,12 @@ func (p *Plugin) pollEvents(ctx context.Context, fromBlock uint64,
 				if cursor.Cmp(to) > 0 {
 					continue
 				}
-				// Scan at most 500 blocks per tick to avoid provider limits.
-				maxTo := new(big.Int).Add(cursor, big.NewInt(499))
+				// Alchemy free tier rejects eth_getLogs ranges greater than ~50
+				// blocks ("query returned more than 10000 results" / 429). Pick a
+				// small batch so a freshly-deployed relayer can keep up with the
+				// chain tip without burning every request on a rate-limit error.
+				const maxBatch int64 = 50
+				maxTo := new(big.Int).Add(cursor, big.NewInt(maxBatch-1))
 				if maxTo.Cmp(to) < 0 {
 					to = maxTo
 				}
@@ -329,7 +338,10 @@ func (p *Plugin) pollEvents(ctx context.Context, fromBlock uint64,
 				}
 				logs, err := p.client.FilterLogs(ctx, query)
 				if err != nil {
-					slog.Error("ethereum pollEvents: FilterLogs", "err", err)
+					// Don't advance the cursor on error — we'll retry the same
+					// window next tick once the rate-limit / RPC blip clears.
+					slog.Error("ethereum pollEvents: FilterLogs",
+						"from", cursor.String(), "to", to.String(), "err", err)
 					continue
 				}
 				for _, log := range logs {

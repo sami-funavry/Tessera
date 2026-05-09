@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/spf13/cobra"
 	chainpkg "github.com/tessera-bridge/tessera/internal/chain"
 	"github.com/tessera-bridge/tessera/internal/config"
@@ -22,6 +24,29 @@ import (
 	"github.com/tessera-bridge/tessera/plugins/ethereum"
 	"github.com/tessera-bridge/tessera/plugins/tendermint"
 )
+
+// deriveRelayerAddr derives the EIP-55 checksummed Ethereum address from a
+// hex-encoded secp256k1 private key (with or without the "0x" prefix). The
+// same key is reused across Sepolia and Neutron, so this address is the
+// canonical identity for both chains' submitter / challenger rows.
+//
+// We use this instead of `privKey[:8]+"..."` so the unauthenticated
+// /admin/health endpoint never echoes raw private-key material.
+func deriveRelayerAddr(privKeyHex string) (string, error) {
+	if privKeyHex == "" {
+		return "", fmt.Errorf("RELAYER_PRIVATE_KEY is empty")
+	}
+	clean := strings.TrimPrefix(privKeyHex, "0x")
+	raw, err := hex.DecodeString(clean)
+	if err != nil {
+		return "", fmt.Errorf("decode RELAYER_PRIVATE_KEY hex: %w", err)
+	}
+	priv, err := crypto.ToECDSA(raw)
+	if err != nil {
+		return "", fmt.Errorf("parse secp256k1 key: %w", err)
+	}
+	return crypto.PubkeyToAddress(priv.PublicKey).Hex(), nil
+}
 
 func NewRootCmd() *cobra.Command {
 	root := &cobra.Command{
@@ -70,10 +95,36 @@ func newRelayerCmd() *cobra.Command {
 				db = nil
 			}
 
-			// Derive relayer address from private key if not explicitly set.
+			// Derive the relayer's on-chain address from its private key. We never
+			// truncate or expose the private key itself in logs / admin endpoints.
 			relayerAddr := os.Getenv("RELAYER_ADDRESS")
 			if relayerAddr == "" {
-				relayerAddr = cfg.RelayerPrivateKey[:8] + "..." // safe placeholder for logs
+				if addr, derr := deriveRelayerAddr(cfg.RelayerPrivateKey); derr == nil {
+					relayerAddr = addr
+				} else {
+					slog.Warn("could not derive relayer address from private key", "err", derr)
+				}
+			}
+
+			// fromBlock=0 (default) means "start from chain tip" so a freshly
+			// deployed relayer doesn't try to scan from genesis. We back up
+			// `lookback` blocks so any event in the very last few blocks is
+			// still seen. Without this the deployed relayer would silently never
+			// reach current Sepolia (~10.8M blocks) and bridge widget locks
+			// would sit pending forever.
+			if fromBlock == 0 {
+				if tip, terr := ethPlugin.LatestBlock(cmd.Context()); terr == nil {
+					const lookback uint64 = 100
+					if tip > lookback {
+						fromBlock = tip - lookback
+					} else {
+						fromBlock = tip
+					}
+					slog.Info("starting Sepolia subscription near chain tip",
+						"tip", tip, "from_block", fromBlock, "lookback", lookback)
+				} else {
+					slog.Warn("could not fetch Sepolia tip; falling back to genesis polling", "err", terr)
+				}
 			}
 
 			runner := relayer.New(relayer.Config{

@@ -52,8 +52,76 @@ func (r *Runner) AdminServer(addr string) *http.Server {
 	mux.HandleFunc("/admin/force-frivolous", r.withCORS(r.checkAdminSecret(r.handleForceFrivolous)))
 	mux.HandleFunc("/admin/status", r.withCORS(r.checkAdminSecret(r.handleAdminStatus)))
 	mux.HandleFunc("/admin/trigger-lock", r.withCORS(r.checkAdminSecret(r.handleTriggerLock)))
+	mux.HandleFunc("/admin/trigger-burn", r.withCORS(r.checkAdminSecret(r.handleTriggerBurn)))
 	mux.HandleFunc("/admin/claim-tusdc", r.withCORS(r.checkAdminSecret(r.handleClaimTusdc)))
 	return &http.Server{Addr: addr, Handler: mux}
+}
+
+// handleTriggerBurn executes a real Neutron BridgeMint.Burn from the relayer's
+// own wallet, kicking off the Neutron→Sepolia pipeline. The relayer's
+// SubscribeEvents handler (TxSearch for wasm.action='burn') picks the burn up
+// and processes it like any other cross-chain burn — including any active
+// fault flag (S-2/S-3/S-4).
+//
+//	POST /admin/trigger-burn?amount=10&recipient=0x...
+//	  - amount    : tUSDC tokens to burn (default 10, integer)
+//	  - recipient : 0x-prefixed Sepolia BridgeVault address (defaults to the
+//	                deployed SepoliaBridgeVault from config)
+func (r *Runner) handleTriggerBurn(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	amountStr := req.URL.Query().Get("amount")
+	if amountStr == "" {
+		amountStr = "10"
+	}
+	amountTokens, err := strconv.ParseUint(amountStr, 10, 32)
+	if err != nil || amountTokens == 0 {
+		http.Error(w, "amount must be a positive integer", http.StatusBadRequest)
+		return
+	}
+
+	tmPlugin, ok := r.cfg.TmPlugin.(*tendermint.Plugin)
+	if !ok {
+		http.Error(w, "TmPlugin is not the tendermint.Plugin concrete type", http.StatusInternalServerError)
+		return
+	}
+	ethPlugin, ok := r.cfg.EthPlugin.(*ethereum.Plugin)
+	if !ok {
+		http.Error(w, "EthPlugin is not the ethereum.Plugin concrete type", http.StatusInternalServerError)
+		return
+	}
+
+	// Default destination app is the deployed Sepolia BridgeVault — the
+	// canonical receiver for unlock messages on the EVM side.
+	destApp := req.URL.Query().Get("recipient")
+	if destApp == "" {
+		destApp = ethPlugin.SepoliaBridgeVaultAddr()
+	}
+	if destApp == "" {
+		http.Error(w, "destination Sepolia BridgeVault address not configured", http.StatusBadRequest)
+		return
+	}
+
+	txHash, burnErr := tmPlugin.BurnTusdc(req.Context(), amountTokens, destApp)
+	if burnErr != nil {
+		slog.Error("admin: trigger-burn failed", "err", burnErr)
+		http.Error(w, fmt.Sprintf("burn failed: %v", burnErr), http.StatusBadGateway)
+		return
+	}
+
+	slog.Info("admin: trigger-burn submitted",
+		"tx", txHash, "amount_tokens", amountTokens, "dest_app", destApp)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":            true,
+		"tx_hash":       txHash,
+		"amount_tokens": amountTokens,
+		"dest_app":      destApp,
+		"celatone_url":  fmt.Sprintf("https://neutron.celat.one/pion-1/txs/%s", txHash),
+	})
 }
 
 // handleClaimTusdc has the relayer claim tUSDC on its own wallet, on either

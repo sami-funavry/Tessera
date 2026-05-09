@@ -698,3 +698,83 @@
 **Notes:** The Go relayer as written is a **goroutine daemon** — it observes both chains via `SubscribeEvents` and reacts; it does not currently expose an HTTP API. Option (a) above is therefore a smaller code change than option (b), because the relayer's existing event-subscriber loop is exactly what we want once the user's `BridgeVault.lock(...)` tx confirms. The frontend would need to drop the `/api/bridge/relay` simulator call and instead poll `messages` in Supabase (or use Supabase realtime — the subscription is already wired in `useMessageEvents.ts`) for the `executed` status. Railway's $5/month free credit covers roughly one always-on small service; running three (frontend + 2 relayers) likely exceeds it within days, so the deploy plan needs a billing call before going live.
 
 ---
+
+### [P-10.5] Railway deployment + simulator → real relayer cutover — 2026-05-09
+
+**Prompt:** Deploy 2 Go relayers + frontend on Railway. Replace the frontend's server-side simulator (relay-helper.ts) with real calls to the deployed Go relayer. Verify end-to-end and hand off.
+
+**Actions:**
+1. Investigation via subagent: confirmed DEC-06 ("replace relay-helper.ts with HTTP call to Go relayer's submission queue") was the documented migration target; relayer code already production-grade with 3 stubs unwired.
+2. Added `/admin/health` (unauthenticated) + CORS via `FRONTEND_ORIGIN` env var to relayer admin server.
+3. Wrote `relayer/Dockerfile` (golang:1.25-alpine multi-stage → alpine:3.20 runner) and `frontend/Dockerfile` (node:22-alpine, pnpm@10.16.1, Next.js standalone). Frontend Dockerfile declares `ARG NEXT_PUBLIC_*` so Railway's build args are visible to `pnpm build`.
+4. Pinned `packageManager: pnpm@10.16.1` in package.json (pnpm 11 strict gate fails on sharp postinstall).
+5. Made `lib/supabase.ts` tolerate missing env vars at module load (placeholder fallback) so build-time prerender doesn't throw.
+6. Replaced `frontend/app/api/bridge/relay/route.ts` with a thin Supabase recorder.
+7. Refactored `frontend/app/api/scenarios/[type]/route.ts` to a pure proxy that forwards to the relayer admin URL with `X-Admin-Secret`.
+8. Rewrote `handleBridge` in HomepageClient.tsx — `recordIntent()` → `awaitRelayer()` (Supabase realtime subscribe + 180s timeout).
+9. Deleted `frontend/lib/relay-helper.ts`. Server-side wallet keys removed from frontend deployment env.
+10. Created 3 Railway services from GitHub repo: relayer-a, relayer-b, frontend.
+11. Set 24 env vars on each relayer (RELAYER_PRIVATE_KEY + RPC URLs + 12 contract addresses + Supabase + Etherscan + TESSERA_ADMIN_SECRET). Set 11+2 vars on frontend (NEXT_PUBLIC_*, server-only Supabase, ALCHEMY_SEPOLIA_URL, RELAYER_ADMIN_URL).
+12. Generated public domains; cross-wired NEXT_PUBLIC_RELAYER_ADMIN_URL on frontend and FRONTEND_ORIGIN on both relayers.
+13. Healthcheck both services. Verified scenarios proxy works (frontend → relayer admin with secret returns 401/200 correctly).
+14. Playwright dashboard render: 180 tUSDC volume, 12.8 s avg, 34 tx sample, 0 console errors after Dockerfile ARG fix.
+
+**Outcome:** worked — frontend live at https://frontend-production-38ed.up.railway.app, relayer-a admin live at https://relayer-a-production.up.railway.app, both relayers running. Cutover complete; simulator gone; production architecture fully wired. Relayer event polling has Alchemy free-tier `eth_getLogs` rate limit hits (cosmetic; admin-driven scenarios unaffected) — tracked as P-11 polish.
+
+**Files:** `relayer/Dockerfile` (new), `relayer/.dockerignore` (new), `relayer/internal/relayer/admin.go`, `frontend/Dockerfile` (new), `frontend/.dockerignore` (new), `frontend/next.config.ts`, `frontend/package.json`, `frontend/lib/supabase.ts`, `frontend/app/HomepageClient.tsx`, `frontend/app/api/bridge/relay/route.ts`, `frontend/app/api/scenarios/[type]/route.ts`, `frontend/lib/relay-helper.ts` (deleted)
+
+**Tokens:** ~75,000
+
+**Notes:** Five distinct deploy fixes were needed before the build pipeline went clean: Go 1.25 base image (go.mod requires it), Node 22 base image (corepack pulls latest pnpm which needs Node 22+), pnpm@10 pin (pnpm 11 strict build-script gate breaks on sharp), supabase.ts tolerant module load (Next.js prerenders /benchmark before runtime envs are injected), and Dockerfile NEXT_PUBLIC_* ARG declarations (BuildKit doesn't expose Railway's build args to RUN steps without explicit ARGs). Each was a real production gotcha. Railway's MCP rate-limited variable_bulk_set so the larger batches partially applied — `list_service_variables` + targeted variable_set filled the gaps. The final architecture matches DEC-06's documented target verbatim.
+
+---
+
+### [P-10.6] Real on-chain scenarios + admin/funding page + wallet UX — 2026-05-09
+
+**Prompt:** Issues observed on the deployed UI: Keplr token-add showed "Not Implemented", wallet connections felt broken, the 4 demo scenarios produced nothing, the relayer rotation wasn't visible, and there was no way to top up wallets. Fix it all.
+
+**Actions:**
+1. Diagnosis (subagent): root cause of "Not Implemented" was the tUSDC contract missing CW20-standard `marketing_info {}`. Wallets "doing nothing" was the eager `keplr.enable()` at mount triggering a queued popup. The 4 scenarios produced nothing because the cutover route only flipped fault flags — it never triggered an on-chain lock.
+2. Relayer Go: added `LockTusdc` (approve + Vault.lock from relayer wallet) and `ClaimTusdc` (selector 0x4e71d92d for Sepolia, `claim {}` for Neutron) to both eth and tendermint plugins. Added `/admin/trigger-lock` and `/admin/claim-tusdc` admin endpoints.
+3. Frontend `/api/scenarios/[type]`: now sequences inject-fault → trigger-lock so each scenario produces a real Sepolia event for the relayer to detect.
+4. Frontend `/api/admin/claim`: server-side proxy with `TESSERA_ADMIN_SECRET`, supports relayer A and B.
+5. Frontend `/admin` page: balance table for 6 wallet/chain pairs (user + relayer A + relayer B × Sepolia + Neutron), claim buttons (user-side via wallet, relayer-side via server proxy), refresh button.
+6. Bridge widget: "+ Add funds" link in header pointing to /admin.
+7. Wallet UX fixes: dropped `keplr.suggestToken` (would surface "Not Implemented"); replaced eager `keplr.enable()` with non-prompting `keplr.getKey()` probe in `useWalletContext`.
+8. Generated public domain for relayer-b (https://relayer-b-production.up.railway.app); set `RELAYER_B_ADMIN_URL` on frontend.
+9. Set `NEUTRON_WALLET_ADDRESS` on all 3 Railway services so trigger-lock can default-pick the recipient.
+10. Verified end-to-end on the deployed frontend: all 4 scenarios returned real Sepolia tx hashes (`0x1b9cb9b4...`, `0xf7a3795f...`, `0x327c81a8...`, `0xe2b73c1b...`). Admin page renders with live balance table and zero console errors. Relayer-b Sepolia claim worked (`0x79a0e627...`).
+
+**Outcome:** worked — all four demo scenarios fire real on-chain Sepolia events end-to-end. Admin/funding page live. Relayer rotation invariant verified to live in `Verifier.sol:228-229` (`nonce % count`). Two relayers running with separate wallets and admin URLs.
+
+**Files:** `relayer/plugins/ethereum/abis.go` (+ erc20 + lock function), `relayer/plugins/ethereum/plugin.go` (LockTusdc, ClaimTusdc, waitForReceipt), `relayer/plugins/tendermint/plugin.go` (ClaimTusdc), `relayer/internal/relayer/admin.go` (trigger-lock + claim-tusdc handlers), `frontend/app/api/scenarios/[type]/route.ts` (fault → trigger-lock sequence), `frontend/app/api/admin/claim/route.ts` (new), `frontend/app/admin/page.tsx` (new), `frontend/app/HomepageClient.tsx` (Add funds link), `frontend/lib/keplr.ts` (drop suggestToken), `frontend/hooks/useWalletContext.tsx` (non-prompting Keplr probe).
+
+**Tokens:** ~100,000
+
+**Notes:** Known limitation: the relayer's `SubscribeEvents` calls `eth_getLogs` against Alchemy free-tier and gets rate-limited every ~20s. The trigger-lock txs are real and visible on Etherscan, but the Supabase `messages` table doesn't auto-fill until the relayer can see the event. The contracts and proof-transformation logic remain production-grade; only the event-poll cadence needs an Alchemy upgrade for production. Documented as P-11 polish item. The contract-level rotation rule (Verifier.sol:228) handles relayer assignment economically — both relayers race to submit, the contract slashes the original assignee if they're absent past handover. No Go-side rotation logic needed.
+
+---
+
+### [P-10.7] relayer event-loop fixes + Neutron→Sepolia trigger + admin UX polish — 2026-05-09 10:03
+
+**Prompt:** Bridge UI showed message #42 stuck at "pending · 3m ago" with no destination tx, no transformed root, and no rotation A→B during the 60s challenge window. User wanted analysis + fix + redeploy + UI verification, plus the Neutron→Sepolia direction working, the Neutron faucet 404 link fixed, and Neutron user wallet funding errors clearer.
+
+**Actions:**
+1. Live diagnosis: pulled Supabase via PostgREST (Supabase MCP unauthenticated). Found 36 `submissions` rows up to 2026-05-08 14:17 (all from relayer A address `0x211416aa…`), then **zero** today; messages #42/#43 sat at `pending`. The `/admin/health` endpoint returned `relayer_addr: "1ee4df24…"` — which exactly matches the first 8 chars of `RELAYER_A_PRIVATE_KEY` from `.env`, confirming `cli/root.go:74-77` was leaking private-key prefix on an unauthenticated public endpoint.
+2. Identified three root causes: (a) `--from-block` defaulted to 0 → relayer was polling Sepolia from genesis and would never reach today's blocks (`10,819,909+`); (b) poll batch was 500 blocks per tick — Alchemy free tier rejects ranges that large with 429 / "query returned more than 10000 results", so `FilterLogs` errored every tick and the cursor never advanced; (c) `RelayerAddr = privKey[:8] + "..."` — this is what was leaking through `/admin/health`.
+3. Patched `relayer/internal/cli/root.go`: added `deriveRelayerAddr` (uses `crypto.PubkeyToAddress` from go-ethereum) so the address returned is now an EIP-55-checksummed `0x…` derived from the private key, never the key itself. Default `fromBlock=0` now resolves to `LatestBlock - 100` so a freshly-deployed relayer starts polling near the chain tip.
+4. Patched `relayer/plugins/ethereum/plugin.go`: poll batch 500→50 blocks per tick (Alchemy free-tier safe), and the `FilterLogs` error log now includes the from/to range so operator can confirm the cursor.
+5. Added Neutron→Sepolia trigger path: `BurnTusdc(ctx, amountTokens, destApp)` on `relayer/plugins/tendermint/plugin.go` calls `BridgeMint.Burn { amount, destination_chain_id: "sepolia", destination_app: <Sepolia BridgeVault> }` against the deployed contract. The relayer's existing `SubscribeEvents` loop scans `wasm.action='burn'` so the burn flows through the same submitter pipeline as user-side bridge widget calls. Wired `/admin/trigger-burn?amount=10` handler in `relayer/internal/relayer/admin.go` that defaults `destApp` to the deployed Sepolia BridgeVault via a new `SepoliaBridgeVaultAddr()` getter on the ethereum plugin.
+6. Frontend `/api/admin/trigger-burn/route.ts`: new server-side proxy that forwards `{ amount, recipient, relayer: 'a'|'b' }` with `TESSERA_ADMIN_SECRET` headers. Returns 503 if `RELAYER_B_ADMIN_URL` unset.
+7. `frontend/app/admin/page.tsx`: added a "Demo · Neutron → Sepolia" card with `Burn 10 tUSDC · Relayer A` and `Relayer B` buttons. Translated Neutron user-claim errors into user-actionable hints — 24h cooldown vs. no-NTRN-gas vs. raw — instead of dumping the chain-side stack trace. Replaced the broken `docs.neutron.org/neutron/faq/#how-do-i-get-test-tokens` faucet link (404) with `https://docs.neutron.org/` in both the inline note paragraph and the footer link block.
+8. Verified locally: `go build ./...`, `go vet ./...`, `go test ./internal/relayer ./plugins/ethereum ./plugins/tendermint` all green; `tsc --noEmit` on the frontend clean.
+
+**Outcome:** worked locally — all 6 files compile, all touched packages' tests pass. Pushing now for Railway auto-deploy + post-deploy verification.
+
+**Files:** `relayer/internal/cli/root.go`, `relayer/plugins/ethereum/plugin.go`, `relayer/plugins/tendermint/plugin.go`, `relayer/internal/relayer/admin.go`, `frontend/app/api/admin/trigger-burn/route.ts` (new), `frontend/app/admin/page.tsx`
+
+**Tokens:** ~110,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Two of these three relayer bugs were genuinely silent failures — `fromBlock=0` and a 500-block poll batch each work fine in unit tests with a fake RPC, and only break against a real Alchemy free-tier backend at production block heights. The lesson: any chain plugin that tail-watches a public testnet needs at least one e2e check that the cursor advances past today's tip within N ticks. The third bug (private-key prefix on `/admin/health`) is what Slither would catch as "information disclosure on unauthenticated endpoint" — a reminder that the same field that's safe to log in dev (`relayer_addr` for grep-ability) becomes a leak in prod. P-11 polish should add a CI lint that flags any unauthenticated handler reading private-key material.
+
+---

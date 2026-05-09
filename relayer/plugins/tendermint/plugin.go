@@ -656,5 +656,43 @@ func (p *Plugin) ClaimTusdc(ctx context.Context) (string, error) {
 	return txHash, nil
 }
 
+// BurnTusdc calls BridgeMint.Burn from the relayer's wallet, kicking off the
+// Neutron→Sepolia bridge demo flow. The relayer's own SubscribeEvents loop
+// (TxSearch for `wasm.action='burn'`) will then pick it up, fetch an IAVL
+// proof, transform to Patricia, and submit to the Sepolia Verifier — same
+// pipeline as the user-side bridge widget.
+//
+// amountTokens is whole tUSDC (decimals=6 on Neutron). destApp is the
+// 0x-prefixed Sepolia BridgeVault address.
+func (p *Plugin) BurnTusdc(ctx context.Context, amountTokens uint64, destApp string) (string, error) {
+	if err := p.connect(); err != nil {
+		return "", err
+	}
+	if p.cwc == nil {
+		return "", fmt.Errorf("BurnTusdc: no private key configured")
+	}
+	if p.addrs.NeutronBridgeMint == "" {
+		return "", fmt.Errorf("BurnTusdc: NeutronBridgeMint not configured")
+	}
+	if amountTokens == 0 {
+		return "", fmt.Errorf("BurnTusdc: amount must be > 0")
+	}
+	if destApp == "" {
+		return "", fmt.Errorf("BurnTusdc: destApp (Sepolia BridgeVault) is required")
+	}
+	// Cosmos tUSDC has 6 decimals, so 1 whole token = 1_000_000 base units.
+	amountBase := amountTokens * 1_000_000
+	burnMsg := fmt.Sprintf(
+		`{"burn":{"amount":"%d","destination_chain_id":"sepolia","destination_app":%q}}`,
+		amountBase, destApp,
+	)
+	txHash, err := p.cwc.Execute(ctx, p.addrs.NeutronBridgeMint, []byte(burnMsg), 350_000)
+	if err != nil {
+		return "", fmt.Errorf("BurnTusdc: %w", err)
+	}
+	slog.Info("BurnTusdc submitted", "tx", txHash, "amount_tokens", amountTokens, "dest_app", destApp)
+	return txHash, nil
+}
+
 // Compile-time assertion.
 var _ chain.Plugin = (*Plugin)(nil)
