@@ -2,8 +2,10 @@
 package transform
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -134,11 +136,17 @@ func computeSolidityMsgID(env chain.MessageEnvelope) ([32]byte, error) {
 	srcChain := stringToBytes32(env.SourceChainID)
 	dstChain := stringToBytes32(env.DestChainID)
 
+	// Mirror the ethereum plugin's toEVMEnvelope normalisation of destApp:
+	// for Sepolia destinations the contract expects 32-byte abi.encode(address),
+	// so the relayer must use the same bytes here for the embedded msgID to
+	// match the contract's keccak(abi.encode(stored envelope)). We can't
+	// import the ethereum plugin from this package (it imports transform),
+	// so the conversion is duplicated inline.
 	encoded, err := args.Pack(
 		srcChain,
 		[]byte(env.SourceApp),
 		dstChain,
-		[]byte(env.DestApp),
+		evmDestAppBytes(env.DestApp),
 		env.Action,
 		env.Payload,
 		env.Nonce,
@@ -159,4 +167,22 @@ func stringToBytes32(s string) [32]byte {
 	}
 	copy(b[:n], s[:n])
 	return b
+}
+
+// evmDestAppBytes mirrors ethereum.EVMDestAppBytes: when destApp is a 0x-prefixed
+// 20-byte hex string (i.e. an EVM address) it returns the abi.encode(address)
+// 32-byte left-padded form the Sepolia Verifier expects on storage. Anything
+// else falls through to the raw UTF-8 bytes (used for bech32 destApps when
+// the destination is Cosmos). Duplicated here because the transform package
+// can't import plugins/ethereum (circular).
+func evmDestAppBytes(destApp string) []byte {
+	s := strings.TrimSpace(destApp)
+	if (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) && len(s) == 42 {
+		if addr, err := hex.DecodeString(s[2:]); err == nil && len(addr) == 20 {
+			out := make([]byte, 32)
+			copy(out[12:], addr)
+			return out
+		}
+	}
+	return []byte(destApp)
 }

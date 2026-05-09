@@ -828,11 +828,31 @@ func toEVMEnvelope(env chain.MessageEnvelope) evmEnvelope {
 		SourceChainId:      stringToBytes32(env.SourceChainID),
 		SourceApp:          []byte(env.SourceApp),
 		DestinationChainId: stringToBytes32(env.DestChainID),
-		DestinationApp:     []byte(env.DestApp),
+		DestinationApp:     EVMDestAppBytes(env.DestApp),
 		Action:             env.Action,
 		Payload:            env.Payload,
 		Nonce:              env.Nonce,
 	}
+}
+
+// EVMDestAppBytes encodes a destination-app string for the Sepolia Verifier's
+// dispatch step. Sepolia executeMessage requires `sub.destinationApp.length == 32`
+// and decodes it via `abi.decode(destinationApp, (address))` — i.e. a 32-byte
+// left-padded EVM address. The relayer reads destApp as a "0x…" hex string off
+// the Cosmos Burn event, so a naive []byte cast yields 42 ASCII bytes and the
+// dispatch reverts with InvalidProof. This helper converts hex-string forms
+// into the abi.encode(address) shape; non-hex values fall through to raw bytes
+// so EVM→non-EVM paths keep their string-form (bech32) destApp.
+func EVMDestAppBytes(destApp string) []byte {
+	s := strings.TrimSpace(destApp)
+	if (strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X")) && len(s) == 42 {
+		if addr, err := hex.DecodeString(s[2:]); err == nil && len(addr) == 20 {
+			out := make([]byte, 32)
+			copy(out[12:], addr)
+			return out
+		}
+	}
+	return []byte(destApp)
 }
 
 // stringToBytes32 encodes a string as a right-zero-padded bytes32.
