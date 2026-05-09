@@ -39,7 +39,15 @@ type MessageRow struct {
 	DestinationChainID string `json:"destination_chain_id"`
 	DestinationApp     string `json:"destination_app"`
 	Action             string `json:"action"`
-	Payload            []byte `json:"payload"`
+	// Payload is the cross-chain message payload. Stored as `bytea` in
+	// PostgreSQL; PostgREST returns it as the hex literal `\\x...`. Using
+	// `string` (not `[]byte`) here avoids two opposite encoding conventions
+	// fighting each other: Go's json.Marshal expects []byte to round-trip
+	// as base64 (which the bytea column is not), and Go's []byte unmarshal
+	// rejects PostgREST's `\\x` prefix as illegal-base64. Treating it as an
+	// opaque string and sending `\\x` (empty bytea) is what every existing
+	// row already uses.
+	Payload string `json:"payload"`
 	Sender             string `json:"sender"`
 	Recipient          string `json:"recipient"`
 	Amount             string `json:"amount"`

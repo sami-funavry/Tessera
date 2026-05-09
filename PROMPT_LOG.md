@@ -837,3 +837,24 @@
 **Notes:** Three layers of masking: (1) Alchemy free-tier rate-limit hides the real `eth_getLogs` cap of 10 blocks behind a generic `-32600`; (2) Railway truncates JSON-formatted slog output, so the structured `err` field on `slog.Error` calls gets dropped exactly when you need it most; (3) Go's `json.Marshal` silently encodes nil `[]byte` as `null`, which collides with PostgreSQL's bytea NOT NULL semantics. None of these were caught by `go test` or local development against a fake RPC + a fresh Supabase project — they only manifest when (a) RPC is the free-tier Alchemy endpoint, (b) logs go through Railway's JSON viewer, and (c) the `messages` schema is the production migration. The lesson for P-11: write at least one e2e test that hits a deployed PostgREST instance with the real schema and asserts the relayer's row makes it in — local mocks were too forgiving here.
 
 ---
+
+### [P-10.7e] decoded: bytea base64 dance + storageProof.value type drift — 2026-05-09 11:25
+
+**Prompt:** P-10.7d shipped, redeployed, and the verbose error logging finally surfaced the real cause. Two new errors visible:
+1. `supabase decode /rest/v1/messages: illegal base64 data at input byte 0`
+2. `submitter: handleEvent failed: handleEvent TranslateProofTo: PatriciaToIAVL: unmarshal AccountResult: json: cannot unmarshal number into Go struct field storageProofEntry.storageProof.value of type string`
+
+**Actions:**
+1. Diagnosis #1 — bytea base64 dance: PostgREST returns the `payload` column as `\\x` (PostgreSQL hex-literal for empty bytea), but Go's `json.Unmarshal` for `[]byte` expects base64. The UPSERT *succeeded* (the row was written), but the response decode failed and the relayer's helper returned an error before submitter.go could pick up `id`, so the pipeline aborted. Fixed by changing `MessageRow.Payload` from `[]byte` to `string` and sending the literal `"\\x"` for empty payload. This matches what the bridge-widget recorder already does and avoids the round-trip mismatch.
+2. Diagnosis #2 — storageProof.value type drift: gethclient.StorageResult declares `Value` as `*big.Int` in the go-ethereum revision the relayer is pinned to, which json.Marshal serialises as a *number*. Older / newer revisions use `*hexutil.Big`, which serialises as a quoted hex string. The relayer's `transform.storageProofEntry` had `Value string`, so unmarshalling a number errored. Fixed by storing the field as `json.RawMessage` and adding `(*storageProofEntry).hexValue()` that handles both shapes — string or number — and normalises to a `0x…` hex string for the downstream `hexutil.Decode`.
+3. `go build`, `go test ./internal/transform/... ./internal/relayer/...` clean.
+
+**Outcome:** patched + tested locally. Committing + pushing. After this lands, the full handleEvent pipeline (FetchProof → TranslateProofTo → SubmitMessage) should run end-to-end on the deployed relayer for the first time today.
+
+**Files:** `relayer/internal/supabase/client.go`, `relayer/internal/relayer/submitter.go`, `relayer/internal/transform/patricia_to_iavl.go`
+
+**Tokens:** ~190,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Both bugs are "the type system can't help you when you cross a marshalling boundary" failures: (a) `[]byte` in Go means "send/receive base64" by JSON convention, but PostgreSQL bytea has its own `\\x…` encoding — the field is named `bytea` for a reason and the Go convention conflicts with it; (b) `*big.Int` and `*hexutil.Big` are nominally interchangeable big-integer types in go-ethereum but their JSON serialisations are different in a way that propagates to every downstream consumer. The defence in depth is what the verbose logging from P-10.7d enabled — without those changes, both of these would still be hiding behind the same generic "submitter: handleEvent failed" message and we'd be blind. P-11 polish: add fuzz tests for the supabase client that round-trip every column type against a real PostgREST instance, plus a unit test that swaps go-ethereum's StorageResult.Value between `*big.Int` and `*hexutil.Big` to keep the storageProofEntry decoder honest.
+
+---

@@ -2,9 +2,11 @@
 package transform
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"math/big"
 	"strconv"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -13,10 +15,36 @@ import (
 
 // storageProofEntry mirrors the StorageResult inside gethclient.AccountResult
 // for JSON parsing. We only need the fields relevant to the proof walk.
+//
+// `Value` is decoded permissively: gethclient.StorageResult.Value is *big.Int
+// in some go-ethereum revisions (json.Marshal emits a JSON number) and
+// *hexutil.Big in others (json.Marshal emits a quoted hex string). The
+// Alchemy node we point at returns a number for an empty slot, so we accept
+// either shape and normalise to a hex string in `hexValue()`.
 type storageProofEntry struct {
-	Key   string   `json:"key"`
-	Value string   `json:"value"`
-	Proof []string `json:"proof"` // hex-encoded RLP nodes
+	Key      string          `json:"key"`
+	RawValue json.RawMessage `json:"value"`
+	Proof    []string        `json:"proof"` // hex-encoded RLP nodes
+}
+
+// hexValue returns the storage value as a `0x…` hex string regardless of
+// whether the JSON encoded it as a quoted hex string or a number literal.
+func (e *storageProofEntry) hexValue() string {
+	raw := bytes.TrimSpace(e.RawValue)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	if raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			return s
+		}
+	}
+	n := new(big.Int)
+	if err := json.Unmarshal(raw, n); err == nil {
+		return "0x" + n.Text(16)
+	}
+	return ""
 }
 
 // storageProofJSON is the top-level structure of a marshalled AccountResult.
@@ -71,15 +99,23 @@ func PatriciaToIAVL(proof chain.Proof, env chain.MessageEnvelope) (chain.Proof, 
 
 	// Decode leafValue — same right-alignment.
 	var leafValue [32]byte
-	if len(ap.StorageProof) > 0 && ap.StorageProof[0].Value != "" {
-		vb, err := hexutil.Decode(ap.StorageProof[0].Value)
-		if err != nil {
-			vb = proof.Value
+	if len(ap.StorageProof) > 0 {
+		if hv := ap.StorageProof[0].hexValue(); hv != "" {
+			vb, err := hexutil.Decode(hv)
+			if err != nil {
+				vb = proof.Value
+			}
+			if len(vb) > 32 {
+				vb = vb[len(vb)-32:]
+			}
+			copy(leafValue[32-len(vb):], vb)
+		} else if len(proof.Value) > 0 {
+			vb := proof.Value
+			if len(vb) > 32 {
+				vb = vb[len(vb)-32:]
+			}
+			copy(leafValue[32-len(vb):], vb)
 		}
-		if len(vb) > 32 {
-			vb = vb[len(vb)-32:]
-		}
-		copy(leafValue[32-len(vb):], vb)
 	} else if len(proof.Value) > 0 {
 		vb := proof.Value
 		if len(vb) > 32 {

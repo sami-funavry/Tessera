@@ -218,14 +218,15 @@ func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
 	if r.cfg.DB == nil {
 		return 0
 	}
-	// messages.payload is `bytea NOT NULL`. Go's json.Marshal turns a nil
-	// []byte into JSON `null`, which PostgREST rejects with 23502
-	// (not-null constraint). decodeLocked never sets Payload for Locked /
-	// Burned events on the source side — it lives in the on-chain action
-	// args, not the topic — so we coalesce nil → empty bytea here.
-	payload := ev.Payload
-	if payload == nil {
-		payload = []byte{}
+	// messages.payload is `bytea NOT NULL` in PostgreSQL. We send the empty
+	// hex literal `\\x` (matches what every existing row uses, including
+	// rows the bridge-widget recorder writes). MessageRow.Payload is now a
+	// `string` rather than `[]byte` so Go's JSON encoder doesn't fight with
+	// PostgREST over base64 vs hex — see supabase/client.go for the full
+	// rationale.
+	payloadHex := "\\x"
+	if len(ev.Payload) > 0 {
+		payloadHex = "\\x" + hex.EncodeToString(ev.Payload)
 	}
 	id, err := r.cfg.DB.UpsertMessage(ctx, supabase.MessageRow{
 		Nonce:              ev.Nonce,
@@ -234,7 +235,7 @@ func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
 		DestinationChainID: ev.DestChainID,
 		DestinationApp:     ev.DestApp,
 		Action:             hex.EncodeToString(ev.Action[:]),
-		Payload:            payload,
+		Payload:            payloadHex,
 		Sender:             ev.Sender,
 		Recipient:          "", // filled by destination app on mint/release
 		Amount:             "0",
