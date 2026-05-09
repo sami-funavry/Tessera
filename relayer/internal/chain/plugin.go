@@ -50,6 +50,11 @@ type Event struct {
 	BlockHeight   uint64
 	TxHash        string
 	Sender        string
+	// Amount is the source-native token amount (wei for EVM Locked, uTUSDC
+	// for CosmWasm Burned). Nil-safe — callers must coalesce nil to "0"
+	// before writing to a NOT NULL column. Added P-10.8d so the dashboard's
+	// totalVolume stat can accumulate real amounts instead of "0" everywhere.
+	Amount *big.Int
 }
 
 // MessageEnvelope is the canonical cross-chain message (R-67).

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"strings"
 	"sync"
 	"time"
@@ -313,7 +314,6 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 			}
 		}
 	}
-	_ = amount // used in payload in future
 	if destChainID == "" {
 		destChainID = "sepolia"
 	}
@@ -323,6 +323,17 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 
 	var payload [96]byte
 	binary.BigEndian.PutUint64(payload[88:96], nonce)
+
+	// P-10.8d: parse the Burn amount attribute (uTUSDC, base-10 string) into
+	// big.Int so dbUpsertMessage can write the real source amount instead
+	// of "0". Falls back to nil on parse failure (caller coalesces).
+	var amountBI *big.Int
+	if amount != "" {
+		bi, ok := new(big.Int).SetString(amount, 10)
+		if ok {
+			amountBI = bi
+		}
+	}
 
 	return chain.Event{
 		SourceChainID: p.chainID,
@@ -335,6 +346,7 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 		BlockHeight:   uint64(tx.Height),
 		TxHash:        strings.ToUpper(fmt.Sprintf("%x", tx.Hash)),
 		Sender:        "",
+		Amount:        amountBI,
 	}, nil
 }
 

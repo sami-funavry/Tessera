@@ -313,6 +313,12 @@ func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
 	if len(ev.Payload) > 0 {
 		payloadHex = "\\x" + hex.EncodeToString(ev.Payload)
 	}
+	// P-10.8d: write the real source-native amount when the plugin sets it,
+	// else keep the "0" sentinel for back-compat with old rows.
+	amountStr := "0"
+	if ev.Amount != nil {
+		amountStr = ev.Amount.String()
+	}
 	id, err := r.cfg.DB.UpsertMessage(ctx, supabase.MessageRow{
 		Nonce:              ev.Nonce,
 		SourceChainID:      ev.SourceChainID,
@@ -323,7 +329,7 @@ func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
 		Payload:            payloadHex,
 		Sender:             ev.Sender,
 		Recipient:          "", // filled by destination app on mint/release
-		Amount:             "0",
+		Amount:             amountStr,
 		SourceTxHash:       ev.TxHash,
 		SourceBlock:        ev.BlockHeight,
 		Status:             "pending",

@@ -394,6 +394,10 @@ func (p *Plugin) decodeLocked(log types.Log) (chain.Event, error) {
 		BlockHeight:   log.BlockNumber,
 		TxHash:        log.TxHash.Hex(),
 		Sender:        user.Hex(),
+		// P-10.8d: surface the amount so dbUpsertMessage can write it into
+		// messages.amount instead of hardcoding "0". Dashboard's totalVolume
+		// previously read 0 for every relayer-detected lock because of this.
+		Amount: amount,
 	}, nil
 }
 

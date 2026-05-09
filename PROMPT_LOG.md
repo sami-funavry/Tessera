@@ -1081,3 +1081,27 @@
 **Notes:** Three back-to-back fixes (P-10.8 → P-10.8b → P-10.8c) all addressing the same root issue from different angles: relayer writes canonical chain names, frontend was hardcoded against EIP-155 literals. The cumulative effect was: bridge widget never saw status updates, demo log routed half the events to the wrong explorer, dashboard volume ignored half the rows. Centralizing the helper means a future canonical-name change (e.g., adding Polygon) only touches `isSepoliaChainId` plus a sibling helper, not 7 scattered `=== 'X'` checks. Worth following up in P-11 by either (a) running a one-time SQL migration to canonicalize all bonds.chain_id rows to 'sepolia' and removing the OR-branch, or (b) doing the opposite. Either way the shim retires.
 
 ---
+
+### [P-10.8d] relayer-written messages.amount=0 → real amount from Locked/Burned events — 2026-05-09 17:30
+
+**Prompt:** Continued autonomous loop. Verified P-10.8c shipped clean. Spot-checked the dashboard's totalVolume-relevant data and noticed every relayer-written message has `amount='0'` — the dashboard's volume metric will read 0 for them.
+
+**Actions:**
+1. `grep "Amount: " relayer/internal/relayer/submitter.go` showed `Amount: "0"` hardcoded in `dbUpsertMessage`. The bridge widget's `/api/bridge/relay` writes the real wei amount on its row, but that row never lined up with the relayer's row pre-P-10.8 (chain_id mismatch). Now they line up — but the relayer overwrites with "0" on upsert.
+2. `grep amount relayer/plugins/{ethereum,tendermint}` found:
+   - `ethereum/plugin.go:378` extracts `amount := data["amount"].(*big.Int)` from the Locked event but never set it on the returned `chain.Event`.
+   - `tendermint/plugin.go:316` literally has `_ = amount // used in payload in future` — the burn amount was being thrown away.
+3. Added `Amount *big.Int` field to `chain.Event` struct (with a comment explaining why and the nil-safe contract). Set it in both plugin event decoders.
+4. Updated `submitter.go dbUpsertMessage` to use `ev.Amount.String()` (or "0" if nil for back-compat).
+5. Added `"math/big"` import to tendermint plugin.
+6. `go build ./...`, `go test ./internal/relayer/... ./plugins/...` — all clean.
+
+**Outcome:** patched + built + tested. After deploying both relayers, new Locked/Burned events will write the real source-native amount into messages.amount. The dashboard's totalVolume will start accumulating real numbers per chain (Sepolia 1e18 wei, Neutron 1e6 uTUSDC) thanks to P-10.8c's `formatAmount` decimal selection.
+
+**Files:** `relayer/internal/chain/plugin.go`, `relayer/plugins/ethereum/plugin.go`, `relayer/plugins/tendermint/plugin.go`, `relayer/internal/relayer/submitter.go`
+
+**Tokens:** ~150,000. Model: Opus 4.7 (1M context).
+
+**Notes:** This is the fourth surface of the same chain_id-coupled bug class — the data was correct on the source chain (real Locked event with 10 tUSDC) but degraded at every layer that touched it: the chain.Event dropped Amount, the upsert hardcoded "0", and even if it had been set, the dashboard would have used the wrong decimals before P-10.8c. End-to-end: bridge widget records intent (with amount), relayer detects on-chain event (with amount), upsert merges them keeping both sender and amount, dashboard renders correctly. Worth a P-11 follow-up to assert in dbUpsertMessage that the amount on a re-upsert (when the bridge widget ran first) doesn't get overwritten with the relayer's potentially-different parse — but for the demo the relayer is the source of truth on amount, since it parses straight from on-chain data.
+
+---
