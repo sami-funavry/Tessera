@@ -15,11 +15,15 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/tessera-bridge/tessera/plugins/ethereum"
+	"github.com/tessera-bridge/tessera/plugins/tendermint"
 )
 
 // AdminState holds the current fault injection configuration.
@@ -47,7 +51,130 @@ func (r *Runner) AdminServer(addr string) *http.Server {
 	mux.HandleFunc("/admin/go-silent", r.withCORS(r.checkAdminSecret(r.handleGoSilent)))
 	mux.HandleFunc("/admin/force-frivolous", r.withCORS(r.checkAdminSecret(r.handleForceFrivolous)))
 	mux.HandleFunc("/admin/status", r.withCORS(r.checkAdminSecret(r.handleAdminStatus)))
+	mux.HandleFunc("/admin/trigger-lock", r.withCORS(r.checkAdminSecret(r.handleTriggerLock)))
+	mux.HandleFunc("/admin/claim-tusdc", r.withCORS(r.checkAdminSecret(r.handleClaimTusdc)))
 	return &http.Server{Addr: addr, Handler: mux}
+}
+
+// handleClaimTusdc has the relayer claim tUSDC on its own wallet, on either
+// chain, using the standard claim() (Sepolia) or Claim {} (Neutron) entry
+// points. Useful for funding the relayer wallets from the admin UI.
+//
+//	POST /admin/claim-tusdc?chain=sepolia|neutron
+func (r *Runner) handleClaimTusdc(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	chain := req.URL.Query().Get("chain")
+	if chain != "sepolia" && chain != "neutron" {
+		http.Error(w, "chain must be 'sepolia' or 'neutron'", http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	if chain == "sepolia" {
+		ethPlugin, ok := r.cfg.EthPlugin.(*ethereum.Plugin)
+		if !ok {
+			http.Error(w, "EthPlugin is not concrete", http.StatusInternalServerError)
+			return
+		}
+		txHash, err := ethPlugin.ClaimTusdc(req.Context())
+		if err != nil {
+			slog.Error("admin: claim-tusdc sepolia failed", "err", err)
+			http.Error(w, fmt.Sprintf("sepolia claim failed: %v", err), http.StatusBadGateway)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":            true,
+			"chain":         "sepolia",
+			"tx_hash":       txHash,
+			"etherscan_url": fmt.Sprintf("https://sepolia.etherscan.io/tx/%s", txHash),
+		})
+		return
+	}
+
+	// Neutron path
+	tmPlugin, ok := r.cfg.TmPlugin.(*tendermint.Plugin)
+	if !ok {
+		http.Error(w, "TmPlugin is not concrete", http.StatusInternalServerError)
+		return
+	}
+	txHash, err := tmPlugin.ClaimTusdc(req.Context())
+	if err != nil {
+		slog.Error("admin: claim-tusdc neutron failed", "err", err)
+		http.Error(w, fmt.Sprintf("neutron claim failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":           true,
+		"chain":        "neutron",
+		"tx_hash":      txHash,
+		"celatone_url": fmt.Sprintf("https://neutron.celat.one/pion-1/txs/%s", txHash),
+	})
+}
+
+// handleTriggerLock executes a real Sepolia tUSDC lock from the relayer's
+// own wallet, kicking off the normal SubscribeEvents → SubmitMessage
+// pipeline (with whatever fault flag is currently active). Used by the
+// frontend's /api/scenarios/[type] route after configuring the scenario's
+// fault flag.
+//
+//	POST /admin/trigger-lock?amount=10&recipient=neutron1...
+//	  - amount     : tUSDC amount in whole tokens (default 10)
+//	  - recipient  : neutron1... bech32 address (default $NEUTRON_WALLET_ADDRESS)
+func (r *Runner) handleTriggerLock(w http.ResponseWriter, req *http.Request) {
+	if req.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+
+	amountStr := req.URL.Query().Get("amount")
+	if amountStr == "" {
+		amountStr = "10"
+	}
+	amountTokens, err := strconv.ParseUint(amountStr, 10, 32)
+	if err != nil || amountTokens == 0 {
+		http.Error(w, "amount must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	recipient := req.URL.Query().Get("recipient")
+	if recipient == "" {
+		recipient = os.Getenv("NEUTRON_WALLET_ADDRESS")
+	}
+	if recipient == "" {
+		http.Error(w, "recipient missing and NEUTRON_WALLET_ADDRESS not set", http.StatusBadRequest)
+		return
+	}
+
+	// Convert whole tokens to 18-decimal wei.
+	amountWei := new(big.Int).Mul(big.NewInt(int64(amountTokens)), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
+
+	// Type-assert to the concrete plugin so we can reach LockTusdc.
+	ethPlugin, ok := r.cfg.EthPlugin.(*ethereum.Plugin)
+	if !ok {
+		http.Error(w, "EthPlugin is not the ethereum.Plugin concrete type", http.StatusInternalServerError)
+		return
+	}
+
+	txHash, nonce, err := ethPlugin.LockTusdc(req.Context(), recipient, amountWei)
+	if err != nil {
+		slog.Error("admin: trigger-lock failed", "err", err)
+		http.Error(w, fmt.Sprintf("lock failed: %v", err), http.StatusBadGateway)
+		return
+	}
+
+	slog.Info("admin: trigger-lock submitted", "tx", txHash, "nonce", nonce, "amount_tokens", amountTokens, "recipient", recipient)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"ok":             true,
+		"tx_hash":        txHash,
+		"nonce":          nonce,
+		"amount_tokens":  amountTokens,
+		"recipient":      recipient,
+		"etherscan_url":  fmt.Sprintf("https://sepolia.etherscan.io/tx/%s", txHash),
+	})
 }
 
 // withCORS adds CORS headers when FRONTEND_ORIGIN is set, allowing the deployed

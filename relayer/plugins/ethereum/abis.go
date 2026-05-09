@@ -94,6 +94,44 @@ const bridgeVaultABIJSON = `[
       {"name":"destinationChainId","type":"bytes32","indexed":false},
       {"name":"destinationApp","type":"bytes","indexed":false}
     ]
+  },
+  {
+    "type":"function","name":"lock",
+    "inputs":[
+      {"name":"amount","type":"uint256"},
+      {"name":"nonce","type":"uint64"},
+      {"name":"destinationChainId","type":"bytes32"},
+      {"name":"destinationApp","type":"bytes"}
+    ],
+    "outputs":[],"stateMutability":"nonpayable"
+  }
+]`
+
+// Minimal ERC20 ABI used by the demo trigger-lock admin endpoint.
+const erc20ABIJSON = `[
+  {
+    "type":"function","name":"approve",
+    "inputs":[
+      {"name":"spender","type":"address"},
+      {"name":"amount","type":"uint256"}
+    ],
+    "outputs":[{"name":"","type":"bool"}],
+    "stateMutability":"nonpayable"
+  },
+  {
+    "type":"function","name":"allowance",
+    "inputs":[
+      {"name":"owner","type":"address"},
+      {"name":"spender","type":"address"}
+    ],
+    "outputs":[{"name":"","type":"uint256"}],
+    "stateMutability":"view"
+  },
+  {
+    "type":"function","name":"balanceOf",
+    "inputs":[{"name":"account","type":"address"}],
+    "outputs":[{"name":"","type":"uint256"}],
+    "stateMutability":"view"
   }
 ]`
 

@@ -1,7 +1,6 @@
 'use client';
 
 import { SigningCosmWasmClient } from '@cosmjs/cosmwasm-stargate';
-import { ADDRESSES } from '@/lib/config';
 
 // StdFee shape from @cosmjs/amino. Inlined so we don't have to add another
 // cosmjs sub-package to package.json — both major versions in our tree (0.38
@@ -51,15 +50,12 @@ export async function connectKeplr(): Promise<{ address: string; client: Signing
     await keplr.experimentalSuggestChain(NEUTRON_CHAIN_INFO);
     await keplr.enable(NEUTRON_CHAIN_ID);
 
-    // Register the tUSDC CW20 with Keplr so its native sidebar shows the
-    // balance. Idempotent — silently no-ops if already added. We swallow any
-    // rejection because the user may decline the popup; balance still works
-    // via our own polling hook.
-    try {
-      await keplr.suggestToken(NEUTRON_CHAIN_ID, ADDRESSES.neutron.tusdc);
-    } catch {
-      /* user declined or token already registered */
-    }
+    // We intentionally do NOT call `keplr.suggestToken(...)` here. Keplr's
+    // native CW20 add-token UI calls `marketing_info {}` on the contract,
+    // which our minimal tUSDC contract doesn't implement, surfacing a
+    // "Not Implemented" error to the user. Token balance still works via
+    // our own polling hook (useNeutronTusdcBalance) and the bridge widget.
+    // Trade-off: Keplr's sidebar doesn't show the tUSDC balance natively.
 
     const offlineSigner = keplr.getOfflineSigner(NEUTRON_CHAIN_ID);
     const accounts = await offlineSigner.getAccounts();

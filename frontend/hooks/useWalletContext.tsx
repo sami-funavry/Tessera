@@ -60,9 +60,11 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
   const isFullyConnected = isEvmConnected && isKeplrConnected;
 
   // Attempt to restore Keplr connection silently on mount (best-effort).
-  // We do not call connectKeplr() here because that would prompt the user
-  // immediately; instead we use getKeplrAddress which only reads already-
-  // enabled chains.
+  // CRITICAL: do NOT call `keplr.enable(chainId)` here — that triggers an
+  // unlock prompt on every page load even if the user has never connected,
+  // which the deployed UI surfaces as Keplr "just processing". Instead we
+  // probe `keplr.getKey()` first; if it throws, the chain isn't enabled or
+  // Keplr is locked, and we silently exit without prompting.
   useEffect(() => {
     let cancelled = false;
     async function tryRestore() {
@@ -71,12 +73,12 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
       const keplr = (window as any).keplr;
       if (!keplr) return;
       try {
-        const chainId =
-          process.env.NEXT_PUBLIC_NEUTRON_CHAIN_ID ?? 'pion-1';
-        await keplr.enable(chainId);
-        const key = await keplr.getKey(chainId);
+        const chainId = process.env.NEXT_PUBLIC_NEUTRON_CHAIN_ID ?? 'pion-1';
+        // getKey throws synchronously if the chain isn't enabled OR Keplr
+        // is locked — both are expected on first visit, so we exit quietly.
+        const key = await keplr.getKey(chainId).catch(() => null);
         if (!cancelled && key?.bech32Address) {
-          // Re-establish the signing client silently.
+          // Already authorized in a previous session — re-establish silently.
           const result = await connectKeplr();
           if (!cancelled && result) {
             setNeutronAddress(result.address);
@@ -84,7 +86,7 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
           }
         }
       } catch {
-        // Keplr not unlocked or chain not added yet — expected on first load.
+        // Keplr extension not installed or other unexpected error.
       }
     }
     tryRestore();

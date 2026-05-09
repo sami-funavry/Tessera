@@ -42,6 +42,7 @@ type Plugin struct {
 	bondABI       *abi.ABI
 	vaultABI      *abi.ABI
 	bridgeMintABI *abi.ABI
+	erc20ABI      *abi.ABI
 }
 
 // New returns a new Ethereum plugin wired with deployed contract addresses and signer key.
@@ -96,11 +97,16 @@ func (p *Plugin) connect(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ethereum plugin: parse bridge-mint ABI: %w", err)
 	}
+	eABI, err := abi.JSON(strings.NewReader(erc20ABIJSON))
+	if err != nil {
+		return fmt.Errorf("ethereum plugin: parse erc20 ABI: %w", err)
+	}
 	p.verifierABI = &vABI
 	p.registryABI = &rABI
 	p.bondABI = &bABI
 	p.vaultABI = &vaABI
 	p.bridgeMintABI = &bmABI
+	p.erc20ABI = &eABI
 
 	slog.Info("ethereum plugin connected", "chain", p.chainID, "rpc", p.rpcURL)
 	return nil
@@ -514,6 +520,145 @@ func (p *Plugin) DepositBond(ctx context.Context, amountWei string) (string, err
 	}
 	slog.Info("ethereum DepositBond success", "tx_hash", txHash, "amount_wei", amountWei)
 	return txHash, nil
+}
+
+// ClaimTusdc calls the public tUSDC.claim() function on Sepolia from the
+// relayer's wallet. Used by the admin /admin/claim-tusdc endpoint to top
+// up the relayer's tUSDC balance for funding bridge demos.
+//
+// Returns the tx hash. Subject to the contract's per-address daily rate
+// limit (1000 tUSDC / address / 24 h).
+func (p *Plugin) ClaimTusdc(ctx context.Context) (string, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", err
+	}
+	if p.privKeyHex == "" {
+		return "", fmt.Errorf("ClaimTusdc: private key not configured")
+	}
+	if p.addrs.SepoliaTUSDC == "" {
+		return "", fmt.Errorf("ClaimTusdc: SepoliaTUSDC not configured")
+	}
+
+	// claim() takes no args. Pure 4-byte selector: keccak256("claim()")[:4].
+	claimSel := []byte{0x4e, 0x71, 0xd9, 0x2d}
+	txHash, err := p.sendTx(ctx, p.addrs.SepoliaTUSDC, claimSel, nil)
+	if err != nil {
+		return "", fmt.Errorf("ClaimTusdc: %w", err)
+	}
+	slog.Info("ClaimTusdc submitted", "tx", txHash)
+	return txHash, nil
+}
+
+// LockTusdc executes a tUSDC approve + BridgeVault.lock from the relayer's
+// own wallet to bridge `amountWei` to the Neutron `recipient`. Used by the
+// demo /admin/trigger-lock endpoint to kick off a real on-chain Sepolia
+// event that the relayer's normal SubscribeEvents handler will then pick
+// up and process per the active fault flags.
+//
+// Returns the lock tx hash and the nonce used.
+func (p *Plugin) LockTusdc(
+	ctx context.Context,
+	recipientNeutron string,
+	amountWei *big.Int,
+) (string, uint64, error) {
+	if err := p.connect(ctx); err != nil {
+		return "", 0, err
+	}
+	if p.privKeyHex == "" {
+		return "", 0, fmt.Errorf("LockTusdc: private key not configured")
+	}
+	if p.addrs.SepoliaTUSDC == "" || p.addrs.SepoliaBridgeVault == "" {
+		return "", 0, fmt.Errorf("LockTusdc: tUSDC or vault address not configured")
+	}
+
+	// Step 1 — ensure allowance is sufficient. If not, approve max once.
+	privKeyBytes, err := hex.DecodeString(p.privKeyHex)
+	if err != nil {
+		return "", 0, fmt.Errorf("LockTusdc: decode key: %w", err)
+	}
+	privKey, err := crypto.ToECDSA(privKeyBytes)
+	if err != nil {
+		return "", 0, fmt.Errorf("LockTusdc: parse key: %w", err)
+	}
+	from := crypto.PubkeyToAddress(privKey.PublicKey)
+	tusdcAddr := common.HexToAddress(p.addrs.SepoliaTUSDC)
+	vaultAddr := common.HexToAddress(p.addrs.SepoliaBridgeVault)
+
+	allowanceData, err := p.erc20ABI.Pack("allowance", from, vaultAddr)
+	if err != nil {
+		return "", 0, fmt.Errorf("LockTusdc: pack allowance: %w", err)
+	}
+	allowanceRes, err := p.client.CallContract(ctx, ethereum.CallMsg{
+		To: &tusdcAddr, Data: allowanceData,
+	}, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("LockTusdc: read allowance: %w", err)
+	}
+	allowance := new(big.Int).SetBytes(allowanceRes)
+
+	if allowance.Cmp(amountWei) < 0 {
+		// Approve max so subsequent locks skip this step.
+		maxUint := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(1))
+		approveData, err := p.erc20ABI.Pack("approve", vaultAddr, maxUint)
+		if err != nil {
+			return "", 0, fmt.Errorf("LockTusdc: pack approve: %w", err)
+		}
+		approveTx, err := p.sendTx(ctx, p.addrs.SepoliaTUSDC, approveData, nil)
+		if err != nil {
+			return "", 0, fmt.Errorf("LockTusdc: approve: %w", err)
+		}
+		// Wait for approve receipt before locking.
+		if _, err := p.waitForReceipt(ctx, approveTx); err != nil {
+			return "", 0, fmt.Errorf("LockTusdc: approve receipt: %w", err)
+		}
+		slog.Info("LockTusdc: approve confirmed", "tx", approveTx)
+	}
+
+	// Step 2 — lock. nonce is a monotonic timestamp (sec); collisions are
+	// extremely unlikely for a demo-paced flow.
+	nonce := uint64(time.Now().Unix())
+
+	// destinationChainId is the right-padded ASCII bytes of "pion-1".
+	var destChain [32]byte
+	copy(destChain[:], []byte("pion-1"))
+
+	// destinationApp is the UTF-8 bytes of the BridgeMint bech32 address.
+	destApp := []byte(p.addrs.NeutronBridgeMint)
+	if len(destApp) == 0 {
+		return "", 0, fmt.Errorf("LockTusdc: NeutronBridgeMint not configured")
+	}
+	_ = recipientNeutron // recipient is encoded in the destination app's onCrossChainMessage payload by the contract; we capture it here for logging/future use.
+
+	lockData, err := p.vaultABI.Pack("lock", amountWei, nonce, destChain, destApp)
+	if err != nil {
+		return "", 0, fmt.Errorf("LockTusdc: pack lock: %w", err)
+	}
+	lockTx, err := p.sendTx(ctx, p.addrs.SepoliaBridgeVault, lockData, nil)
+	if err != nil {
+		return "", 0, fmt.Errorf("LockTusdc: lock: %w", err)
+	}
+	slog.Info("LockTusdc: lock submitted", "tx", lockTx, "nonce", nonce, "amount", amountWei.String(), "recipient", recipientNeutron)
+	return lockTx, nonce, nil
+}
+
+// waitForReceipt polls for a tx receipt up to ~90 seconds. Used as a simple
+// confirm step for the demo trigger-lock approve.
+func (p *Plugin) waitForReceipt(ctx context.Context, txHashHex string) (uint64, error) {
+	txHash := common.HexToHash(txHashHex)
+	deadline := time.Now().Add(90 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		default:
+		}
+		receipt, err := p.client.TransactionReceipt(ctx, txHash)
+		if err == nil {
+			return receipt.BlockNumber.Uint64(), nil
+		}
+		time.Sleep(3 * time.Second)
+	}
+	return 0, fmt.Errorf("waitForReceipt: timeout")
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────

@@ -83,33 +83,64 @@ async function handleScenario(type: string): Promise<NextResponse> {
 
   const target = buildAdminTarget(scenarioType, adminUrl);
 
-  let upstream: Response;
+  // Step 1 — configure the scenario's fault flag on the relayer.
+  // (For 'honest', this is a no-op /admin/status ping.)
   try {
-    upstream = await fetch(target.path, {
+    const upstream = await fetch(target.path, {
       method: target.method,
       headers: adminSecret ? { 'X-Admin-Secret': adminSecret } : {},
-      // The admin handlers respond instantly (they only flip flags). The
-      // actual on-chain work happens asynchronously inside the relayer.
       signal: AbortSignal.timeout(15_000),
     });
+    if (!upstream.ok) {
+      const text = await upstream.text().catch(() => '');
+      return NextResponse.json(
+        { success: false, message: `Fault config returned ${upstream.status}: ${text}` },
+        { status: 502 },
+      );
+    }
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      {
-        success: false,
-        message: `Failed to reach relayer admin: ${errMsg}`,
-      },
+      { success: false, message: `Failed to reach relayer admin (fault step): ${errMsg}` },
       { status: 502 },
     );
   }
 
-  if (!upstream.ok) {
-    const text = await upstream.text().catch(() => '');
+  // Step 2 — execute a real Sepolia tUSDC lock from the relayer's wallet.
+  // The relayer's SubscribeEvents handler will pick it up and process per
+  // the active fault flag (or honestly if none is set).
+  let lockResult: {
+    ok?: boolean;
+    tx_hash?: string;
+    nonce?: number;
+    amount_tokens?: number;
+    recipient?: string;
+    etherscan_url?: string;
+  } | null = null;
+
+  try {
+    const recipientParam = process.env.NEUTRON_WALLET_ADDRESS
+      ? `&recipient=${encodeURIComponent(process.env.NEUTRON_WALLET_ADDRESS)}`
+      : '';
+    const lockUrl = `${adminUrl}/admin/trigger-lock?amount=10${recipientParam}`;
+    const lockUpstream = await fetch(lockUrl, {
+      method: 'POST',
+      headers: adminSecret ? { 'X-Admin-Secret': adminSecret } : {},
+      // Lock involves a real on-chain tx; allow up to 90s for approve + lock.
+      signal: AbortSignal.timeout(90_000),
+    });
+    if (!lockUpstream.ok) {
+      const text = await lockUpstream.text().catch(() => '');
+      return NextResponse.json(
+        { success: false, message: `Trigger-lock returned ${lockUpstream.status}: ${text}` },
+        { status: 502 },
+      );
+    }
+    lockResult = await lockUpstream.json().catch(() => null);
+  } catch (err) {
+    const errMsg = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      {
-        success: false,
-        message: `Relayer admin returned ${upstream.status}: ${text}`,
-      },
+      { success: false, message: `Failed to trigger lock: ${errMsg}` },
       { status: 502 },
     );
   }
@@ -118,6 +149,7 @@ async function handleScenario(type: string): Promise<NextResponse> {
     success: true,
     message: describeScenario(scenarioType),
     relayerAdminUrl: adminUrl,
+    lock: lockResult,
   });
 }
 

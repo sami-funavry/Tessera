@@ -842,9 +842,17 @@ function BridgeWidget({
         <span className="text-[10px] font-mono uppercase tracking-[0.2em] text-stone-500">
           Bridge
         </span>
-        <div className="flex items-center gap-1.5 text-stone-500 text-xs">
-          <RefreshCw size={11} strokeWidth={1.5} />
-          <span className="font-mono">1.0% slippage</span>
+        <div className="flex items-center gap-3">
+          <a
+            href="/admin"
+            className="text-xs text-orange-400 hover:text-orange-300 transition-colors flex items-center gap-1"
+          >
+            + Add funds
+          </a>
+          <div className="flex items-center gap-1.5 text-stone-500 text-xs">
+            <RefreshCw size={11} strokeWidth={1.5} />
+            <span className="font-mono">1.0% slippage</span>
+          </div>
         </div>
       </div>
 

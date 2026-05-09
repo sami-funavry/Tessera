@@ -633,5 +633,28 @@ func toCWEnvelope(env chain.MessageEnvelope) cwEnvelope {
 	}
 }
 
+// ClaimTusdc calls the tUSDC `claim {}` ExecuteMsg on Neutron from the
+// relayer's wallet. Used by /admin/claim-tusdc to top up the relayer's
+// tUSDC balance for funding bridge demos. Subject to the contract's
+// per-address daily rate limit.
+func (p *Plugin) ClaimTusdc(ctx context.Context) (string, error) {
+	if err := p.connect(); err != nil {
+		return "", err
+	}
+	if p.cwc == nil {
+		return "", fmt.Errorf("ClaimTusdc: no private key configured")
+	}
+	if p.addrs.NeutronTUSDC == "" {
+		return "", fmt.Errorf("ClaimTusdc: NeutronTusdc not configured")
+	}
+	const claimMsg = `{"claim":{}}`
+	txHash, err := p.cwc.Execute(ctx, p.addrs.NeutronTUSDC, []byte(claimMsg), 250_000)
+	if err != nil {
+		return "", fmt.Errorf("ClaimTusdc: %w", err)
+	}
+	slog.Info("ClaimTusdc submitted", "tx", txHash)
+	return txHash, nil
+}
+
 // Compile-time assertion.
 var _ chain.Plugin = (*Plugin)(nil)
