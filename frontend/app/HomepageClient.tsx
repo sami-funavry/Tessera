@@ -1452,8 +1452,6 @@ export default function HomepageClient({
       try {
         // Burn: amount in 6-decimal uTUSDC.
         const amountUtusdc = (BigInt(Math.floor(parseFloat(data.amount) * 1_000_000))).toString();
-        const nonce = BigInt(Date.now());
-        setTxNonce(nonce);
 
         // Step 1 — User signs BridgeMint::Burn directly. This is the only
         // shape the relayer's TxSearch loop watches for
@@ -1461,8 +1459,14 @@ export default function HomepageClient({
         // and the only shape that emits `destination_recipient` /
         // `destination_app` / `destination_chain_id` as event attributes —
         // which the relayer reads to construct the abi-encoded payload sent
-        // to the Sepolia BridgeVault. A plain CW20 transfer would never fire
-        // the relayer pipeline.
+        // to Sepolia.
+        //
+        // P-10.13 (B-1): destination_app must be the Sepolia BridgeMint, not
+        // the BridgeVault. The user-side flow is a one-way deposit that
+        // mints fresh tokens on Sepolia (BridgeMint.bridgeMintTo); routing
+        // to BridgeVault.release would revert UnknownNonce because no prior
+        // lock with that nonce exists. Same fix as P-10.10d for the admin
+        // trigger-burn path.
         const burnRes = await cosmWasmClient.execute(
           neutronAddress,
           ADDRESSES.neutron.bridgeMint,
@@ -1470,13 +1474,24 @@ export default function HomepageClient({
             burn: {
               amount: amountUtusdc,
               destination_chain_id: 'sepolia',
-              destination_app: ADDRESSES.sepolia.bridgeVault,
+              destination_app: ADDRESSES.sepolia.bridgeMint,
               destination_recipient: data.recipient,
             },
           },
           neutronFee(300_000),
         );
 
+        // P-10.13 (B-2): mirror the relayer's nonce derivation
+        // (`binary.BigEndian.Uint64(tx.Hash[:8])`, see
+        // relayer/plugins/tendermint/plugin.go:307) so that recordIntent's
+        // INSERT and the relayer's UPSERT both target the same
+        // (source_chain_id, nonce) key — without this, two rows appear
+        // for the same source tx (the frontend's pending row never gets
+        // promoted to executed). Sepolia direction is unaffected because
+        // the lock contract takes the user-supplied nonce as an arg.
+        const nTxHashHex = burnRes.transactionHash.replace(/^0x/i, '').toLowerCase();
+        const nonce = BigInt('0x' + nTxHashHex.slice(0, 16));
+        setTxNonce(nonce);
         setLiveLockHash(burnRes.transactionHash);
         setTxProgress(1);
         toast({ title: 'Burned on Neutron', description: `${data.amount} tUSDC burned. Relayer is now releasing on Sepolia.`, variant: 'success' });

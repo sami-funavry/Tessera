@@ -245,8 +245,13 @@ export default function AdminPage() {
         description: data.tx_hash ? `Tx: ${String(data.tx_hash).slice(0, 10)}…` : '',
         variant: 'success',
       });
-      // Give the chain a few seconds to commit before refreshing.
-      setTimeout(() => refreshBalances(), 4000);
+      // P-10.13 (B-7): wait long enough for the tx to mine + the RPC node
+      // to index the post-tx balance state. 4s was too short for Sepolia
+      // (~12s blocks) and balance reads returned the stale pre-claim value.
+      // Sepolia: 25s covers two blocks + indexing. Neutron: 8s covers ~3
+      // blocks at ~2.5s each.
+      const claimWaitMs = chain === 'sepolia' ? 25_000 : 8_000;
+      setTimeout(() => refreshBalances(), claimWaitMs);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed';
       toast({
@@ -282,7 +287,13 @@ export default function AdminPage() {
           : 'Burn submitted; watch the dashboard for the Sepolia destination tx.',
         variant: 'success',
       });
-      setTimeout(() => refreshBalances(), 4000);
+      // P-10.13 (B-7): trigger-burn is a full cross-chain bridge — the
+      // relayer's Neutron balance drops immediately on burn (~3s), but the
+      // recipient's Sepolia balance only changes after the 60s challenge
+      // window + ~5s execute. Refresh once early (Neutron side) and once
+      // late (Sepolia side) so both deltas land.
+      setTimeout(() => refreshBalances(), 8_000);
+      setTimeout(() => refreshBalances(), 90_000);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Failed';
       toast({
