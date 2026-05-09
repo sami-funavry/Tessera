@@ -119,11 +119,25 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 	if err != nil {
 		return fmt.Errorf("handleEvent SubmitMessage: %w", err)
 	}
-	// Guard against a zero submissionID (e.g. stub returning [32]byte{}) which
-	// would collide with the zero value of any uninitialized pending entry.
+	// Guard against a zero submissionID. This happens on the Neutron side when
+	// the CosmWasm tx broadcast succeeded but the wasm/submission_id event
+	// attribute couldn't be extracted in time (broadcast SYNC returns before
+	// the tx is indexed, and our 30s TxSearch poll occasionally misses it).
+	// The tx is real and on-chain — we still want the submission row written
+	// so the dashboard renders the destination hash and the challenge window
+	// can run normally on the local timer. We skip only the in-process
+	// pending registration (the challenger watcher needs the submissionID
+	// to query the Verifier).
 	if submissionID == ([32]byte{}) {
-		slog.Warn("handleEvent: SubmitMessage returned zero submissionID — skipping pending registration",
+		slog.Warn("handleEvent: SubmitMessage returned zero submissionID — recording submission row without challenger registration",
 			"dest", dst.ChainID(), "nonce", ev.Nonce, "tx_hash", txHash)
+		r.dbInsertSubmission(ctx, supabase.SubmissionRow{
+			MessageID:        msgDBID,
+			SubmitterAddress: r.cfg.RelayerAddr,
+			Fingerprint:      fingerprint,
+			DestTxHash:       txHash,
+			Status:           "submitted",
+		})
 		r.dbUpdateMessageStatus(ctx, msgDBID, "submitted")
 		return nil
 	}

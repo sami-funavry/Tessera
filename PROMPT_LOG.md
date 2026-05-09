@@ -920,3 +920,23 @@
 **Notes:** This is the most production-grade lesson of the day: a hand-written protobuf encoder against an evolving message schema is a slow time bomb. If you're not pulling the proto definitions from the same vendor as the verifier (i.e., literally `cosmos-sdk/types/tx`), you are one schema bump away from a "verified yesterday, broken today" failure with no Go compile error to warn you. P-11 / P-12 polish: replace the hand-rolled `cosmwasm/client.go` SignDoc encoder with the Cosmos SDK Go SDK's own `tx.SignDoc{}.Marshal()` (or the smaller `cosmos-sdk/types/tx` package), so the relayer's signed bytes are guaranteed to match what the verifier reconstructs. Until then, this single function is a privileged spot in the codebase — it should have its own focused test that round-trips against a public Cosmos node and asserts the signed bytes verify.
 
 ---
+
+### [P-10.7i] write submission row even when zero submissionID — dashboard visibility — 2026-05-09 12:45
+
+**Prompt:** Continue verifying. After P-10.7h shipped, deployment logs show `cosmwasm broadcast success` (signature now verifies on Neutron — huge!) and the tx is on-chain. But: `tendermint SubmitMessage: could not extract submission_id from tx` → relayer hits the zero-submissionID guard in `submitter.go` and exits early without writing the submission row. The Neutron destination tx is real and confirmed on-chain, but Tessera's `submissions` table has no record of it, so the dashboard never lights up.
+
+**Actions:**
+1. Read `tendermint/plugin.go SubmitMessage` — when broadcast SYNC returns before block inclusion, the follow-up `fetchSubmissionIDFromTx` (CometBFT TxSearch) sometimes can't find the tx in 30s. The plugin gracefully degrades to returning `txHash + [32]byte{}`.
+2. Read `submitter.go handleEvent` — saw the early-exit guard around the zero submissionID that updates message status to "submitted" but skips `dbInsertSubmission`. So the message row eventually shows status=submitted but no submission row exists with the destination tx hash, and the dashboard's `submissions.dest_tx_hash` source-of-truth stays empty.
+3. Patched the early-exit path in `submitter.go` to ALSO call `dbInsertSubmission` with the real Cosmos tx hash + the relayer's address + the fingerprint, just with `Status: "submitted"`. We skip only the in-process pending-registration (the challenger watcher needs a non-zero submissionID to query the Verifier) — but the bridge itself still completes, the user sees their tokens minted on Neutron, and the dashboard renders the destination tx link.
+4. `go build ./...`, `go test ./internal/relayer/...` clean.
+
+**Outcome:** patched + tested. Pushing + triggering redeploy. After this lands, the dashboard should finally light up with end-to-end bridge rows for today.
+
+**Files:** `relayer/internal/relayer/submitter.go`
+
+**Tokens:** ~265,000. Model: Opus 4.7 (1M context).
+
+**Notes:** The trade-off is conscious: we accept that submissions written through this path won't be auto-challenge-watched by the local relayer (because the challenger goroutine needs the on-chain submissionID to query the Verifier). For Tessera demo purposes this is fine — the chain itself enforces the 60s window in the Verifier contract regardless of whether Tessera's local watcher is observing. P-11 fix path: add an event-decode that pulls `wasm.submission_id` directly from the broadcast response (the `tx_response.events` field returned by REST `/cosmos/tx/v1beta1/txs`) instead of depending on a separate TxSearch poll — this would close the race entirely and let the challenger watch every submission.
+
+---
