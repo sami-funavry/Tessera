@@ -39,9 +39,11 @@ func (r *Runner) runSubmitter(ctx context.Context, src, dst chain.Plugin) error 
 				return nil
 			}
 			if err := r.handleEvent(ctx, src, dst, ev); err != nil {
-				slog.Error("submitter: handleEvent failed",
+				// Inline the err string into the message so Railway's
+				// JSON-log truncation doesn't drop the actual cause.
+				slog.Error(fmt.Sprintf("submitter: handleEvent failed: %v", err),
 					"source", src.ChainID(), "dest", dst.ChainID(),
-					"nonce", ev.Nonce, "tx", ev.TxHash, "err", err)
+					"nonce", ev.Nonce, "tx", ev.TxHash)
 			}
 		}
 	}
@@ -216,6 +218,15 @@ func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
 	if r.cfg.DB == nil {
 		return 0
 	}
+	// messages.payload is `bytea NOT NULL`. Go's json.Marshal turns a nil
+	// []byte into JSON `null`, which PostgREST rejects with 23502
+	// (not-null constraint). decodeLocked never sets Payload for Locked /
+	// Burned events on the source side — it lives in the on-chain action
+	// args, not the topic — so we coalesce nil → empty bytea here.
+	payload := ev.Payload
+	if payload == nil {
+		payload = []byte{}
+	}
 	id, err := r.cfg.DB.UpsertMessage(ctx, supabase.MessageRow{
 		Nonce:              ev.Nonce,
 		SourceChainID:      ev.SourceChainID,
@@ -223,7 +234,7 @@ func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
 		DestinationChainID: ev.DestChainID,
 		DestinationApp:     ev.DestApp,
 		Action:             hex.EncodeToString(ev.Action[:]),
-		Payload:            ev.Payload,
+		Payload:            payload,
 		Sender:             ev.Sender,
 		Recipient:          "", // filled by destination app on mint/release
 		Amount:             "0",
@@ -232,7 +243,9 @@ func (r *Runner) dbUpsertMessage(ctx context.Context, ev chain.Event) int64 {
 		Status:             "pending",
 	})
 	if err != nil {
-		slog.Error("db UpsertMessage failed", "nonce", ev.Nonce, "err", err)
+		// Inline the err so Railway's JSON-log truncation can't drop the
+		// real cause (e.g. a PostgREST 4xx body with the constraint name).
+		slog.Error(fmt.Sprintf("db UpsertMessage failed: %v", err), "nonce", ev.Nonce)
 	}
 	return id
 }
@@ -242,7 +255,7 @@ func (r *Runner) dbUpdateMessageStatus(ctx context.Context, id int64, status str
 		return
 	}
 	if err := r.cfg.DB.UpdateMessageStatus(ctx, id, status); err != nil {
-		slog.Error("db UpdateMessageStatus failed", "id", id, "status", status, "err", err)
+		slog.Error(fmt.Sprintf("db UpdateMessageStatus failed: %v", err), "id", id, "status", status)
 	}
 }
 
@@ -252,7 +265,7 @@ func (r *Runner) dbInsertSubmission(ctx context.Context, sub supabase.Submission
 	}
 	id, err := r.cfg.DB.InsertSubmission(ctx, sub)
 	if err != nil {
-		slog.Error("db InsertSubmission failed", "message_id", sub.MessageID, "err", err)
+		slog.Error(fmt.Sprintf("db InsertSubmission failed: %v", err), "message_id", sub.MessageID)
 	}
 	return id
 }
@@ -262,7 +275,7 @@ func (r *Runner) dbUpdateSubmissionStatus(ctx context.Context, id int64, status,
 		return
 	}
 	if err := r.cfg.DB.UpdateSubmissionStatus(ctx, id, status, txHash); err != nil {
-		slog.Error("db UpdateSubmissionStatus failed", "id", id, "err", err)
+		slog.Error(fmt.Sprintf("db UpdateSubmissionStatus failed: %v", err), "id", id)
 	}
 }
 
@@ -284,6 +297,6 @@ func (r *Runner) dbAppendEvent(ctx context.Context, ev chain.Event) {
 		},
 	})
 	if err != nil {
-		slog.Error("db AppendEvent failed", "tx", ev.TxHash, "err", err)
+		slog.Error(fmt.Sprintf("db AppendEvent failed: %v", err), "tx", ev.TxHash)
 	}
 }

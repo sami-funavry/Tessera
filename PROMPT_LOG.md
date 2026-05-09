@@ -817,3 +817,23 @@
 **Notes:** This is a "pyramid of three layers each masking the one below" diagnosis: (1) you can't see the relayer-A logs without the Railway MCP being authenticated; (2) the slog field that holds the actual upstream error is truncated, hiding the real rate-limit or status-code message; (3) the abstracted client method just returns "UpsertMessage failed" without echoing PostgREST's 409 body. Each layer needs to be peeled to get to the actual bug. P-11 polish: at minimum, log `resp.StatusCode` and the first 256 bytes of the response body in `doAndDecode` when the upstream call fails — a structured field, never truncated, that surfaces the exact 4xx reason.
 
 ---
+
+### [P-10.7d] root-cause: nil payload → bytea NOT NULL violation; verbose error logging — 2026-05-09 11:05
+
+**Prompt:** P-10.7c shipped, fresh deploy succeeded, but logs still showed the same pattern: `handleEvent: received cross-chain event` → `db UpsertMessage failed` → `submitter: handleEvent failed`. User said: keep iterating, drop polling further if needed, fix relayer until txs actually go through.
+
+**Actions:**
+1. To rule out polling, replayed the exact relayer payload via `curl` against PostgREST with `?on_conflict=source_chain_id,nonce` in the URL. Got HTTP 200 and the merged row back — so P-10.7c's URL fix landed correctly and Supabase isn't the issue.
+2. Re-ran with `payload: null` (which is what Go's `json.Marshal` produces for a nil `[]byte`) and got the actual upstream error: `code 23502 — null value in column "payload" of relation "messages" violates not-null constraint`. Re-ran with `payload: ""` (empty string = empty bytea) and got HTTP 201. So the bug was the relayer was sending JSON `null` for an unset `Payload`, and the schema is `bytea NOT NULL`.
+3. Patched `relayer/internal/relayer/submitter.go` `dbUpsertMessage`: coalesce `ev.Payload == nil → []byte{}` before sending. Added a 4-line comment documenting the bytea/Marshal/PostgREST chain so the next person doesn't re-discover it.
+4. Inlined `err.Error()` into the slog message string at every db error site in submitter.go (UpsertMessage, UpdateMessageStatus, InsertSubmission, UpdateSubmissionStatus, AppendEvent) and the top-level `submitter: handleEvent failed`. Without this, Railway's JSON-log truncation drops the actual `err` field, which is what made this take three deploy cycles to find — the bare label "db UpsertMessage failed" hides the underlying 4xx body.
+
+**Outcome:** patched + tested locally (`go build ./...`, `go test ./internal/relayer/...` clean). Pushing now.
+
+**Files:** `relayer/internal/relayer/submitter.go`
+
+**Tokens:** ~175,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Three layers of masking: (1) Alchemy free-tier rate-limit hides the real `eth_getLogs` cap of 10 blocks behind a generic `-32600`; (2) Railway truncates JSON-formatted slog output, so the structured `err` field on `slog.Error` calls gets dropped exactly when you need it most; (3) Go's `json.Marshal` silently encodes nil `[]byte` as `null`, which collides with PostgreSQL's bytea NOT NULL semantics. None of these were caught by `go test` or local development against a fake RPC + a fresh Supabase project — they only manifest when (a) RPC is the free-tier Alchemy endpoint, (b) logs go through Railway's JSON viewer, and (c) the `messages` schema is the production migration. The lesson for P-11: write at least one e2e test that hits a deployed PostgREST instance with the real schema and asserts the relayer's row makes it in — local mocks were too forgiving here.
+
+---
