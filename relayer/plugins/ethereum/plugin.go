@@ -441,6 +441,10 @@ func (p *Plugin) decodeLocked(log types.Log) (chain.Event, error) {
 		// messages.amount instead of hardcoding "0". Dashboard's totalVolume
 		// previously read 0 for every relayer-detected lock because of this.
 		Amount: amount,
+		// P-10.11: surface the destination recipient (Neutron bech32 ASCII for
+		// the demo) so the Executed pipeline event can render the actual mint
+		// recipient instead of the source-side locker.
+		DestRecipient: string(destRecipient),
 	}, nil
 }
 

@@ -28,9 +28,13 @@ import type { TxStage, BridgeFormValues } from '@/types';
 
 function useNeutronTusdcBalance(neutronAddress: string | null) {
   const [balance, setBalance] = useState<string | null>(null);
+  // P-10.11: track whether the most-recent fetch failed. The widget surfaces
+  // a "(stale)" badge so users know the displayed balance may not match
+  // current on-chain state when the Neutron RPC is unreachable.
+  const [stale, setStale] = useState(false);
 
   useEffect(() => {
-    if (!neutronAddress) { setBalance(null); return; }
+    if (!neutronAddress) { setBalance(null); setStale(false); return; }
 
     let cancelled = false;
     const rpc = process.env.NEXT_PUBLIC_NEUTRON_RPC_URL ?? 'https://neutron-testnet-rpc.polkachu.com';
@@ -45,8 +49,13 @@ function useNeutronTusdcBalance(neutronAddress: string | null) {
         if (!cancelled && raw != null) {
           const amount = typeof raw === 'string' ? raw : String(raw);
           setBalance((Number(amount) / 1_000_000).toFixed(2));
+          setStale(false);
         }
-      } catch { /* silently keep last known balance */ }
+      } catch {
+        // RPC unreachable — keep the last-known balance but mark it stale so
+        // the widget can hint that the number may be out of date.
+        if (!cancelled) setStale(true);
+      }
     }
 
     fetchBalance();
@@ -54,7 +63,7 @@ function useNeutronTusdcBalance(neutronAddress: string | null) {
     return () => { cancelled = true; clearInterval(id); };
   }, [neutronAddress]);
 
-  return balance;
+  return { balance, stale };
 }
 
 // ─── Zod schema ───────────────────────────────────────────────────────────────
@@ -771,12 +780,14 @@ function BridgeWidget({
   initialStats,
   sepoliaBalance,
   neutronBalance,
+  neutronBalanceStale,
 }: {
   onSubmit: (data: BridgeFormValues) => void;
   txActive: boolean;
   initialStats: BridgeStats;
   sepoliaBalance?: string | null;
   neutronBalance?: string | null;
+  neutronBalanceStale?: boolean;
 }) {
   const { isFullyConnected, isEvmConnected, isKeplrConnected, evmAddress, neutronAddress } =
     useWalletContext();
@@ -874,6 +885,11 @@ function BridgeWidget({
                   ? (sepoliaBalance != null ? `${sepoliaBalance} tUSDC` : '—')
                   : (neutronBalance != null ? `${neutronBalance} tUSDC` : '—')}
               </span>
+              {fromChain === 'neutron' && neutronBalanceStale && neutronBalance != null && (
+                <span className="ml-1.5 text-[10px] uppercase tracking-wider text-amber-400/80 font-mono">
+                  stale
+                </span>
+              )}
             </span>
           </div>
           <div className="flex items-center gap-3">
@@ -926,6 +942,11 @@ function BridgeWidget({
                   ? (neutronBalance != null ? `${neutronBalance} tUSDC` : '—')
                   : (sepoliaBalance != null ? `${sepoliaBalance} tUSDC` : '—')}
               </span>
+              {toChain === 'neutron' && neutronBalanceStale && neutronBalance != null && (
+                <span className="ml-1.5 text-[10px] uppercase tracking-wider text-amber-400/80 font-mono">
+                  stale
+                </span>
+              )}
             </span>
           </div>
           <div className="flex items-center gap-3 mb-3">
@@ -1168,7 +1189,7 @@ export default function HomepageClient({
     : null;
 
   // Live tUSDC balance on Neutron for connected Keplr wallet.
-  const neutronBalance = useNeutronTusdcBalance(neutronAddress);
+  const { balance: neutronBalance, stale: neutronBalanceStale } = useNeutronTusdcBalance(neutronAddress);
 
   /**
    * Records the user's source-side intent in Supabase via /api/bridge/relay
@@ -1341,16 +1362,22 @@ export default function HomepageClient({
           }
 
           // Step 2 — Lock in BridgeVault
+          // BridgeVault.lock requires 5 args: (amount, nonce, destChainId,
+          // destinationApp, destinationRecipient). The recipient is the user's
+          // Neutron bech32 address, ASCII-encoded as bytes — same shape the
+          // relayer's LockTusdc uses, and what bridge-mint reads off the
+          // resulting Locked event to construct the cross-chain payload.
           const nonce = BigInt(Date.now());
           setTxNonce(nonce);
           const destChainId32 = padHex(toHex('pion-1'), { size: 32, dir: 'right' }) as `0x${string}`;
           const destAppHex = toHex(new TextEncoder().encode(ADDRESSES.neutron.bridgeMint)) as `0x${string}`;
+          const destRecipientHex = toHex(new TextEncoder().encode(data.recipient)) as `0x${string}`;
 
           const lockHash = await walletClient.writeContract({
             address: ADDRESSES.sepolia.bridgeVault as `0x${string}`,
             abi: BRIDGE_VAULT_ABI,
             functionName: 'lock',
-            args: [amountWei, nonce as unknown as bigint, destChainId32, destAppHex],
+            args: [amountWei, nonce as unknown as bigint, destChainId32, destAppHex, destRecipientHex],
           });
 
           setLiveLockHash(lockHash);
@@ -1423,30 +1450,36 @@ export default function HomepageClient({
         return;
       }
       try {
-        // Burn / send: amount in 6-decimal uTUSDC.
+        // Burn: amount in 6-decimal uTUSDC.
         const amountUtusdc = (BigInt(Math.floor(parseFloat(data.amount) * 1_000_000))).toString();
         const nonce = BigInt(Date.now());
         setTxNonce(nonce);
 
-        // Step 1 — User signs a CW20 transfer to the BridgeMint contract.
-        // For the simulator this is just an outgoing transfer; the destination
-        // delivery is handled server-side. The on-chain action is real and
-        // visible on Celatone.
+        // Step 1 — User signs BridgeMint::Burn directly. This is the only
+        // shape the relayer's TxSearch loop watches for
+        // (`wasm._contract_address=<bridge-mint> AND wasm.action='burn'`),
+        // and the only shape that emits `destination_recipient` /
+        // `destination_app` / `destination_chain_id` as event attributes —
+        // which the relayer reads to construct the abi-encoded payload sent
+        // to the Sepolia BridgeVault. A plain CW20 transfer would never fire
+        // the relayer pipeline.
         const burnRes = await cosmWasmClient.execute(
           neutronAddress,
-          ADDRESSES.neutron.tusdc,
+          ADDRESSES.neutron.bridgeMint,
           {
-            transfer: {
-              recipient: ADDRESSES.neutron.bridgeMint,
+            burn: {
               amount: amountUtusdc,
+              destination_chain_id: 'sepolia',
+              destination_app: ADDRESSES.sepolia.bridgeVault,
+              destination_recipient: data.recipient,
             },
           },
-          neutronFee(250_000),
+          neutronFee(300_000),
         );
 
         setLiveLockHash(burnRes.transactionHash);
         setTxProgress(1);
-        toast({ title: 'Burned on Neutron', description: `${data.amount} tUSDC sent to BridgeMint. Relayer is now releasing on Sepolia.`, variant: 'success' });
+        toast({ title: 'Burned on Neutron', description: `${data.amount} tUSDC burned. Relayer is now releasing on Sepolia.`, variant: 'success' });
 
         // Optimistic stage advance while the server-side relayer runs.
         const stageTimeouts = [
@@ -1598,6 +1631,7 @@ export default function HomepageClient({
             initialStats={bridgeStats}
             sepoliaBalance={sepoliaBalance}
             neutronBalance={neutronBalance}
+            neutronBalanceStale={neutronBalanceStale}
           />
         </motion.div>
       </motion.div>

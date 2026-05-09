@@ -231,6 +231,7 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		TxHash:         txHash,
 		AmountStr:      amountStr,
 		Sender:         ev.Sender,
+		DestRecipient:  ev.DestRecipient,
 	}
 	r.addPending(ps)
 
@@ -293,15 +294,21 @@ func (r *Runner) scheduleExecuteMessage(ctx context.Context, ps *pendingSubmissi
 	// Demo-log fields (frontend/app/demo/page.tsx Executed case): `amount`
 	// and `direction` for the source-native value + decimal heuristic, and
 	// either `minted_to` (Sepolia→Neutron mint) or `delivered_to`
-	// (Neutron→Sepolia release) for the displayed recipient. We don't
-	// decode the cross-chain payload here, so we use the source-side
-	// initiator (ps.Sender) as a best-effort recipient — for the demo's
-	// self-bridging flow the locker and the recipient are the same wallet.
+	// (Neutron→Sepolia release) for the displayed recipient.
+	// P-10.11: prefer the destination recipient threaded off the source
+	// event (Locked.destinationRecipient / Burn.destination_recipient).
+	// Falls back to ps.Sender for legacy submissions that pre-date the
+	// recipient field — the "10 tUSDC delivered to …" placeholder we saw
+	// in earlier demo runs came from this empty fallback path.
 	dir := directionLabel(ps.Env.SourceChainID, ps.Env.DestChainID)
 	recipientField := "minted_to"
 	if chainLabel(ps.Env.SourceChainID) != "Sepolia" {
 		// Neutron-source means we executed Release on Sepolia.
 		recipientField = "delivered_to"
+	}
+	displayRecipient := ps.DestRecipient
+	if displayRecipient == "" {
+		displayRecipient = ps.Sender
 	}
 	r.dbAppendPipelineEvent(ctx, ps.DestPlugin.ChainID(), 0, execTxHash,
 		"Executed", ps.Env.DestApp, map[string]any{
@@ -310,7 +317,7 @@ func (r *Runner) scheduleExecuteMessage(ctx context.Context, ps *pendingSubmissi
 			"submission_id": hex.EncodeToString(ps.SubmissionID[:]),
 			"amount":        ps.AmountStr,
 			"direction":     dir,
-			recipientField:  ps.Sender,
+			recipientField:  displayRecipient,
 		})
 }
 

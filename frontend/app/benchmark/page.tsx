@@ -69,13 +69,17 @@ function BoldSection({ number, title, color, icon: Icon, items }: BoldSectionPro
 // ---------------------------------------------------------------------------
 
 function tesseraLatency(stats: BenchmarkStats | null): string {
-  if (!stats || stats.avgLatencyMs === null) return '74–90s';
+  // P-10.11: no live data → render spec target rather than an invented range,
+  // per the no-fabricated-numerical-claims rule (CLAUDE.md anti-hallucination
+  // #3). BRIDGE_PARAMS.estimatedTimeSec = 90 is the only authoritative value.
+  if (!stats || stats.avgLatencyMs === null) return '~90s (spec target)';
   const secs = Math.round(stats.avgLatencyMs / 1000);
   return `~${secs}s`;
 }
 
 function tesseraDestGas(stats: BenchmarkStats | null): string {
-  if (!stats || stats.avgDestGas === null) return '~220k';
+  // P-10.11: no live data → dash. We don't have a measured gas number to cite.
+  if (!stats || stats.avgDestGas === null) return '—';
   const k = Math.round(stats.avgDestGas / 1000);
   return `~${k}k`;
 }

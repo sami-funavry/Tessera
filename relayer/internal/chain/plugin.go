@@ -55,6 +55,15 @@ type Event struct {
 	// before writing to a NOT NULL column. Added P-10.8d so the dashboard's
 	// totalVolume stat can accumulate real amounts instead of "0" everywhere.
 	Amount *big.Int
+	// DestRecipient is the destination-chain address that will receive the
+	// bridged tokens. ASCII for Neutron bech32 destinations, hex string with
+	// 0x prefix for Sepolia destinations. Plugins read this off the source
+	// event (Locked.destinationRecipient on Sepolia, Burn.destination_recipient
+	// attribute on Neutron) and the submitter threads it through to the
+	// Executed pipeline event so the demo log shows where the tokens actually
+	// landed instead of the source-side initiator. Empty when the source
+	// plugin couldn't extract it.
+	DestRecipient string
 }
 
 // MessageEnvelope is the canonical cross-chain message (R-67).

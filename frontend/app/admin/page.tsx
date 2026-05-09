@@ -8,6 +8,12 @@ import { ADDRESSES, RELAYER_ADDRESSES } from '@/lib/config';
 import { useWalletContext } from '@/hooks/useWalletContext';
 import { useToast } from '@/hooks/useToast';
 import { neutronFee } from '@/lib/keplr';
+import {
+  adminFetch,
+  captureAdminTokenFromUrl,
+  getAdminToken,
+  setAdminToken,
+} from '@/lib/adminToken';
 import Card from '@/components/Card';
 import SectionLabel from '@/components/SectionLabel';
 
@@ -60,6 +66,25 @@ export default function AdminPage() {
   const [balances, setBalances] = useState<BalanceState>(initialBalances);
   const [refreshing, setRefreshing] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
+
+  // Admin-token gate (P-10.11). Page renders the gate UI until the visitor
+  // either supplies a token via the URL parameter or pastes one. The token is
+  // never stored beyond sessionStorage.
+  const [tokenReady, setTokenReady] = useState<'pending' | 'ready' | 'missing'>('pending');
+  const [tokenInput, setTokenInput] = useState('');
+
+  useEffect(() => {
+    const fromUrl = captureAdminTokenFromUrl();
+    if (fromUrl) {
+      setTokenReady('ready');
+      return;
+    }
+    if (getAdminToken()) {
+      setTokenReady('ready');
+      return;
+    }
+    setTokenReady('missing');
+  }, []);
 
   /**
    * Fetch tUSDC balances on both chains for user + both relayers.
@@ -206,7 +231,7 @@ export default function AdminPage() {
     const key = `relayer${relayer.toUpperCase()}${chain === 'sepolia' ? 'Sepolia' : 'Neutron'}`;
     setBusy(key);
     try {
-      const res = await fetch('/api/admin/claim', {
+      const res = await adminFetch('/api/admin/claim', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ chain, relayer }),
@@ -240,7 +265,7 @@ export default function AdminPage() {
     const key = `triggerBurn${which.toUpperCase()}`;
     setBusy(key);
     try {
-      const res = await fetch('/api/admin/trigger-burn', {
+      const res = await adminFetch('/api/admin/trigger-burn', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ amount: 10, relayer: which }),
@@ -271,6 +296,61 @@ export default function AdminPage() {
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
+
+  if (tokenReady === 'pending') {
+    // Brief flash while we decide if a token is present. Returning null avoids
+    // rendering the full admin UI before the gate decision is made.
+    return null;
+  }
+
+  if (tokenReady === 'missing') {
+    return (
+      <div className="max-w-md mx-auto px-4 sm:px-6 py-16">
+        <div className="text-[10px] font-mono uppercase tracking-[0.2em] text-stone-500 mb-2">
+          Admin · Restricted
+        </div>
+        <h1 className="font-display text-3xl text-stone-100 mb-3">
+          Admin link required.
+        </h1>
+        <p className="text-sm text-stone-400 mb-6 leading-relaxed">
+          This page funds the relayers and the connected user wallet — destructive
+          actions, gated by a shared token. Open this page via the share link
+          (which carries the token) or paste it below.
+        </p>
+        <input
+          type="password"
+          autoFocus
+          placeholder="Admin token"
+          value={tokenInput}
+          onChange={(e) => setTokenInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && tokenInput.trim()) {
+              setAdminToken(tokenInput.trim());
+              setTokenReady('ready');
+            }
+          }}
+          className="w-full px-3 py-2.5 bg-stone-900 border border-stone-800 rounded text-sm text-stone-100 placeholder:text-stone-600 focus:outline-none focus:border-stone-700 font-mono"
+        />
+        <button
+          onClick={() => {
+            if (!tokenInput.trim()) return;
+            setAdminToken(tokenInput.trim());
+            setTokenReady('ready');
+          }}
+          className="mt-3 px-4 py-2 bg-stone-800 hover:bg-stone-700 text-stone-100 text-sm rounded transition-colors disabled:opacity-50"
+          disabled={!tokenInput.trim()}
+        >
+          Unlock
+        </button>
+        <button
+          onClick={() => router.push('/')}
+          className="mt-3 ml-3 text-xs text-stone-500 hover:text-stone-300 transition-colors"
+        >
+          Back to bridge
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-5xl mx-auto px-4 sm:px-6 py-10">

@@ -354,7 +354,7 @@ function HowContent() {
     participant NV as Verifier<br/>(Neutron)
     participant NM as BridgeMint<br/>(Neutron)
 
-    U->>SV: lock(amount, recipient, dest)
+    U->>SV: lock(amount, nonce, destChainId, destApp, destRecipient)
     SV-->>R: Locked event
     Note over R: eth_getProof<br/>Patricia / Keccak-256 / RLP
     Note over R: VerifyConsensus<br/>(RPC trust — limitation L-1)
@@ -377,7 +377,7 @@ function HowContent() {
     participant SR as Verifier<br/>(Sepolia)
     participant SV as BridgeVault<br/>(Sepolia)
 
-    U->>NM: burn(amount, recipient)
+    U->>NM: BridgeMint::Burn { amount, destination_chain_id, destination_app, destination_recipient }
     NM-->>R: Burned event
     Note over R: ABCI query<br/>IAVL / SHA-256 / Protobuf
     Note over R: VerifyConsensus<br/>cometbft.NewValidatorSet.VerifyCommit()<br/>2/3+ Ed25519 sigs validated in Go
@@ -1179,7 +1179,7 @@ function WalletsContent() {
 
     U->>FE: bridge X tUSDC, Sepolia → Neutron
     FE->>MM: tUSDC.approve(BridgeVault, max) — first time only
-    FE->>MM: BridgeVault.lock(amount, recipient)
+    FE->>MM: BridgeVault.lock(amount, nonce, destChainId, destApp, destRecipient)
     MM->>SEP: signed tx
     SEP-->>R: Locked event
     Note over R: fetch + transform proof + submit
@@ -1510,7 +1510,7 @@ function ScriptsContent() {
             ],
             [
               <code key="f8" className="font-mono text-xs">relayer/internal/scenario/runner_test.go</code>,
-              'In-process scenario runner used by `go run ./cmd/tessera test-scenario [1..4]`',
+              'In-process scenario runner — invoke via `go test -run TestRunS[1-4] ./internal/scenario/...`',
             ],
           ]}
         />
@@ -1602,7 +1602,7 @@ function ScriptsContent() {
         />
         <p className="text-stone-500 text-xs mt-3">
           The in-process equivalent (no testnet funds required) is{' '}
-          <code className="font-mono text-stone-300">go run ./cmd/tessera test-scenario [1..4]</code>.
+          <code className="font-mono text-stone-300">go test -run TestRunS[1-4] ./relayer/internal/scenario/...</code>.
         </p>
       </ProseSection>
 

@@ -47,6 +47,7 @@ export const BRIDGE_VAULT_ABI = [
       { name: 'nonce', type: 'uint64' },
       { name: 'destinationChainId', type: 'bytes32' },
       { name: 'destinationApp', type: 'bytes' },
+      { name: 'destinationRecipient', type: 'bytes' },
     ],
     outputs: [],
   },

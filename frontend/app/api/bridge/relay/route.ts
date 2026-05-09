@@ -21,16 +21,15 @@ export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-admin';
+import { ADDRESSES } from '@/lib/config';
 
-// P-10.10: BridgeVault redeployed at this address with `destinationRecipient`
-// added to lock() and the Locked event. Old vault (0x2C354443…) is orphaned;
-// any tokens locked there before the cutover are stranded testnet balance.
-const SEPOLIA_VAULT = '0x23d1a91A23b00809EDca2F61e84C02073a0603Ce';
-// P-10.10: bridge-mint redeployed at this address with `destination_recipient`
-// on the Burn execute message. tusdc was migrated to point its BRIDGE_MINT at
-// this new contract (state preserved, balances intact).
-const NEUTRON_BRIDGE_MINT =
-  'neutron19hrantdzyyfwa8r438pu5czkzmpz72lluw9y6694nmdyuz2e7tgqa4s48f';
+// P-10.11: bridge contract addresses live in `lib/config.ts` so both client
+// and server code read from a single source of truth. Previously this route
+// hardcoded the addresses, which left it vulnerable to drift on the next
+// migration (the P-10.10 vault rotation already burned us once with stale
+// frontend bundles pointing at the old vault).
+const SEPOLIA_VAULT = ADDRESSES.sepolia.bridgeVault;
+const NEUTRON_BRIDGE_MINT = ADDRESSES.neutron.bridgeMint;
 // P-10.8: must match the Go relayer's `ChainPlugin.ChainID()` exactly so the
 // (source_chain_id, nonce) upsert key collides with the relayer's own write.
 // Previously we used '11155111' (Ethereum chain ID literal); the relayer uses
@@ -93,6 +92,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     direction === 'sepolia_to_neutron' ? SEPOLIA_VAULT.toLowerCase() : NEUTRON_BRIDGE_MINT;
   const destApp =
     direction === 'sepolia_to_neutron' ? NEUTRON_BRIDGE_MINT : SEPOLIA_VAULT.toLowerCase();
+  // P-10.11: action representation must match what the relayer writes when it
+  // upserts the same row from on-chain events (no `0x` prefix, hex-encoded
+  // 4-byte selector). Sepolia→Neutron is the LOCK action 0x00000001;
+  // Neutron→Sepolia is the BURN action 0x00000002. See decodeLocked in the
+  // ethereum plugin and decodeResultTx in the tendermint plugin.
+  const action = direction === 'sepolia_to_neutron' ? '00000001' : '00000002';
 
   // Idempotency: if the relayer already indexed this source tx, return the
   // existing row instead of inserting a duplicate (PRIMARY KEY violation).
@@ -120,7 +125,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     source_app: sourceApp,
     destination_chain_id: destChainId,
     destination_app: destApp,
-    action: '0x00000001',
+    action,
     payload: '\\x',
     sender,
     recipient,

@@ -360,6 +360,10 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 		TxHash:        strings.ToUpper(fmt.Sprintf("%x", tx.Hash)),
 		Sender:        "",
 		Amount:        amountBI,
+		// P-10.11: surface the destination recipient (Sepolia 0x… for the demo)
+		// so the Executed pipeline event renders the actual release recipient
+		// instead of the empty Neutron-side sender.
+		DestRecipient: destRecipient,
 	}, nil
 }
 

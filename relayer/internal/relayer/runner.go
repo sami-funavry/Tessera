@@ -47,6 +47,12 @@ type pendingSubmission struct {
 	// recipient on the destination chain in the demo log when an explicit
 	// recipient isn't extractable from the payload bytes.
 	Sender string
+	// DestRecipient is the destination-chain recipient address read off the
+	// source event (Locked.destinationRecipient on Sepolia, Burn's
+	// destination_recipient attribute on Neutron). Threaded through so the
+	// Executed pipeline event displays the actual mint/release recipient
+	// instead of falling back to the source-side initiator.
+	DestRecipient string
 }
 
 // Runner runs all goroutines and coordinates the relayer loop.

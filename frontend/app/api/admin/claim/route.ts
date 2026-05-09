@@ -14,6 +14,7 @@
 export const dynamic = 'force-dynamic';
 
 import { NextRequest, NextResponse } from 'next/server';
+import { requireAdminToken } from '@/lib/adminAuth';
 
 interface Body {
   chain: 'sepolia' | 'neutron';
@@ -30,6 +31,9 @@ function isBody(b: unknown): b is Body {
 }
 
 export async function POST(req: NextRequest): Promise<NextResponse> {
+  const gate = requireAdminToken(req);
+  if (gate) return gate;
+
   let body: unknown;
   try {
     body = await req.json();

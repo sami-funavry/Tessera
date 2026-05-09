@@ -153,10 +153,19 @@ func (r *Runner) handleFraud(ctx context.Context, ps *pendingSubmission, ourRoot
 			})
 	} else {
 		// Lying submitter loses 50% of bond, paid to the challenger.
+		// P-10.11: `relayer` is the slashed party — the relayer EOA that
+		// submitted the bad fingerprint. In the single-node self-test path
+		// (the demo) this is the local relayer, which also collected the
+		// slash. Previously this was `ps.Env.SourceApp`, the source-app
+		// *contract* address (BridgeVault / bridge-mint), which made the
+		// demo log claim a contract was slashed. Multi-node attribution
+		// would require reading the Submitted event's submitter field on
+		// the destination chain — out of scope while both roles share one
+		// node.
 		r.dbAppendPipelineEvent(ctx, destChain, 0, txHash,
 			"Slashed", ps.Env.DestApp, map[string]any{
 				"nonce":          ps.Nonce,
-				"relayer":        ps.Env.SourceApp,
+				"relayer":        r.cfg.RelayerAddr,
 				"slash_pct":      50,
 				"reason":         "wrong fingerprint",
 				"amount_slashed": "0.01",
@@ -205,10 +214,12 @@ func (r *Runner) handleAbsence(ctx context.Context, ps *pendingSubmission) {
 
 	// P-10.8: emit AbsenceSlash for the demo log so the silent scenario
 	// shows the handover + slash on screen.
+	// P-10.11: `relayer` is the slashed (absent) submitter EOA, not the
+	// source-app contract. See the corresponding fix in handleFraud above.
 	r.dbAppendPipelineEvent(ctx, ps.DestPlugin.ChainID(), 0, txHash,
 		"AbsenceSlash", ps.Env.DestApp, map[string]any{
 			"nonce":          ps.Nonce,
-			"relayer":        ps.Env.SourceApp,
+			"relayer":        r.cfg.RelayerAddr,
 			"slash_pct":      50,
 			"reason":         "absence",
 			"amount_slashed": "0.01",

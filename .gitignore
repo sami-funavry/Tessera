@@ -48,6 +48,10 @@ broadcast/
 # Playwright debug output (transient)
 .playwright-mcp/
 
+# Claude Code runtime artifacts (transient)
+.claude/scheduled_tasks.lock
+.claude/local/
+
 # UI testing screenshots (transient)
 *.png
 *.jpeg
