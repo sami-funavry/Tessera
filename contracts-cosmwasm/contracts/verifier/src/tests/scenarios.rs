@@ -33,18 +33,15 @@ struct Setup {
     app: App,
     tusdc: Addr,
     bond: Addr,
-    registry: Addr,
     bridge_mint: Addr,
     verifier: Addr,
     relayer_a: Addr,
     relayer_b: Addr,
-    user: Addr,
 }
 
 fn build_setup() -> Setup {
     let relayer_a = a("relayer_a");
     let relayer_b = a("relayer_b");
-    let user = a("user");
     let admin = a("admin");
 
     let mut app = AppBuilder::new().build(|router, _api, storage| {
@@ -205,7 +202,7 @@ fn build_setup() -> Setup {
     )
     .unwrap();
 
-    Setup { app, tusdc, bond, registry, bridge_mint, verifier, relayer_a, relayer_b, user }
+    Setup { app, tusdc, bond, bridge_mint, verifier, relayer_a, relayer_b }
 }
 
 fn make_envelope(nonce: u64, dest_app: &Addr) -> MessageEnvelope {
@@ -264,7 +261,7 @@ fn make_tessera_proof(msg_id_str: &str) -> (Vec<u8>, String) {
 
 #[test]
 fn test_s1_honest_delivery() {
-    let Setup { mut app, tusdc, bond, registry: _, bridge_mint, verifier, relayer_a, relayer_b: _, user } =
+    let Setup { mut app, tusdc, bond, bridge_mint, verifier, relayer_a, relayer_b: _ } =
         build_setup();
 
     let env = make_envelope(0, &bridge_mint);
@@ -321,7 +318,7 @@ fn test_s1_honest_delivery() {
 
 #[test]
 fn test_s2_lying_relayer() {
-    let Setup { mut app, tusdc: _, bond, registry: _, bridge_mint, verifier, relayer_a, relayer_b, user: _ } =
+    let Setup { mut app, tusdc: _, bond, bridge_mint, verifier, relayer_a, relayer_b } =
         build_setup();
 
     let env = make_envelope(0, &bridge_mint);
@@ -382,7 +379,7 @@ fn test_s2_lying_relayer() {
 
 #[test]
 fn test_s3_silent_relayer() {
-    let Setup { mut app, tusdc, bond, registry: _, bridge_mint, verifier, relayer_a, relayer_b, user } =
+    let Setup { mut app, tusdc, bond, bridge_mint, verifier, relayer_a, relayer_b } =
         build_setup();
 
     // nonce=0 → original assignee = relayer_a (index 0 % 2 = 0).
@@ -459,7 +456,7 @@ fn test_s3_silent_relayer() {
 
 #[test]
 fn test_s4_frivolous_challenge() {
-    let Setup { mut app, tusdc, bond, registry: _, bridge_mint, verifier, relayer_a, relayer_b, user } =
+    let Setup { mut app, tusdc, bond, bridge_mint, verifier, relayer_a, relayer_b } =
         build_setup();
 
     let env = make_envelope(0, &bridge_mint);

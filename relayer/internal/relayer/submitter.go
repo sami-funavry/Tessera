@@ -208,6 +208,10 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 	r.dbUpdateMessageStatus(ctx, msgDBID, "challenge_window")
 
 	// Step 7: Register with challenger for the 60-second watch window.
+	amountStr := ""
+	if ev.Amount != nil {
+		amountStr = ev.Amount.String()
+	}
 	ps := &pendingSubmission{
 		SubmissionID:   submissionID,
 		SubmissionDBID: subDBID,
@@ -220,6 +224,8 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		Proof:          transformedProof,
 		DestPlugin:     dst,
 		TxHash:         txHash,
+		AmountStr:      amountStr,
+		Sender:         ev.Sender,
 	}
 	r.addPending(ps)
 
@@ -279,11 +285,27 @@ func (r *Runner) scheduleExecuteMessage(ctx context.Context, ps *pendingSubmissi
 		"WindowClose", ps.Env.DestApp, map[string]any{
 			"nonce": ps.Nonce,
 		})
+	// Demo-log fields (frontend/app/demo/page.tsx Executed case): `amount`
+	// and `direction` for the source-native value + decimal heuristic, and
+	// either `minted_to` (Sepolia→Neutron mint) or `delivered_to`
+	// (Neutron→Sepolia release) for the displayed recipient. We don't
+	// decode the cross-chain payload here, so we use the source-side
+	// initiator (ps.Sender) as a best-effort recipient — for the demo's
+	// self-bridging flow the locker and the recipient are the same wallet.
+	dir := directionLabel(ps.Env.SourceChainID, ps.Env.DestChainID)
+	recipientField := "minted_to"
+	if chainLabel(ps.Env.SourceChainID) != "Sepolia" {
+		// Neutron-source means we executed Release on Sepolia.
+		recipientField = "delivered_to"
+	}
 	r.dbAppendPipelineEvent(ctx, ps.DestPlugin.ChainID(), 0, execTxHash,
 		"Executed", ps.Env.DestApp, map[string]any{
 			"nonce":         ps.Nonce,
 			"destination":   ps.DestPlugin.ChainID(),
 			"submission_id": hex.EncodeToString(ps.SubmissionID[:]),
+			"amount":        ps.AmountStr,
+			"direction":     dir,
+			recipientField:  ps.Sender,
 		})
 }
 
@@ -295,6 +317,27 @@ func fingerprintType(r *Runner) string {
 		return "WRONG"
 	}
 	return "OK"
+}
+
+// directionLabel formats the source/dest chain ids as "Sepolia → Neutron"
+// or "Neutron → Sepolia" for the demo log's decimal-selection heuristic.
+// The frontend's fmtAmount() switches on `direction.includes("Neutron →")`
+// to pick uTUSDC (1e6) vs wei (1e18), so the prefix wording matters.
+func directionLabel(sourceChainID, destChainID string) string {
+	src := chainLabel(sourceChainID)
+	dst := chainLabel(destChainID)
+	return src + " → " + dst
+}
+
+// chainLabel maps a relayer-canonical chain id ("sepolia", "11155111", "pion-1")
+// to a display label ("Sepolia"/"Neutron"). Anything we don't recognise as
+// Sepolia is treated as Neutron for demo purposes (the only other supported
+// chain at this phase).
+func chainLabel(chainID string) string {
+	if chainID == "sepolia" || chainID == "11155111" {
+		return "Sepolia"
+	}
+	return "Neutron"
 }
 
 // ─── DB write helpers — all log on error, never crash the hot path ───────────
@@ -381,6 +424,16 @@ func (r *Runner) dbAppendEvent(ctx context.Context, ev chain.Event) {
 	if ev.SourceChainID == "pion-1" {
 		eventType = "Burned"
 	}
+	// Pipeline-event fields the demo log reads (frontend/app/demo/page.tsx
+	// buildEventMsg): `amount` for the source-native value, `direction` for
+	// the decimal-selection heuristic ("Sepolia → Neutron" vs the reverse),
+	// and `relayer` for the watcher's address. Without these the log renders
+	// `? tUSDC locked by ?`.
+	amountStr := ""
+	if ev.Amount != nil {
+		amountStr = ev.Amount.String()
+	}
+	direction := directionLabel(ev.SourceChainID, ev.DestChainID)
 	err := r.cfg.DB.AppendEvent(ctx, supabase.EventRow{
 		ChainID:         ev.SourceChainID,
 		BlockNumber:     ev.BlockHeight,
@@ -388,10 +441,13 @@ func (r *Runner) dbAppendEvent(ctx context.Context, ev chain.Event) {
 		EventType:       eventType,
 		ContractAddress: ev.SourceApp,
 		RawData: map[string]any{
-			"nonce":    ev.Nonce,
-			"sender":   ev.Sender,
-			"dest":     ev.DestChainID,
-			"dest_app": ev.DestApp,
+			"nonce":     ev.Nonce,
+			"sender":    ev.Sender,
+			"dest":      ev.DestChainID,
+			"dest_app":  ev.DestApp,
+			"amount":    amountStr,
+			"direction": direction,
+			"relayer":   r.cfg.RelayerAddr,
 		},
 	})
 	if err != nil {

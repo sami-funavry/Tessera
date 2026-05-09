@@ -36,6 +36,17 @@ type pendingSubmission struct {
 	Proof         chain.Proof // transformed proof submitted to dest
 	DestPlugin    chain.Plugin
 	TxHash        string
+	// AmountStr is the source-native amount as a decimal string (e.g. "10000000000000000000"
+	// = 10 tUSDC for a Sepolia-source row at 1e18 wei). Threaded through from
+	// the source Event so the Executed pipeline event can render it instead of
+	// rendering "?" in the demo log. Empty string when the source plugin didn't
+	// populate the amount.
+	AmountStr string
+	// Sender is the source-chain address that initiated the bridge (msg.sender
+	// on Sepolia Locked, info.sender on Neutron Burn). Used as the display
+	// recipient on the destination chain in the demo log when an explicit
+	// recipient isn't extractable from the payload bytes.
+	Sender string
 }
 
 // Runner runs all goroutines and coordinates the relayer loop.

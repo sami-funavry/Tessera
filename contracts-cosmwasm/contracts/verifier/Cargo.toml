@@ -25,3 +25,6 @@ relayer-registry   = { path = "../../contracts/relayer-registry" }
 tusdc              = { path = "../../contracts/tusdc" }
 bridge-mint        = { path = "../../contracts/bridge-mint" }
 bridge-vault       = { path = "../../contracts/bridge-vault" }
+
+[lints]
+workspace = true

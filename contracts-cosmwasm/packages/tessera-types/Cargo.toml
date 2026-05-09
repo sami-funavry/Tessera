@@ -12,3 +12,6 @@ cosmwasm-schema = { workspace = true }
 schemars        = { workspace = true }
 serde           = { workspace = true }
 thiserror       = { workspace = true }
+
+[lints]
+workspace = true

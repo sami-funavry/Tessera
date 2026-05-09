@@ -10,7 +10,7 @@ import CopyableHash from '@/components/CopyableHash';
 import SkeletonLoader from '@/components/SkeletonLoader';
 import { useMessage } from '@/hooks/useMessages';
 import { useSubmissions } from '@/hooks/useRelayers';
-import { cn, timeAgo, statusToColor } from '@/lib/utils';
+import { cn, timeAgo, statusToColor, isSepoliaChainId } from '@/lib/utils';
 import { supabase } from '@/lib/supabase';
 import type { Database } from '@/types';
 
@@ -169,38 +169,42 @@ function PipelineNodeCard({
 // Derive display values from a MessageRow
 // ---------------------------------------------------------------------------
 
-function deriveDirection(
-  msg: MessageRow,
-): 'Sepolia → Neutron' | 'Neutron → Sepolia' {
-  if (msg.source_chain_id.toLowerCase().includes('sepolia') ||
-      msg.source_chain_id === '11155111') {
-    return 'Sepolia → Neutron';
-  }
-  return 'Neutron → Sepolia';
+// Derive the human-readable route label by consulting BOTH source and
+// destination chain ids on the message row. Reading destination explicitly
+// (not inferring from source) is what fixes the bogus "Neutron → Neutron"
+// label that appeared when the relayer wrote a non-Sepolia/non-canonical
+// source_chain_id and the previous binary check fell through to Neutron.
+function deriveDirection(msg: MessageRow): string {
+  const src = isSepoliaChainId(msg.source_chain_id) ? 'Sepolia' : 'Neutron';
+  const dst = isSepoliaChainId(msg.destination_chain_id) ? 'Sepolia' : 'Neutron';
+  return `${src} → ${dst}`;
 }
 
 function deriveSourceExplorer(msg: MessageRow): 'sepolia' | 'neutron' {
-  const dir = deriveDirection(msg);
-  return dir === 'Sepolia → Neutron' ? 'sepolia' : 'neutron';
+  return isSepoliaChainId(msg.source_chain_id) ? 'sepolia' : 'neutron';
 }
 
 function deriveDestExplorer(msg: MessageRow): 'sepolia' | 'neutron' {
-  const dir = deriveDirection(msg);
-  return dir === 'Sepolia → Neutron' ? 'neutron' : 'sepolia';
+  return isSepoliaChainId(msg.destination_chain_id) ? 'sepolia' : 'neutron';
 }
 
 // ---------------------------------------------------------------------------
 // Format helpers
 // ---------------------------------------------------------------------------
 
-/** Convert raw wei amount string (18 decimals) to a human-readable display. */
-function formatAmount(rawWei: string | null | undefined): string {
-  if (!rawWei) return '—';
+/**
+ * Format the source-native amount string for display. Uses 1e18 (wei) for
+ * Sepolia-source rows and 1e6 (uTUSDC) for Neutron-source rows so the
+ * Neutron→Sepolia direction doesn't read as "off by 1e12".
+ */
+function formatAmount(raw: string | null | undefined, sourceChainId: string): string {
+  if (!raw) return '—';
   try {
-    const n = Number(rawWei) / 1e18;
+    const decimals = isSepoliaChainId(sourceChainId) ? 1e18 : 1e6;
+    const n = Number(raw) / decimals;
     return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
   } catch {
-    return rawWei;
+    return raw;
   }
 }
 
@@ -300,7 +304,7 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
         transition={{ delay: 0.08, duration: 0.35 }}
       >
         <Meta label="Route" value={dir} />
-        <Meta label="Asset" value={`${formatAmount(msg.amount)} tUSDC`} />
+        <Meta label="Asset" value={`${formatAmount(msg.amount, msg.source_chain_id)} tUSDC`} />
         <Meta
           label="Relayer"
           value={
@@ -426,7 +430,7 @@ function LoadedContent({ msg, id }: { msg: MessageRow; id: number }) {
           <div className="p-4 bg-orange-400/5 border border-orange-400/20 rounded-sm text-sm text-stone-300">
             Both proofs commit to the same logical claim:{' '}
             <span className="font-mono text-orange-300">
-              &ldquo;Vault contract storage slot 0x4 has value {formatAmount(msg.amount)} tUSDC at
+              &ldquo;Vault contract storage slot 0x4 has value {formatAmount(msg.amount, msg.source_chain_id)} tUSDC at
               block {msg.source_block ?? 'N'}&rdquo;
             </span>{' '}
             — anchored differently for each chain&apos;s native verification path.
