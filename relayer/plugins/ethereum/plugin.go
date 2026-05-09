@@ -120,6 +120,26 @@ func (p *Plugin) ChainID() string { return p.chainID }
 // the destination_app on Neutron→Sepolia demos.
 func (p *Plugin) SepoliaBridgeVaultAddr() string { return p.addrs.SepoliaBridgeVault }
 
+// RelayerSepoliaAddr returns the relayer's own Sepolia EVM address derived
+// from the configured private key, as an EIP-55 0x-prefixed hex string.
+// Returns "" when no private key is configured.  Used as a self-bridging
+// fallback recipient for the admin /trigger-burn endpoint when no explicit
+// recipient is supplied.
+func (p *Plugin) RelayerSepoliaAddr() string {
+	if p.privKeyHex == "" {
+		return ""
+	}
+	privKeyBytes, err := hex.DecodeString(p.privKeyHex)
+	if err != nil {
+		return ""
+	}
+	privKey, err := crypto.ToECDSA(privKeyBytes)
+	if err != nil {
+		return ""
+	}
+	return crypto.PubkeyToAddress(privKey.PublicKey).Hex()
+}
+
 // PubKeyBytes derives the 33-byte compressed secp256k1 public key from the private key.
 // Returns nil if no private key is configured.
 func (p *Plugin) PubKeyBytes() []byte {
@@ -367,6 +387,14 @@ func (p *Plugin) pollEvents(ctx context.Context, fromBlock uint64,
 }
 
 // decodeLocked decodes a BridgeVault.Locked log into a chain.Event.
+//
+// P-10.10: the Locked event now carries a `destinationRecipient` bytes field —
+// this is the user's address on the destination chain (Neutron bech32 string,
+// captured by BridgeVault.lock). We read it off the log and use it as the
+// `recipient` field of the JSON BridgePayload sent in the cross-chain
+// envelope, so the Neutron BridgeMint contract knows who to mint tUSDC to.
+// Without this field the destination dispatch reverts with `invalid bridge
+// payload` even after proof verification succeeds.
 func (p *Plugin) decodeLocked(log types.Log) (chain.Event, error) {
 	// Unpack non-indexed fields from log.Data.
 	data := map[string]any{}
@@ -379,9 +407,17 @@ func (p *Plugin) decodeLocked(log types.Log) (chain.Event, error) {
 	nonce := data["nonce"].(uint64)
 	destChainIDBytes32 := data["destinationChainId"].([32]byte)
 	destApp := data["destinationApp"].([]byte)
+	destRecipient, _ := data["destinationRecipient"].([]byte)
 
 	// Convert bytes32 chainId to string (right-trim zeros).
 	destChainIDStr := bytes32ToString(destChainIDBytes32)
+
+	// Build the cross-chain payload in the format the destination app expects.
+	// For Neutron destinations (the demo direction) bridge-mint deserialises a
+	// JSON `BridgePayload { recipient, amount, nonce }`. Anything else
+	// (legacy/test) falls back to the abi.encode shape, which is what
+	// Sepolia's own BridgeVault.release expects on the reverse path.
+	payload := buildBridgePayloadForDest(destChainIDStr, string(destRecipient), user, amount, nonce)
 
 	return chain.Event{
 		SourceChainID: p.chainID,
@@ -389,7 +425,7 @@ func (p *Plugin) decodeLocked(log types.Log) (chain.Event, error) {
 		DestChainID:   destChainIDStr,
 		DestApp:       string(destApp),
 		Action:        [4]byte{0x00, 0x00, 0x00, 0x01}, // LOCK action
-		Payload:       buildLockPayload(user, amount, nonce),
+		Payload:       payload,
 		Nonce:         nonce,
 		BlockHeight:   log.BlockNumber,
 		TxHash:        log.TxHash.Hex(),
@@ -647,9 +683,17 @@ func (p *Plugin) LockTusdc(
 	if len(destApp) == 0 {
 		return "", 0, fmt.Errorf("LockTusdc: NeutronBridgeMint not configured")
 	}
-	_ = recipientNeutron // recipient is encoded in the destination app's onCrossChainMessage payload by the contract; we capture it here for logging/future use.
+	if recipientNeutron == "" {
+		return "", 0, fmt.Errorf("LockTusdc: recipientNeutron is required (BridgeVault.lock would revert ZeroRecipient)")
+	}
+	// P-10.10: pass the Neutron recipient through to BridgeVault.lock so it
+	// gets emitted on the Locked event. The relayer reads it back off the
+	// log when constructing the BridgePayload sent to bridge-mint — without
+	// this the payload arrives at bridge-mint with no recipient and the
+	// cross-chain dispatch reverts with `invalid bridge payload`.
+	destRecipient := []byte(recipientNeutron)
 
-	lockData, err := p.vaultABI.Pack("lock", amountWei, nonce, destChain, destApp)
+	lockData, err := p.vaultABI.Pack("lock", amountWei, nonce, destChain, destApp, destRecipient)
 	if err != nil {
 		return "", 0, fmt.Errorf("LockTusdc: pack lock: %w", err)
 	}
@@ -804,6 +848,7 @@ func bytes32ToString(b [32]byte) string {
 }
 
 // buildLockPayload encodes abi.encode(recipient, amount, nonce) as the cross-chain payload.
+// Used for EVM-destination dispatch (where the destination app expects abi-encoded bytes).
 func buildLockPayload(user common.Address, amount *big.Int, nonce uint64) []byte {
 	// ABI encode: (address, uint256, uint64)
 	// Pad each to 32 bytes for simplicity (matches abi.encode in Solidity).
@@ -812,6 +857,45 @@ func buildLockPayload(user common.Address, amount *big.Int, nonce uint64) []byte
 	amount.FillBytes(buf[32:64])
 	binary.BigEndian.PutUint64(buf[88:96], nonce) // uint64 right-aligned in 32 bytes
 	return buf[:]
+}
+
+// buildBridgePayloadForDest constructs the cross-chain payload in the format
+// the destination app expects. The relayer carries this verbatim inside the
+// MessageEnvelope.payload — the destination Verifier dispatches it untouched
+// to the destination app, which deserialises it natively.
+//
+//   - Neutron destinations (`pion-1`): bridge-mint runs `from_json::<BridgePayload>`,
+//     so we emit JSON {"recipient": <neutron bech32>, "amount": "<u128>", "nonce": <u64>}.
+//   - Anything else (incl. Sepolia for the reverse-path round-trip): fall back
+//     to the legacy abi.encode shape (address, uint256, uint64), which is what
+//     Sepolia's own BridgeVault.onCrossChainMessage expects.
+//
+// `destRecipient` is the user-provided destination-chain address read off the
+// Locked event. Empty-string fallback uses the source-chain user address as a
+// last-ditch placeholder so unit tests + bare-bones triggers still produce
+// valid bytes — production callers must supply a real recipient or the
+// bridge-mint contract will reject (per its `is_empty()` guard).
+func buildBridgePayloadForDest(
+	destChainID string,
+	destRecipient string,
+	user common.Address,
+	amount *big.Int,
+	nonce uint64,
+) []byte {
+	if destChainID == "pion-1" {
+		recipient := destRecipient
+		if recipient == "" {
+			// No on-chain recipient and no off-chain hint — log shape is wrong
+			// but at least the bytes are valid JSON; bridge-mint will reject
+			// with InvalidPayload, which is louder than a silent zero-byte drop.
+			recipient = user.Hex()
+		}
+		return []byte(fmt.Sprintf(
+			`{"recipient":%q,"amount":"%s","nonce":%d}`,
+			recipient, amount.String(), nonce,
+		))
+	}
+	return buildLockPayload(user, amount, nonce)
 }
 
 // Compile-time assertion: Plugin implements chain.Plugin.

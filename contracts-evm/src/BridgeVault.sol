@@ -23,13 +23,28 @@ contract BridgeVault is IApp, ReentrancyGuard {
 
     // ─── Events ───────────────────────────────────────────────────────────────
 
-    event Locked(address indexed user, uint256 amount, uint64 nonce, bytes32 destinationChainId, bytes destinationApp);
+    /// @dev `destinationRecipient` is the user's address on the destination chain
+    /// (e.g. a Neutron bech32 string for Sepolia→Neutron). The relayer reads this
+    /// off the event log and packs it into the `BridgePayload` it sends to the
+    /// destination Verifier. Without this field the destination app has no way
+    /// to know who to mint/release to (P-10.10 fix; previously the recipient was
+    /// never persisted on-chain and the destination app reverted with
+    /// `invalid bridge payload`).
+    event Locked(
+        address indexed user,
+        uint256 amount,
+        uint64 nonce,
+        bytes32 destinationChainId,
+        bytes destinationApp,
+        bytes destinationRecipient
+    );
     event Released(address indexed recipient, uint256 amount, uint64 nonce);
 
     // ─── Errors ───────────────────────────────────────────────────────────────
 
     error NotVerifier();
     error ZeroAmount();
+    error ZeroRecipient();
     error NonceDuplicate(uint64 nonce);
     error UnknownNonce(uint64 nonce);
 
@@ -56,20 +71,27 @@ contract BridgeVault is IApp, ReentrancyGuard {
     /// @param nonce Globally unique message nonce assigned by the caller (typically the Verifier on the source side).
     /// @param destinationChainId Target chain identifier.
     /// @param destinationApp Target app contract address encoded as bytes.
+    /// @param destinationRecipient Target user address on the destination chain
+    /// (e.g. Neutron bech32 string). Must be non-empty — the destination app
+    /// uses this to know who to credit. The relayer copies it verbatim into
+    /// the cross-chain payload; the bridge has no other path for it to
+    /// travel.
     function lock(
         uint256 amount,
         uint64 nonce,
         bytes32 destinationChainId,
-        bytes calldata destinationApp
+        bytes calldata destinationApp,
+        bytes calldata destinationRecipient
     ) external nonReentrant {
         if (amount == 0) revert ZeroAmount();
+        if (destinationRecipient.length == 0) revert ZeroRecipient();
         if (lockedBy[nonce] != address(0)) revert NonceDuplicate(nonce);
 
         lockedAmount[nonce] = amount;
         lockedBy[nonce] = msg.sender;
 
         IERC20(token).safeTransferFrom(msg.sender, address(this), amount);
-        emit Locked(msg.sender, amount, nonce, destinationChainId, destinationApp);
+        emit Locked(msg.sender, amount, nonce, destinationChainId, destinationApp, destinationRecipient);
     }
 
     // ─── IApp ─────────────────────────────────────────────────────────────────

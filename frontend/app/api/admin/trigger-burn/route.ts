@@ -7,10 +7,21 @@
  * SubscribeEvents picks up the wasm.action='burn' tx, fetches an IAVL proof,
  * transforms to Patricia, submits to the Sepolia Verifier).
  *
- * Body: { amount?: number, recipient?: string, relayer?: 'a' | 'b' }
+ * Body: { amount?: number, recipient?: string, destApp?: string, relayer?: 'a' | 'b' }
  *
- * Defaults: amount=10, recipient=Sepolia BridgeVault (pulled by the relayer),
- * relayer='a'. For relayer 'b', RELAYER_B_ADMIN_URL must be configured.
+ *   - amount     : tUSDC tokens to burn (default 10)
+ *   - recipient  : 0x… Sepolia EVM address to release tokens to. Optional —
+ *                  the relayer falls back to its own Sepolia address for
+ *                  self-bridging demo runs. Production callers (the bridge
+ *                  widget) should pass the connected-wallet address.
+ *   - destApp    : 0x… Sepolia BridgeVault contract address (defaults on
+ *                  the relayer side; only override for non-demo deploys).
+ *   - relayer    : 'a' | 'b' (default 'a').
+ *
+ * P-10.10: previously this body had a single `recipient` field that was
+ * forwarded to the relayer as the destApp — the user's actual destination
+ * address was never carried through, and BridgeVault.release reverted with
+ * `invalid bridge payload` because the payload had a zero recipient.
  */
 
 export const dynamic = 'force-dynamic';
@@ -20,6 +31,7 @@ import { NextRequest, NextResponse } from 'next/server';
 interface Body {
   amount?: number;
   recipient?: string;
+  destApp?: string;
   relayer?: 'a' | 'b';
 }
 
@@ -28,6 +40,7 @@ function isBody(b: unknown): b is Body {
   const x = b as Body;
   if (x.amount !== undefined && typeof x.amount !== 'number') return false;
   if (x.recipient !== undefined && typeof x.recipient !== 'string') return false;
+  if (x.destApp !== undefined && typeof x.destApp !== 'string') return false;
   if (x.relayer !== undefined && x.relayer !== 'a' && x.relayer !== 'b') return false;
   return true;
 }
@@ -42,12 +55,15 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   }
   if (!isBody(body)) {
     return NextResponse.json(
-      { success: false, error: 'Body shape: { amount?: number, recipient?: string, relayer?: a|b }' },
+      {
+        success: false,
+        error: 'Body shape: { amount?: number, recipient?: string, destApp?: string, relayer?: a|b }',
+      },
       { status: 400 },
     );
   }
 
-  const { amount, recipient, relayer } = body;
+  const { amount, recipient, destApp, relayer } = body;
   const which = relayer ?? 'a';
   const adminUrl =
     which === 'a' ? process.env.RELAYER_ADMIN_URL : process.env.RELAYER_B_ADMIN_URL;
@@ -68,6 +84,7 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   const params = new URLSearchParams();
   params.set('amount', String(amount ?? 10));
   if (recipient) params.set('recipient', recipient);
+  if (destApp) params.set('dest_app', destApp);
 
   let upstream: Response;
   try {

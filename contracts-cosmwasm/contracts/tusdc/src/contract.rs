@@ -4,7 +4,7 @@ use cosmwasm_std::{
 };
 
 use crate::error::ContractError;
-use crate::msg::{ExecuteMsg, InstantiateMsg, QueryMsg, TokenInfoResponse};
+use crate::msg::{ExecuteMsg, InstantiateMsg, MigrateMsg, QueryMsg, TokenInfoResponse};
 use crate::state::{
     BALANCES, BRIDGE_MINT, CLAIM_AMOUNT, CLAIM_COOLDOWN, LAST_CLAIM, OWNER, TOTAL_SUPPLY,
 };
@@ -156,6 +156,24 @@ fn _burn(deps: DepsMut, from: &cosmwasm_std::Addr, amount: Uint128) -> Result<()
     let supply = TOTAL_SUPPLY.load(deps.storage)?;
     TOTAL_SUPPLY.save(deps.storage, &(supply - amount))?;
     Ok(())
+}
+
+/// Admin-only state-preserving upgrade. Used to rotate the authorised
+/// `BRIDGE_MINT` to a new bridge-mint contract address without redeploying
+/// tusdc (which would strand all existing token balances). The contract's
+/// admin (set at instantiate) is enforced by wasmd at the message layer —
+/// only the admin can submit a `MsgMigrateContract`, so we don't re-check
+/// `info.sender` here.
+///
+/// All other state (BALANCES, TOTAL_SUPPLY, OWNER, CLAIM_*) is preserved
+/// untouched.
+#[entry_point]
+pub fn migrate(deps: DepsMut, _env: Env, msg: MigrateMsg) -> Result<Response, ContractError> {
+    let new_bridge_mint = deps.api.addr_validate(&msg.bridge_mint)?;
+    BRIDGE_MINT.save(deps.storage, &new_bridge_mint)?;
+    Ok(Response::new()
+        .add_attribute("action", "migrate_tusdc")
+        .add_attribute("new_bridge_mint", new_bridge_mint))
 }
 
 #[entry_point]

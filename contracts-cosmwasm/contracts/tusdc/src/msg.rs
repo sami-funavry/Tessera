@@ -41,3 +41,12 @@ pub enum QueryMsg {
     #[returns(TokenInfoResponse)]
     TokenInfo {},
 }
+
+/// MigrateMsg lets the contract admin rotate the authorised bridge-mint
+/// address without redeploying tusdc (which would strand all existing
+/// balances). Used after redeploying bridge-mint with a schema change
+/// (P-10.10 added `destination_recipient` to the Burn execute message).
+#[cw_serde]
+pub struct MigrateMsg {
+    pub bridge_mint: String,
+}

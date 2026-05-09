@@ -1165,3 +1165,40 @@ A 4-line Go program confirmed `sha256("msg:sepolia::0") = 70833d1e...` — exact
 **Notes:** Cumulative for the day: P-10.9 Phase A (UI route + demo log + CI clippy) + Phase B (TranslateProofTo envelope passthrough) is the actual reason the bridge has been stuck. The lesson — and one of the most important of the build — is that an interface signature can encode a footgun. `TranslateProofTo(proof, destChainID)` *looked* like a clean, narrow interface, but the destination was the only thing the plugin could see, so it had to fabricate an envelope to call into the transform layer that needed the full one. The plugin was a layer of indirection that silently dropped data the next layer needed. The signature change makes the data flow explicit: the caller (which has the full envelope anyway) is required to pass it through. P-11 follow-up: have the CosmWasm `_verify_proof` return distinct error codes for each check (InvalidProofMagic / InvalidProofMsgID / InvalidProofDepth / InvalidProofRoot) so a future failure of this class is diagnosable from the explorer, not from a Go test against a screenshot. Also: the in-process `subIDs` cache in `tendermint/plugin.go` is still a relayer-restart footgun — `resolveSubID` falls back to hex(id) which never matches contract state. P-11 should persist subID mappings to Supabase or extract from a tx-events index.
 
 ---
+
+### [P-10.9 Phase B verification + downstream bug discovery] — 2026-05-09 ~19:30
+
+**Prompt:** Continue the verification loop from autonomous wakeup. Confirm Railway picked up commit 5b69977, trigger fresh bridge, observe execute_message on Celatone.
+
+**Actions:**
+
+1. **Diagnosed Railway auto-deploy gap.** After the earlier `5b69977` push, ran `railway deployment_list` and saw both relayers' latest SUCCESS deploys were from 17:32 PKT — *predating* the P-10.9 series (commits `08abf04` and `5b69977` from this session never auto-deployed). Auto-deploy webhook didn't fire for either commit.
+
+2. **Manually triggered deploys** via Railway MCP (`deployment_trigger` with full SHA `5b699772d9263d719afe550e0a1621e9b3c8d11f`):
+   - relayer-a deploy `f788618f-53b7-4f1f-9ae3-a546ea2b871e` → SUCCESS
+   - relayer-b deploy `08817336-2b06-4ca7-888b-8b30aa32ced7` → SUCCESS
+
+3. **Triggered two fresh `/api/scenarios/honest`** runs via Playwright after the deploys completed:
+   - Run #1: lock `0xa89b5cea...ad70`, nonce `1778336120` (pre-deploy submission failed; post-deploy retry produced execute tx `9E626D38...EEF763` which I followed to Celatone)
+   - Run #2: lock `0xd0723ec5...aff0`, nonce `1778336804` (clean post-deploy: SUBMIT `3A9F1380` at 19:26:54 → EXECUTE `8CFB5496...FF55` at 19:28:02, ~67 s later)
+
+4. **Verified on-chain on Celatone.** Both post-deploy execute txs show:
+   - **Error advanced from `invalid proof` to `invalid bridge payload`.** This is the dispositive proof that the Phase B fix works: the contract's `_verify_proof` now returns `true` (msgID matches `sha256(message_id(stored_envelope))` and the recomputed root matches the stored fingerprint), and the verifier proceeds to dispatch to `BridgeMint`. The original user-reported error is gone.
+
+5. **Verified P-10.9 enrichment** (Phase A): demo log now reads `10 tUSDC locked by 0xdFac507Cee79D909af53EC89b981DD9C431264C2 · nonce #1778336804` and `10 tUSDC delivered to 0x211416Aa416Bfb…` — the `?` placeholders are gone for new pipeline events.
+
+6. **Verified CI** via GitHub API: both `08abf04` and `5b69977` ran the `CI` workflow to a `success` conclusion — the first all-green CI on `main` since `de643dc` failed 6 commits back. Form 2 "at least 1 integration test in CI" requirement is met (Foundry, CosmWasm, Go, frontend tsc all green).
+
+7. **Discovered new downstream bug** in the same explorer error message. Now that `_verify_proof` passes, the verifier dispatches to `bridge-mint::OnCrossChainMessage`, which calls `from_json::<BridgePayload>(payload)`. The relayer's payload, built in `relayer/plugins/ethereum/plugin.go decodeLocked → buildLockPayload(user, amount, nonce)`, is 96 bytes of `abi.encode(address, uint256, uint64)` — not JSON. `from_json` fails with `invalid bridge payload`.
+
+   Root cause is architectural, not a bug in any single function: the Solidity `BridgeVault.lock(amount, nonce, destinationChainId, destinationApp)` doesn't take a Neutron recipient parameter, and `event Locked(address user, uint256 amount, uint64 nonce, bytes32 destinationChainId, bytes destinationApp)` doesn't carry one either. The relayer's `LockTusdc(recipientNeutron, amountWei)` helper accepts the recipient string at the API boundary but discards it (`_ = recipientNeutron`) because there's no on-chain field to put it in. Three fix paths exist (Solidity event field; CosmWasm decoder change; relayer-side coercion), all with non-trivial blast radius.
+
+**Outcome:** Stopped here per operator's "don't touch Phase C yet — let me look at the architecture first". Phase A + Phase B are landed, deployed, verified on-chain, and CI-green. The user-flagged "invalid proof: execute wasm contract failed" failure is resolved. The next failure mode is a different, downstream bug.
+
+**Files (no changes this loop):** verification was via Railway MCP + Playwright + WebFetch + Celatone reads only. `PROMPT_LOG.md` is the only file touched in this entry; awaiting commit approval.
+
+**Tokens:** ~415,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Two operational lessons. First: Railway auto-deploy is not reliable on this project — both P-10.9 commits failed to redeploy until manually triggered. Worth a P-11 audit of the Railway service config (probably check the Auto Deploy toggle on each service, and whether there's a path filter that excluded these commits). Second: the diagnostic-test-against-real-failed-tx approach turned hours of guessing into seconds of certainty. The user provided the failing tx hash + proof bytes from the explorer; the test base64-decoded them, computed `sha256(message_id_string)`, and showed the embedded msgID was `sha256("msg:sepolia::0")` — done. That pattern (real wire bytes, not synthetic fixtures, in a test) is the right shape for any future "but the unit tests pass" mystery. P-11 should keep that test in the suite as the anti-regression and add a sibling for the IAVL→Patricia direction.
+
+---

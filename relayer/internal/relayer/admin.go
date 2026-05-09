@@ -63,10 +63,13 @@ func (r *Runner) AdminServer(addr string) *http.Server {
 // and processes it like any other cross-chain burn — including any active
 // fault flag (S-2/S-3/S-4).
 //
-//	POST /admin/trigger-burn?amount=10&recipient=0x...
+//	POST /admin/trigger-burn?amount=10&recipient=0x...&dest_app=0x...
 //	  - amount    : tUSDC tokens to burn (default 10, integer)
-//	  - recipient : 0x-prefixed Sepolia BridgeVault address (defaults to the
-//	                deployed SepoliaBridgeVault from config)
+//	  - recipient : 0x-prefixed Sepolia EVM address that BridgeVault.release
+//	                will credit on the destination side (REQUIRED — the
+//	                bridge has no other channel for this address)
+//	  - dest_app  : 0x-prefixed Sepolia BridgeVault contract address (defaults
+//	                to the deployed SepoliaBridgeVault from config)
 func (r *Runner) handleTriggerBurn(w http.ResponseWriter, req *http.Request) {
 	if req.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -94,9 +97,11 @@ func (r *Runner) handleTriggerBurn(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// Default destination app is the deployed Sepolia BridgeVault — the
-	// canonical receiver for unlock messages on the EVM side.
-	destApp := req.URL.Query().Get("recipient")
+	// destApp is the Sepolia BridgeVault contract; recipient is the user's
+	// Sepolia EVM address. P-10.10 split these previously-conflated params:
+	// `recipient` used to mean the destination contract, which made it
+	// impossible for the relayer to know who to release tokens to.
+	destApp := req.URL.Query().Get("dest_app")
 	if destApp == "" {
 		destApp = ethPlugin.SepoliaBridgeVaultAddr()
 	}
@@ -104,8 +109,19 @@ func (r *Runner) handleTriggerBurn(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "destination Sepolia BridgeVault address not configured", http.StatusBadRequest)
 		return
 	}
+	recipient := req.URL.Query().Get("recipient")
+	if recipient == "" {
+		// Fallback: relayer's own Sepolia address — useful for self-bridging
+		// demo runs from /api/scenarios/burn. Production callers (the bridge
+		// widget) must pass the user's connected-wallet address explicitly.
+		recipient = ethPlugin.RelayerSepoliaAddr()
+	}
+	if recipient == "" {
+		http.Error(w, "recipient (Sepolia 0x… EVM address) is required", http.StatusBadRequest)
+		return
+	}
 
-	txHash, burnErr := tmPlugin.BurnTusdc(req.Context(), amountTokens, destApp)
+	txHash, burnErr := tmPlugin.BurnTusdc(req.Context(), amountTokens, destApp, recipient)
 	if burnErr != nil {
 		slog.Error("admin: trigger-burn failed", "err", burnErr)
 		http.Error(w, fmt.Sprintf("burn failed: %v", burnErr), http.StatusBadGateway)
@@ -113,13 +129,14 @@ func (r *Runner) handleTriggerBurn(w http.ResponseWriter, req *http.Request) {
 	}
 
 	slog.Info("admin: trigger-burn submitted",
-		"tx", txHash, "amount_tokens", amountTokens, "dest_app", destApp)
+		"tx", txHash, "amount_tokens", amountTokens, "dest_app", destApp, "recipient", recipient)
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"ok":            true,
 		"tx_hash":       txHash,
 		"amount_tokens": amountTokens,
 		"dest_app":      destApp,
+		"recipient":     recipient,
 		"celatone_url":  fmt.Sprintf("https://neutron.celat.one/pion-1/txs/%s", txHash),
 	})
 }

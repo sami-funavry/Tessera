@@ -92,7 +92,8 @@ const bridgeVaultABIJSON = `[
       {"name":"amount","type":"uint256","indexed":false},
       {"name":"nonce","type":"uint64","indexed":false},
       {"name":"destinationChainId","type":"bytes32","indexed":false},
-      {"name":"destinationApp","type":"bytes","indexed":false}
+      {"name":"destinationApp","type":"bytes","indexed":false},
+      {"name":"destinationRecipient","type":"bytes","indexed":false}
     ]
   },
   {
@@ -101,7 +102,8 @@ const bridgeVaultABIJSON = `[
       {"name":"amount","type":"uint256"},
       {"name":"nonce","type":"uint64"},
       {"name":"destinationChainId","type":"bytes32"},
-      {"name":"destinationApp","type":"bytes"}
+      {"name":"destinationApp","type":"bytes"},
+      {"name":"destinationRecipient","type":"bytes"}
     ],
     "outputs":[],"stateMutability":"nonpayable"
   }

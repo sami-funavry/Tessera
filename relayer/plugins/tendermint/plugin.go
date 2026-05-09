@@ -293,12 +293,20 @@ func (p *Plugin) scanBurnEvents(ctx context.Context, fromHeight int64) ([]chain.
 }
 
 // decodeResultTx extracts a chain.Event from a CometBFT ResultTx containing a burn event.
+//
+// P-10.10: bridge-mint's Burn handler now emits a `destination_recipient`
+// attribute (the user's Sepolia 0x… address). The relayer reads it and packs
+// it into the cross-chain payload as the abi-encoded `address recipient` —
+// Sepolia's BridgeVault.onCrossChainMessage decodes the payload as
+// (address, uint256, uint64) and releases tokens to that address. Without
+// the recipient attribute we'd be back to writing zero bytes and the release
+// would either revert or transfer to address(0).
 func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 	// Use first 8 bytes of the tx hash as a deterministic nonce.
 	// All relayers watching the same tx will compute identical nonces.
 	nonce := binary.BigEndian.Uint64(tx.Hash[:8])
 
-	var amount, destChainID, destApp string
+	var amount, destChainID, destApp, destRecipient string
 	for _, ev := range tx.TxResult.Events {
 		if ev.Type != "wasm" {
 			continue
@@ -311,6 +319,8 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 				destChainID = attr.Value
 			case "destination_app":
 				destApp = attr.Value
+			case "destination_recipient":
+				destRecipient = attr.Value
 			}
 		}
 	}
@@ -320,9 +330,6 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 	if destApp == "" {
 		destApp = p.addrs.SepoliaBridgeVault
 	}
-
-	var payload [96]byte
-	binary.BigEndian.PutUint64(payload[88:96], nonce)
 
 	// P-10.8d: parse the Burn amount attribute (uTUSDC, base-10 string) into
 	// big.Int so dbUpsertMessage can write the real source amount instead
@@ -335,19 +342,46 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 		}
 	}
 
+	// Pack abi.encode(address recipient, uint256 amount, uint64 nonce) per the
+	// Sepolia BridgeVault.onCrossChainMessage decoder.  Empty / non-hex
+	// recipient falls through to all-zero address — bridge-vault will revert
+	// (ZeroAmount/recipient) which is loud but safe.
+	payload := buildBurnPayload(destRecipient, amountBI, nonce)
+
 	return chain.Event{
 		SourceChainID: p.chainID,
 		SourceApp:     p.addrs.NeutronBridgeMint,
 		DestChainID:   destChainID,
 		DestApp:       destApp,
 		Action:        [4]byte{0x00, 0x00, 0x00, 0x02},
-		Payload:       payload[:],
+		Payload:       payload,
 		Nonce:         nonce,
 		BlockHeight:   uint64(tx.Height),
 		TxHash:        strings.ToUpper(fmt.Sprintf("%x", tx.Hash)),
 		Sender:        "",
 		Amount:        amountBI,
 	}, nil
+}
+
+// buildBurnPayload encodes (address recipient, uint256 amount, uint64 nonce)
+// as abi-encoded 96 bytes — the format Sepolia BridgeVault.release decodes.
+// `recipientHex` is a 0x-prefixed 20-byte hex string from the Burn event
+// attributes; malformed values produce a zero address (the destination
+// contract will revert). `amount` may be nil (treated as zero).
+func buildBurnPayload(recipientHex string, amount *big.Int, nonce uint64) []byte {
+	var buf [96]byte
+	if recipientHex != "" {
+		// Strip 0x prefix; tolerate mixed case.
+		hexBody := strings.TrimPrefix(strings.TrimPrefix(recipientHex, "0X"), "0x")
+		if raw, err := hex.DecodeString(hexBody); err == nil && len(raw) == 20 {
+			copy(buf[12:32], raw)
+		}
+	}
+	if amount != nil {
+		amount.FillBytes(buf[32:64])
+	}
+	binary.BigEndian.PutUint64(buf[88:96], nonce)
+	return buf[:]
 }
 
 // TranslateProofTo converts the IAVL proof to a TesseraProof for the
@@ -690,8 +724,17 @@ func (p *Plugin) ClaimTusdc(ctx context.Context) (string, error) {
 // pipeline as the user-side bridge widget.
 //
 // amountTokens is whole tUSDC (decimals=6 on Neutron). destApp is the
-// 0x-prefixed Sepolia BridgeVault address.
-func (p *Plugin) BurnTusdc(ctx context.Context, amountTokens uint64, destApp string) (string, error) {
+// 0x-prefixed Sepolia BridgeVault address. recipientSepolia is the user's
+// Sepolia EVM address that BridgeVault.release will credit on the Sepolia
+// side — required since P-10.10 (the bridge-mint contract rejects empty
+// recipients, and even if it didn't, BridgeVault would have nothing to
+// release to).
+func (p *Plugin) BurnTusdc(
+	ctx context.Context,
+	amountTokens uint64,
+	destApp string,
+	recipientSepolia string,
+) (string, error) {
 	if err := p.connect(); err != nil {
 		return "", err
 	}
@@ -707,17 +750,21 @@ func (p *Plugin) BurnTusdc(ctx context.Context, amountTokens uint64, destApp str
 	if destApp == "" {
 		return "", fmt.Errorf("BurnTusdc: destApp (Sepolia BridgeVault) is required")
 	}
+	if recipientSepolia == "" {
+		return "", fmt.Errorf("BurnTusdc: recipientSepolia is required (BridgeVault.release would have nothing to credit)")
+	}
 	// Cosmos tUSDC has 6 decimals, so 1 whole token = 1_000_000 base units.
 	amountBase := amountTokens * 1_000_000
 	burnMsg := fmt.Sprintf(
-		`{"burn":{"amount":"%d","destination_chain_id":"sepolia","destination_app":%q}}`,
-		amountBase, destApp,
+		`{"burn":{"amount":"%d","destination_chain_id":"sepolia","destination_app":%q,"destination_recipient":%q}}`,
+		amountBase, destApp, recipientSepolia,
 	)
 	txHash, err := p.cwc.Execute(ctx, p.addrs.NeutronBridgeMint, []byte(burnMsg), 350_000)
 	if err != nil {
 		return "", fmt.Errorf("BurnTusdc: %w", err)
 	}
-	slog.Info("BurnTusdc submitted", "tx", txHash, "amount_tokens", amountTokens, "dest_app", destApp)
+	slog.Info("BurnTusdc submitted",
+		"tx", txHash, "amount_tokens", amountTokens, "dest_app", destApp, "recipient", recipientSepolia)
 	return txHash, nil
 }
 

@@ -22,9 +22,15 @@ export const dynamic = 'force-dynamic';
 import { NextRequest, NextResponse } from 'next/server';
 import { createSupabaseAdmin } from '@/lib/supabase-admin';
 
-const SEPOLIA_VAULT = '0x2C3544434185DD65F058494816bB816e5314a29E';
+// P-10.10: BridgeVault redeployed at this address with `destinationRecipient`
+// added to lock() and the Locked event. Old vault (0x2C354443…) is orphaned;
+// any tokens locked there before the cutover are stranded testnet balance.
+const SEPOLIA_VAULT = '0x23d1a91A23b00809EDca2F61e84C02073a0603Ce';
+// P-10.10: bridge-mint redeployed at this address with `destination_recipient`
+// on the Burn execute message. tusdc was migrated to point its BRIDGE_MINT at
+// this new contract (state preserved, balances intact).
 const NEUTRON_BRIDGE_MINT =
-  'neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7';
+  'neutron19hrantdzyyfwa8r438pu5czkzmpz72lluw9y6694nmdyuz2e7tgqa4s48f';
 // P-10.8: must match the Go relayer's `ChainPlugin.ChainID()` exactly so the
 // (source_chain_id, nonce) upsert key collides with the relayer's own write.
 // Previously we used '11155111' (Ethereum chain ID literal); the relayer uses

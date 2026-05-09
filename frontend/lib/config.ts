@@ -4,7 +4,7 @@ export const ADDRESSES = {
     bond: '0x8c7dc28559B75AF8c3d59B62C87309E65cb37912',
     relayerRegistry: '0x43677d5Da5701E061Eefa65e36A4fF6D4BFC1109',
     verifier: '0x2EfAB8cC7ed7C11cfC23C215731aaFA2A602F72a',
-    bridgeVault: '0x2C3544434185DD65F058494816bB816e5314a29E',
+    bridgeVault: '0x23d1a91A23b00809EDca2F61e84C02073a0603Ce',
     bridgeMint: '0x61cab20856b16003b6a3FB213F86355515AD43cd',
   },
   neutron: {
@@ -13,7 +13,7 @@ export const ADDRESSES = {
     relayerRegistry: 'neutron1jq5kku3r0sxdkcxvkx7ke4dlcwq4my0m2gncrx4zf7g37hxtwj7qfrya5k',
     verifier: 'neutron1sda4ucdq06de7h7lxg66n6sq29ft9hk76a5mpjwehk3a8wfga0eqf002f0',
     bridgeVault: 'neutron12z7xqgwgp6vsk5s96z4n6vjupqjg3zmvv5v068vvy3n69gshvhaq8j7dam',
-    bridgeMint: 'neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7',
+    bridgeMint: 'neutron19hrantdzyyfwa8r438pu5czkzmpz72lluw9y6694nmdyuz2e7tgqa4s48f',
   },
 } as const;
 

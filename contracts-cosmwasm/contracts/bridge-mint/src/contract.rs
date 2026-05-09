@@ -40,8 +40,8 @@ pub fn execute(
         ExecuteMsg::OnCrossChainMessage { source_chain_id: _, source_app: _, action: _, payload } => {
             execute_on_cross_chain_message(deps, info, payload)
         }
-        ExecuteMsg::Burn { amount, destination_chain_id, destination_app } => {
-            execute_burn(deps, info, amount, destination_chain_id, destination_app)
+        ExecuteMsg::Burn { amount, destination_chain_id, destination_app, destination_recipient } => {
+            execute_burn(deps, info, amount, destination_chain_id, destination_app, destination_recipient)
         }
     }
 }
@@ -79,7 +79,11 @@ fn execute_burn(
     amount: cosmwasm_std::Uint128,
     destination_chain_id: String,
     destination_app: String,
+    destination_recipient: String,
 ) -> Result<Response, ContractError> {
+    if destination_recipient.is_empty() {
+        return Err(ContractError::InvalidPayload {});
+    }
     let tusdc = TUSDC.load(deps.storage)?;
     let burn_msg: CosmosMsg = WasmMsg::Execute {
         contract_addr: tusdc.to_string(),
@@ -90,12 +94,17 @@ fn execute_burn(
         funds: vec![],
     }
     .into();
+    // The `destination_recipient` attribute is what the relayer reads off the
+    // Burn event (via TxSearch) to construct the abi-encoded payload sent to
+    // Sepolia BridgeVault — the Sepolia side has no other path to learn who
+    // to release tokens to.
     Ok(Response::new()
         .add_message(burn_msg)
         .add_attribute("action", "burn")
         .add_attribute("amount", amount.to_string())
         .add_attribute("destination_chain_id", destination_chain_id)
-        .add_attribute("destination_app", destination_app))
+        .add_attribute("destination_app", destination_app)
+        .add_attribute("destination_recipient", destination_recipient))
 }
 
 #[entry_point]

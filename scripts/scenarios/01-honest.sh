@@ -23,9 +23,9 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${REPO_ROOT}/.env" 2>/dev/null || true
 
-VAULT="0x2C3544434185DD65F058494816bB816e5314a29E"
+VAULT="0x23d1a91A23b00809EDca2F61e84C02073a0603Ce"
 TUSDC_SEPOLIA="0x7dcA285EFe722EdC1D9c93C3878fb58b255EC5B0"
-NEUTRON_MINT="neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7"
+NEUTRON_MINT="neutron19hrantdzyyfwa8r438pu5czkzmpz72lluw9y6694nmdyuz2e7tgqa4s48f"
 AMOUNT="100000000"  # 100 tUSDC (6 decimals)
 
 echo "=== S-1: Honest Delivery ==="
