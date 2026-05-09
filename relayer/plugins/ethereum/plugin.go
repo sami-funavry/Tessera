@@ -321,11 +321,14 @@ func (p *Plugin) pollEvents(ctx context.Context, fromBlock uint64,
 				if cursor.Cmp(to) > 0 {
 					continue
 				}
-				// Alchemy free tier rejects eth_getLogs ranges greater than ~50
-				// blocks ("query returned more than 10000 results" / 429). Pick a
-				// small batch so a freshly-deployed relayer can keep up with the
-				// chain tip without burning every request on a rate-limit error.
-				const maxBatch int64 = 50
+				// Alchemy free tier rejects eth_getLogs ranges greater than 10
+				// blocks with "Under the Free tier plan, you can make eth_getLogs
+				// requests with up to a 10 block range" (-32600). 10 blocks per
+				// 12s tick = 50 blocks/min, which still outpaces Sepolia's
+				// 1-block/12s production rate, so the cursor catches up steadily.
+				// If the operator upgrades to a paid Alchemy plan or swaps to a
+				// different provider, raise this constant.
+				const maxBatch int64 = 10
 				maxTo := new(big.Int).Add(cursor, big.NewInt(maxBatch-1))
 				if maxTo.Cmp(to) < 0 {
 					to = maxTo

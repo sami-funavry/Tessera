@@ -778,3 +778,23 @@
 **Notes:** Two of these three relayer bugs were genuinely silent failures — `fromBlock=0` and a 500-block poll batch each work fine in unit tests with a fake RPC, and only break against a real Alchemy free-tier backend at production block heights. The lesson: any chain plugin that tail-watches a public testnet needs at least one e2e check that the cursor advances past today's tip within N ticks. The third bug (private-key prefix on `/admin/health`) is what Slither would catch as "information disclosure on unauthenticated endpoint" — a reminder that the same field that's safe to log in dev (`relayer_addr` for grep-ability) becomes a leak in prod. P-11 polish should add a CI lint that flags any unauthenticated handler reading private-key material.
 
 ---
+
+### [P-10.7b] poll-batch follow-up: 50→10 to match actual Alchemy free-tier limit — 2026-05-09 10:35
+
+**Prompt:** After 1f403df deploy, auto-deploy was missed for the relayers; manually triggered. Both came up with proper EIP-55 addresses (good — fix #3 confirmed). But /api/scenarios/honest didn't progress to a submission row. Pulled logs and saw "ethereum pollEvents: FilterLogs" failing on every tick. User asked to verify auto-deploy first, then continue.
+
+**Actions:**
+1. Confirmed via Railway MCP `deployment_list` that the auto-deploy on the relayer services missed `1f403df` — the most recent SUCCESS for both was a deployment from earlier today, not the new commit. Frontend auto-deploy did fire. Triggered manual `deployment_trigger` for relayer-a + relayer-b on commit `1f403df`. Both came up with proper EIP-55 addresses (`0x211416Aa…` and `0xdFac507C…`) on `/admin/health`, so the private-key-prefix leak fix landed.
+2. Triggered the honest scenario from the deployed frontend — got back a real Sepolia tx (`0x86c2d88b7175a48d8391850456267474eeeda6d641be0a6875dd64fc6ec1fad4`). Watched Supabase. New `messages` rows appeared (#44 from a user widget lock, #45 from a Neutron burn). But **no submission rows** — pipeline stalled after `dbUpsertMessage`.
+3. Pulled deployment logs for `96807867-…` (relayer-a, this deploy). Found `ethereum pollEvents: FilterLogs` errors firing on every tick (every ~12s). Hit the Alchemy endpoint directly with `curl` to see the actual error — the Railway log truncates structured fields. Got back: *"Under the Free tier plan, you can make eth_getLogs requests with up to a 10 block range."* So my P-10.7 patch (500 → 50 blocks) was still 5× too large; the actual ceiling is 10.
+4. Patched [relayer/plugins/ethereum/plugin.go](relayer/plugins/ethereum/plugin.go): `maxBatch` 50 → 10 with a comment documenting the exact Alchemy free-tier error and the math (10 blocks per 12s tick = 50 blocks/min, still ahead of Sepolia's 1 block/12s production rate). `go build`, `go test ./plugins/ethereum/...` green.
+
+**Outcome:** patched locally; pushing now and triggering a fresh deploy.
+
+**Files:** `relayer/plugins/ethereum/plugin.go`
+
+**Tokens:** ~140,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Lesson from this cycle: Railway log fields truncate structured slog output beyond a certain length, so the upstream RPC's actual error message was hidden behind the bare label "FilterLogs". The fastest diagnosis was to read the env var, replay the same RPC call manually with `curl`, and read the JSON-RPC error verbatim. P-11 polish item: format relayer logs as `text` instead of `json` on Railway (or pre-truncate err.Error() to a known-safe length) so error context survives. Also: Railway auto-deploy "watches the repo with per-service rootDirectory filter" worked for the frontend on this commit but not the two relayers — same setup, same root directory, different result. Worth either pinning the watcher behavior with `railway.json`/`Procfile.toml` per service or scripting `deployment_trigger` in CI.
+
+---
