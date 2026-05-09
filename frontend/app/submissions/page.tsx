@@ -17,6 +17,7 @@ import SectionLabel from '@/components/SectionLabel';
 import SkeletonLoader from '@/components/SkeletonLoader';
 import StatusBadge from '@/components/StatusBadge';
 import { supabase } from '@/lib/supabase';
+import { isSepoliaChainId } from '@/lib/utils';
 import type { Database } from '@/types';
 
 type MessageRow = Database['public']['Tables']['messages']['Row'];
@@ -24,14 +25,19 @@ type MessageRow = Database['public']['Tables']['messages']['Row'];
 const PAGE_SIZE = 25;
 
 function formatAmount(msg: Pick<MessageRow, 'amount' | 'source_chain_id'>): string {
-  const decimals = msg.source_chain_id === '11155111' ? 1e18 : 1e6;
+  const decimals = isSepoliaChainId(msg.source_chain_id) ? 1e18 : 1e6;
   const n = parseFloat(String(msg.amount || '0')) / decimals;
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+function chainLabel(id: string): string {
+  if (isSepoliaChainId(id)) return 'Sepolia';
+  if (id === 'pion-1') return 'Neutron';
+  return id;
+}
+
 function formatRoute(msg: Pick<MessageRow, 'source_chain_id' | 'destination_chain_id'>): string {
-  const map: Record<string, string> = { '11155111': 'Sepolia', 'pion-1': 'Neutron' };
-  return `${map[msg.source_chain_id] ?? msg.source_chain_id} → ${map[msg.destination_chain_id] ?? msg.destination_chain_id}`;
+  return `${chainLabel(msg.source_chain_id)} → ${chainLabel(msg.destination_chain_id)}`;
 }
 
 /**
@@ -142,7 +148,7 @@ export default function SubmissionsIndexPage() {
             {rows != null &&
               rows.map((m, i) => {
                 const sourceChain: 'sepolia' | 'neutron' =
-                  m.source_chain_id === '11155111' ? 'sepolia' : 'neutron';
+                  isSepoliaChainId(m.source_chain_id) ? 'sepolia' : 'neutron';
                 return (
                   <motion.tr
                     key={m.id}

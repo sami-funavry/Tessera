@@ -1057,3 +1057,27 @@
 **Notes:** The right long-term fix is normalizing chain_id at the schema boundary — either migrate bonds rows to 'sepolia' or have the relayer write '11155111'. Both are straight one-liner code changes but require a coordinated data migration. The accept-both shim is a P-11 polish item to revisit; it costs one branch in two hot paths in exchange for zero migration risk during the demo window.
 
 ---
+
+### [P-10.8c] dashboard + submissions chain_id checks: extract isSepoliaChainId helper — 2026-05-09 17:25
+
+**Prompt:** Continued autonomous loop after P-10.8b. Audited the rest of the frontend for the same chain_id mismatch bug class.
+
+**Actions:**
+1. `grep "11155111" frontend/{app,hooks,lib}` surfaced 7 more callsites still comparing `=== '11155111'` only. Categories:
+   - `frontend/app/dashboard/page.tsx` (5 places): formatAmount decimals, routeLabel, sourceChain, destChain — all silently mis-classified `'sepolia'` rows as Neutron, producing wrong amounts (1e6 instead of 1e18 → off by 1e12 ×) and wrong explorer routing.
+   - `frontend/app/submissions/page.tsx` (3 places): formatAmount, formatRoute, the row's sourceChain prop.
+   - `frontend/app/submissions/[id]/page.tsx`: already accepted both forms via `.toLowerCase().includes('sepolia') || === '11155111'` — left alone.
+2. Added `isSepoliaChainId(id)` helper in `frontend/lib/utils.ts` returning `id === '11155111' || id === 'sepolia'`. Centralized comment explains why both literals exist.
+3. Routed every dashboard + submissions callsite through the helper. Replaced ad-hoc `Record<string, string>` chain-label maps with a `chainLabel(id)` function that uses the helper.
+4. Verified `frontend/lib/config.ts:33` (`chainId: 11155111` as a number) is the wagmi chain object — left untouched (EIP-155 is canonically a number for wallet integration).
+5. `npx tsc --noEmit` clean.
+
+**Outcome:** patched + type-checked. Shipping in this cycle. After deploy, the dashboard's totalVolume and avg-bridge-time stats will finally include the new `'sepolia'`-keyed messages from the relayer, and submissions table rows will route to the correct explorer.
+
+**Files:** `frontend/lib/utils.ts`, `frontend/app/dashboard/page.tsx`, `frontend/app/submissions/page.tsx`
+
+**Tokens:** ~110,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Three back-to-back fixes (P-10.8 → P-10.8b → P-10.8c) all addressing the same root issue from different angles: relayer writes canonical chain names, frontend was hardcoded against EIP-155 literals. The cumulative effect was: bridge widget never saw status updates, demo log routed half the events to the wrong explorer, dashboard volume ignored half the rows. Centralizing the helper means a future canonical-name change (e.g., adding Polygon) only touches `isSepoliaChainId` plus a sibling helper, not 7 scattered `=== 'X'` checks. Worth following up in P-11 by either (a) running a one-time SQL migration to canonicalize all bonds.chain_id rows to 'sepolia' and removing the OR-branch, or (b) doing the opposite. Either way the shim retires.
+
+---

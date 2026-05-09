@@ -23,6 +23,19 @@ export function truncateHash(hash: string, chars = 10): string {
  * (e.g. seeded scenario rows) get the same normalisation so the link doesn't
  * silently 404 on the wrong format.
  */
+/**
+ * P-10.8c: Returns true if the given chain_id string identifies Sepolia.
+ * The Go relayer writes the canonical name 'sepolia' (from the Ethereum
+ * plugin's ChainID()), while legacy/seeded rows use the EIP-155 literal
+ * '11155111'. Both must be accepted across the dashboard, submissions
+ * pages, and bridge widget; otherwise rows from one writer get silently
+ * mis-classified as Neutron (wrong decimals, wrong explorer link, wrong
+ * chain label). Centralizing the check here is the only durable fix.
+ */
+export function isSepoliaChainId(id: string | null | undefined): boolean {
+  return id === '11155111' || id === 'sepolia';
+}
+
 export function explorerTxUrl(hash: string, chain: 'sepolia' | 'neutron'): string {
   const stripped = (hash ?? '').replace(/^0x/i, '');
   if (chain === 'sepolia') {

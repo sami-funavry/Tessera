@@ -14,6 +14,7 @@ import { useRelayerStats } from '@/hooks/useRelayers';
 import { useBenchmarkStats } from '@/hooks/useBenchmarks';
 import { supabase } from '@/lib/supabase';
 import { RELAYER_ADDRESSES } from '@/lib/config';
+import { isSepoliaChainId } from '@/lib/utils';
 import type { Database, RelayerInfo } from '@/types';
 
 type MessageRow = Database['public']['Tables']['messages']['Row'];
@@ -22,11 +23,11 @@ type SubmissionRow = Database['public']['Tables']['submissions']['Row'];
 /**
  * Returns the human-readable amount for a message, respecting the source
  * chain's decimals:
- *   - Sepolia source (chain '11155111') → 1e18 wei
- *   - Neutron source (chain 'pion-1')   → 1e6 uTUSDC
+ *   - Sepolia source (chain '11155111' / 'sepolia') → 1e18 wei
+ *   - Neutron source (chain 'pion-1')               → 1e6 uTUSDC
  */
 function formatAmount(msg: Pick<MessageRow, 'amount' | 'source_chain_id'>): string {
-  const decimals = msg.source_chain_id === '11155111' ? 1e18 : 1e6;
+  const decimals = isSepoliaChainId(msg.source_chain_id) ? 1e18 : 1e6;
   const n = parseFloat(String(msg.amount || '0')) / decimals;
   return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
@@ -67,10 +68,8 @@ const STATIC_RELAYERS: RelayerInfo[] = [
  * Derives a display string for route from source_chain_id → destination_chain_id.
  */
 function routeLabel(msg: MessageRow): string {
-  const src =
-    msg.source_chain_id === '11155111' ? 'Sepolia' : 'Neutron';
-  const dst =
-    msg.destination_chain_id === '11155111' ? 'Sepolia' : 'Neutron';
+  const src = isSepoliaChainId(msg.source_chain_id) ? 'Sepolia' : 'Neutron';
+  const dst = isSepoliaChainId(msg.destination_chain_id) ? 'Sepolia' : 'Neutron';
   return `${src} → ${dst}`;
 }
 
@@ -78,14 +77,14 @@ function routeLabel(msg: MessageRow): string {
  * Source explorer chain derived from source_chain_id.
  */
 function sourceChain(msg: MessageRow): 'sepolia' | 'neutron' {
-  return msg.source_chain_id === '11155111' ? 'sepolia' : 'neutron';
+  return isSepoliaChainId(msg.source_chain_id) ? 'sepolia' : 'neutron';
 }
 
 /**
  * Destination explorer chain — opposite of source.
  */
 function destChain(msg: MessageRow): 'sepolia' | 'neutron' {
-  return msg.source_chain_id === '11155111' ? 'neutron' : 'sepolia';
+  return isSepoliaChainId(msg.source_chain_id) ? 'neutron' : 'sepolia';
 }
 
 const STATUS_COLOR: Record<string, string> = {
