@@ -254,19 +254,25 @@ func (c *Client) insert(ctx context.Context, table string, row any, out any) err
 }
 
 // upsert POSTs a row with on-conflict merge. onConflict is a comma-separated column list.
+//
+// Supabase PostgREST expects on_conflict as a URL query parameter, NOT an HTTP
+// header. With the previous header-only form, PostgREST didn't recognize the
+// merge target and treated the request as a plain INSERT, which then failed
+// with 409 (unique-constraint violation) whenever the bridge-widget recorder
+// had already inserted a row for the same (source_chain_id, nonce). That kept
+// every relayer-detected lock today from progressing past dbUpsertMessage.
 func (c *Client) upsert(ctx context.Context, table, onConflict string, row any, out any) error {
 	body, err := json.Marshal(row)
 	if err != nil {
 		return fmt.Errorf("upsert %s: marshal: %w", table, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.projectURL+"/rest/v1/"+table, bytes.NewReader(body))
+	url := c.projectURL + "/rest/v1/" + table + "?on_conflict=" + onConflict
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("upsert %s: build request: %w", table, err)
 	}
 	c.setHeaders(req, true)
 	req.Header.Set("Prefer", "resolution=merge-duplicates,return=representation")
-	req.Header.Set("on-conflict", onConflict)
 	return c.doAndDecode(req, out, http.StatusCreated, http.StatusOK)
 }
 

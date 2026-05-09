@@ -798,3 +798,22 @@
 **Notes:** Lesson from this cycle: Railway log fields truncate structured slog output beyond a certain length, so the upstream RPC's actual error message was hidden behind the bare label "FilterLogs". The fastest diagnosis was to read the env var, replay the same RPC call manually with `curl`, and read the JSON-RPC error verbatim. P-11 polish item: format relayer logs as `text` instead of `json` on Railway (or pre-truncate err.Error() to a known-safe length) so error context survives. Also: Railway auto-deploy "watches the repo with per-service rootDirectory filter" worked for the frontend on this commit but not the two relayers — same setup, same root directory, different result. Worth either pinning the watcher behavior with `railway.json`/`Procfile.toml` per service or scripting `deployment_trigger` in CI.
 
 ---
+
+### [P-10.7c] Supabase upsert: on_conflict belongs in the URL, not a header — 2026-05-09 10:50
+
+**Prompt:** Continuing the verification loop after the 10-block patch landed. Logs now showed a different failure: `handleEvent: received cross-chain event` (good, FilterLogs is back) → `db UpsertMessage failed` → `submitter: handleEvent failed`. New `messages` rows kept appearing but no `submissions` rows ever did. Need to find why dbUpsertMessage is failing.
+
+**Actions:**
+1. Read `relayer/internal/supabase/client.go` upsert helper. Found the bug: it set `on-conflict` as an HTTP header. PostgREST expects `on_conflict=col1,col2` as a **URL query parameter**. Without it, PostgREST treated each request as a plain INSERT. With the bridge-widget recorder having already written rows for `(source_chain_id, nonce)` pairs that the relayer was now re-detecting from its lookback window, every UPSERT was being rejected with 409 unique-constraint violation — and submitter.go's call site then aborted handleEvent before SubmitMessage.
+2. Patched `upsert()` to compose `?on_conflict=…` into the URL, kept the `Prefer: resolution=merge-duplicates,return=representation` header. `go build` + `go test ./internal/supabase/...` clean (the supabase package has no test files; the touch is API-shape only).
+3. The reason yesterday's relayer worked despite the same bug: yesterday the recorder wasn't writing rows ahead of the relayer (the simulator path was different). Today's flow inserts a `pending` row from `/api/bridge/relay` before the relayer ever sees the on-chain event, so the relayer's "first detection" upsert always conflicts.
+
+**Outcome:** patched locally; pushing now and triggering a fresh deploy.
+
+**Files:** `relayer/internal/supabase/client.go`
+
+**Tokens:** ~155,000. Model: Opus 4.7 (1M context).
+
+**Notes:** This is a "pyramid of three layers each masking the one below" diagnosis: (1) you can't see the relayer-A logs without the Railway MCP being authenticated; (2) the slog field that holds the actual upstream error is truncated, hiding the real rate-limit or status-code message; (3) the abstracted client method just returns "UpsertMessage failed" without echoing PostgREST's 409 body. Each layer needs to be peeled to get to the actual bug. P-11 polish: at minimum, log `resp.StatusCode` and the first 256 bytes of the response body in `doAndDecode` when the upstream call fails — a structured field, never truncated, that surfaces the exact 4xx reason.
+
+---
