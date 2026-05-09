@@ -522,15 +522,23 @@ func (p *Plugin) fetchSubmissionIDFromTx(ctx context.Context, txHashHex string) 
 
 // resolveSubID returns the original CosmWasm submission_id string for the
 // given relayer-internal [32]byte ID. Falls back to hex encoding when the
-// in-process cache has no entry (e.g. relayer restart). The fallback path
-// is logged because it will not match any contract state — callers should
-// treat it as best-effort recovery, not a correct success path.
+// in-process cache has no entry (e.g. after a relayer restart, since the
+// cache is in-memory only). The fallback bytes will NOT match any stored
+// CW Submission, so any subsequent ExecuteMessage / SubmitChallenge /
+// ClaimAbsenceSlash will revert with `submission not found`.
+//
+// Logged at slog.Error (not Warn) because this state is operationally
+// broken — the submission is on-chain but unactionable from this process
+// until pendingSubmissions are persisted (audit F-101). Operators should
+// treat the fallback as a hard signal and investigate, not just a hint.
 func (p *Plugin) resolveSubID(id [32]byte, op string) string {
 	if raw, ok := p.lookupSubID(id); ok {
 		return raw
 	}
-	slog.Warn("tendermint: submission_id cache miss; falling back to hex (likely will not match contract state)",
-		"op", op, "submission_id_hash", hex.EncodeToString(id[:]))
+	slog.Error("tendermint: submission_id cache miss — fallback hex WILL NOT match contract state; this call will revert",
+		"op", op,
+		"submission_id_hash", hex.EncodeToString(id[:]),
+		"hint", "in-process cache lost — likely after relayer restart; rebuild from submissions.cw_submission_id once persisted (audit F-101)")
 	return fmt.Sprintf("%x", id)
 }
 

@@ -713,7 +713,8 @@ func (p *Plugin) LockTusdc(
 }
 
 // waitForReceipt polls for a tx receipt up to ~90 seconds. Used as a simple
-// confirm step for the demo trigger-lock approve.
+// confirm step for the demo trigger-lock approve. Uses a context-aware sleep
+// so cancellation is observed within ~3 s rather than blocking until deadline.
 func (p *Plugin) waitForReceipt(ctx context.Context, txHashHex string) (uint64, error) {
 	txHash := common.HexToHash(txHashHex)
 	deadline := time.Now().Add(90 * time.Second)
@@ -727,7 +728,11 @@ func (p *Plugin) waitForReceipt(ctx context.Context, txHashHex string) (uint64, 
 		if err == nil {
 			return receipt.BlockNumber.Uint64(), nil
 		}
-		time.Sleep(3 * time.Second)
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
 	}
 	return 0, fmt.Errorf("waitForReceipt: timeout")
 }
@@ -784,8 +789,14 @@ func (p *Plugin) sendTx(ctx context.Context, toHex string, data []byte, value *b
 	return signed.Hash().Hex(), nil
 }
 
+// ErrTxReverted is returned by waitForSubmissionID when the receipt confirms
+// the transaction reverted on-chain. Wrapped via %w so callers can use errors.Is.
+var ErrTxReverted = fmt.Errorf("ethereum tx reverted on-chain")
+
 // waitForSubmissionID waits for a transaction receipt and extracts the submissionId
-// from the MessageSubmitted event log.
+// from the MessageSubmitted event log. Distinguishes broadcast-success-but-tx-failed
+// (status=0) from extraction-failure-on-otherwise-successful-tx so callers can
+// avoid writing a "submitted" DB row for a transaction that actually reverted.
 func (p *Plugin) waitForSubmissionID(ctx context.Context, txHashHex string) ([32]byte, error) {
 	txHash := common.HexToHash(txHashHex)
 	// Poll for receipt up to 90 seconds.
@@ -794,12 +805,23 @@ func (p *Plugin) waitForSubmissionID(ctx context.Context, txHashHex string) ([32
 		select {
 		case <-ctx.Done():
 			return [32]byte{}, ctx.Err()
-		default:
+		case <-time.After(0):
 		}
 		receipt, err := p.client.TransactionReceipt(ctx, txHash)
 		if err != nil {
-			time.Sleep(3 * time.Second)
+			select {
+			case <-ctx.Done():
+				return [32]byte{}, ctx.Err()
+			case <-time.After(3 * time.Second):
+			}
 			continue
+		}
+		// status=0 means the transaction was mined but reverted. Without this
+		// check the relayer would treat broadcast-success as on-chain-success
+		// and write a misleading `submitted` row (F-105 in audit).
+		if receipt.Status == 0 {
+			return [32]byte{}, fmt.Errorf("waitForSubmissionID: %w (block=%d, tx=%s)",
+				ErrTxReverted, receipt.BlockNumber.Uint64(), txHashHex)
 		}
 		for _, log := range receipt.Logs {
 			if len(log.Topics) == 0 {

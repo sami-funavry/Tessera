@@ -1202,3 +1202,53 @@ A 4-line Go program confirmed `sha256("msg:sepolia::0") = 70833d1e...` — exact
 **Notes:** Two operational lessons. First: Railway auto-deploy is not reliable on this project — both P-10.9 commits failed to redeploy until manually triggered. Worth a P-11 audit of the Railway service config (probably check the Auto Deploy toggle on each service, and whether there's a path filter that excluded these commits). Second: the diagnostic-test-against-real-failed-tx approach turned hours of guessing into seconds of certainty. The user provided the failing tx hash + proof bytes from the explorer; the test base64-decoded them, computed `sha256(message_id_string)`, and showed the embedded msgID was `sha256("msg:sepolia::0")` — done. That pattern (real wire bytes, not synthetic fixtures, in a test) is the right shape for any future "but the unit tests pass" mystery. P-11 should keep that test in the suite as the anti-regression and add a sibling for the IAVL→Patricia direction.
 
 ---
+
+### [P-10.10] destination_recipient end-to-end — 2026-05-09 ~20:30 → 22:00
+
+**Prompt:** "Update 1 contract each on cosmos and sepolia to accommodate recipient address … redeploy, verify them, update env, run local + cli + deployment tests, no backend errors, all endpoints exposed for UI." Then later: "production ready, no vulnerabilities, use all skills necessary."
+
+**Actions (chronological):**
+
+1. **Solidity:** `BridgeVault.lock` gains `bytes calldata destinationRecipient` + new `ZeroRecipient` error; `Locked` event carries the field; unit tests updated; new `test_lock_emptyRecipient_reverts`.
+2. **CosmWasm:** `bridge-mint::Burn` gains `destination_recipient: String`, rejects empty, emits as event attribute. Plus a state-preserving `MigrateMsg` on tusdc so the deployed contract's `BRIDGE_MINT` could be rotated to the new bridge-mint code without redeploying tusdc and stranding all balances (`set_bridge_mint` was one-shot).
+3. **Relayer plugins:** `decodeLocked` reads new field, `decodeResultTx` reads new attribute. New helper `buildBridgePayloadForDest` emits JSON `BridgePayload` for Neutron destinations and abi.encode `(address,uint256,uint64)` for Sepolia destinations. `LockTusdc` and `BurnTusdc` now require + forward the recipient. Admin `/trigger-burn` query separated `recipient` (user EVM addr) from `dest_app` (BridgeVault contract); previously they were conflated.
+4. **Decimal scaling (P-10.10b):** first end-to-end run minted but recipient got 10^13 tUSDC instead of 10. Sepolia tUSDC is 18-dec, Neutron is 6-dec. Added 10^12 scaling at both payload-builder boundaries (`buildBridgePayloadForDest` divides; `buildBurnPayload` multiplies).
+5. **destApp abi-encoding (P-10.10c):** Sepolia direction reverted with `InvalidProof()` at `Verifier.executeMessage:202`. Forensic trace via `cast call` + local `cast keccak` reproduction confirmed: msgID + root chain both passed; only `sub.destinationApp.length != 32` failed. The relayer was sending `"0x23d1a91A..."` as 42-byte ASCII; the contract expects `abi.encode(address)` 32-byte left-padded. New `EVMDestAppBytes` helper used in both `toEVMEnvelope` (submit) and `computeSolidityMsgID` (proof) — they MUST agree or the msgID check would fail again. Helper duplicated locally in transform/iavl_to_patricia.go because the transform package can't import `plugins/ethereum` (circular).
+6. **destApp default (P-10.10d):** next on-chain layer reverted with `UnknownNonce`. `BridgeVault.release` requires a prior `lock(nonce)`; the Neutron-burn nonce is independent. Switched the trigger-burn default destination from `SepoliaBridgeVault` to `SepoliaBridgeMint` (mints fresh tokens via `tusdc.bridgeMintTo`, doesn't track nonces). The `dest_app=` query param still allows targeting BridgeVault explicitly when finalising a Sepolia→Neutron→Sepolia round-trip with a known prior lock nonce.
+
+**On-chain end-to-end verification (real testnets):**
+
+- **Test 1B Sepolia→Neutron mint:** lock `0xbe7b35af…05af` → submit + window + execute → recipient `neutron1mqg7kz…` balance gained exactly **10000000 uTUSDC = 10 tUSDC**. ✅
+- **Test 2 `/api/bridge/relay` endpoint:** POST with synthetic body → `messageId: 179`; idempotent re-POST returns same id. ✅
+- **Test 3 Neutron→Sepolia mint:** burn `AE2048D0…A354A` (Neutron −10 tUSDC) → submit + window + execute on Sepolia → recipient `0x211416Aa…` Sepolia balance gained **10000000000000000000 wei = 10 tUSDC at 18 decimals**. ✅
+- **Scenario S-2 lying:** lock `0xf61bc0cd…` → wrong-fingerprint submit → on-chain CHALLENGE filed → 50% slash executed (tx `8A2BE5A8…A0FB`). ✅
+
+Total commits in this push: `4588c57` → `6b4b757` → `c0a71d0` → `8fb89cb` → and final-audit cleanup. CI all-green throughout.
+
+**Audit pass (Lens 1 + Lens 2 via parallel review subagents):**
+
+11 findings across security + production-readiness. Three quick-wins fixed in this session:
+- **F-105 (P1):** `waitForSubmissionID` now distinguishes `receipt.Status == 0` (returns `ErrTxReverted`) from extraction failures. Loop sleeps replaced with `select { ctx.Done | time.After }`.
+- **F-104 (P1):** `tendermint::resolveSubID` cache-miss now logged at `slog.Error` (was `Warn`) with operator hint pointing at the audit finding. Fallback hex still produces a guaranteed revert; loud signal makes the upstream cause visible.
+- **F-107 (P1):** `.env.example` adds `TESSERA_ADMIN_SECRET` (REQUIRED in any deployment with public ingress — without it, anyone can drain the relayer's funds via /admin/trigger-lock), `FRONTEND_ORIGIN`, `NEUTRON_WALLET_ADDRESS`.
+
+**One critical secret-handling fix:** `scripts/register-sepolia-relayers.sh` had **two hardcoded relayer private keys** committed at lines 80-81. The keys are still in git history (testnet, but still). Replaced with `RELAYER_A_PRIVATE_KEY` / `RELAYER_B_PRIVATE_KEY` env loads, hard-fails with a `:?` if they're missing. Added a comment noting that revisions before this commit treat those keys as compromised. P-11: rotate the testnet relayer keys.
+
+**Deferred to P-11** (require contract redeploys), documented in detail in `docs/audit-findings.md`:
+- F-S01: Verifier `destinationApp` allowlist (latent — only matters once a second app is registered).
+- **F-S02: Forged-proof attack on the challenge path** — `_verifyProof` doesn't bind `leafKey`/`leafValue` to the stored envelope, so a challenger can manufacture any "correct fingerprint" and slash an honest submitter for free. The S-2 demo doesn't trigger this because the script uses honest relayers playing the lying role; an adversarial judge poking at the dispute path would expose it.
+- F-S04: CW Bond has no two-step withdrawal cooldown.
+- F-S05: tUSDC `MigrateMsg` admin can drain the bridge with a single tx (no timelock).
+- F-S06: Submitter self-challenge front-runs legit challengers.
+- F-S07: CW absence-slash reward routes to caller, not successor.
+- F-101: Relayer restart loses in-flight `pendingSubmission` registry.
+
+**Outcome:** Bridge end-to-end functional in BOTH directions with correct decimals + correct recipient routing. Backend is hackathon-demo ready. Production-deploy-tomorrow ready: NOT YET — F-S02 + F-101 are real and require contract redeploys. The deferred list is explicit in `docs/audit-findings.md`.
+
+**Files (cumulative):** `contracts-evm/src/BridgeVault.sol`, `contracts-evm/test/unit/BridgeVault.t.sol`, `contracts-cosmwasm/contracts/bridge-mint/{src/contract.rs,src/msg.rs}`, `contracts-cosmwasm/contracts/tusdc/{src/contract.rs,src/msg.rs}`, `relayer/internal/chain/plugin.go`, `relayer/internal/transform/{patricia_to_iavl.go,iavl_to_patricia.go,real_proof_diag_test.go}`, `relayer/internal/relayer/{admin.go,submitter.go,runner.go,challenger.go,runner_test.go}`, `relayer/internal/scenario/runner.go`, `relayer/internal/cli/root.go`, `relayer/internal/pipeline/pipeline.go`, `relayer/plugins/ethereum/{plugin.go,plugin_test.go,abis.go}`, `relayer/plugins/tendermint/{plugin.go,plugin_test.go}`, `frontend/app/api/admin/trigger-burn/route.ts`, `frontend/app/api/bridge/relay/route.ts`, `frontend/lib/config.ts`, `scripts/{addresses.json,migrate-tusdc-neutron.js,redeploy-bridge-mint-neutron.js,register-sepolia-relayers.sh,scenarios/0[1-4]-*.sh}`, `.env.example`, `docs/audit-findings.md`.
+
+**Tokens:** ~700,000 cumulative across the P-10.10 series. Model: Opus 4.7 (1M context).
+
+**Notes:** The P-10.10 series went four-deep because each fix exposed the next layer of bug — proof verification → decimal mismatch → destApp encoding → wrong dispatch contract. The forensic-test-against-real-tx pattern from P-10.9 paid off again: every bug after the first was diagnosed in one trace + one local computation, not by guessing. Worth keeping that as a Phase 11 lesson — when a bridge fails on-chain, the first move should always be `cast run` / `cast call` against the actual stored state, not log-reading. The audit-findings backlog should be the next sprint's roadmap; F-S02 in particular is a real hole in the trust-minimization story and any judge probing the challenge math will find it.
+
+---

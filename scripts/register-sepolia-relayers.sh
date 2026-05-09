@@ -1,10 +1,29 @@
 #!/usr/bin/env bash
 # Register and bond Relayer A and B on Sepolia using cast.
+#
+# Reads RELAYER_A_PRIVATE_KEY / RELAYER_B_PRIVATE_KEY from .env (gitignored).
+# Earlier revisions of this file hardcoded the testnet private keys directly,
+# which committed them into git history; treat those keys as compromised and
+# rotate them before any non-testnet use. Going forward, never hardcode keys
+# in scripts — load them via env.
+#
 # Usage: ./scripts/register-sepolia-relayers.sh
 set -euo pipefail
 
+# Load .env from repo root if present (so we pick up RELAYER_*_PRIVATE_KEY)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  set -a; source "$REPO_ROOT/.env"; set +a
+fi
+
+: "${RELAYER_A_PRIVATE_KEY:?RELAYER_A_PRIVATE_KEY not set — add to .env}"
+: "${RELAYER_B_PRIVATE_KEY:?RELAYER_B_PRIVATE_KEY not set — add to .env}"
+: "${RELAYER_A_SEPOLIA_ADDRESS:?RELAYER_A_SEPOLIA_ADDRESS not set — add to .env}"
+: "${RELAYER_B_SEPOLIA_ADDRESS:?RELAYER_B_SEPOLIA_ADDRESS not set — add to .env}"
+: "${ETHEREUM_SEPOLIA_ENDPOINT:?ETHEREUM_SEPOLIA_ENDPOINT not set — add to .env}"
+
 CAST=~/.foundry/bin/cast
-RPC="https://eth-sepolia.g.alchemy.com/v2/hFtFHxhTG9OsvAP5OHNOm"
+RPC="$ETHEREUM_SEPOLIA_ENDPOINT"
 
 BOND_ADDR="0x8c7dc28559B75AF8c3d59B62C87309E65cb37912"
 REGISTRY_ADDR="0x43677d5Da5701E061Eefa65e36A4fF6D4BFC1109"
@@ -77,13 +96,13 @@ register_relayer() {
   echo "  isActive: $is_active"
 }
 
-register_relayer "Relayer A" "0x1ee4df24028890af9aadd8f41213c63c8273598700e063186a9277e0c5d2c9a2" "0x211416Aa416Bfbd103AfB68bFD120Ef48cD26c37"
-register_relayer "Relayer B" "0x9b16f6ae1df944068863913534b8e9829c43cab6e653a05b4433dcc1b19be99c" "0xdFac507Cee79D909af53EC89b981DD9C431264C2"
+register_relayer "Relayer A" "$RELAYER_A_PRIVATE_KEY" "$RELAYER_A_SEPOLIA_ADDRESS"
+register_relayer "Relayer B" "$RELAYER_B_PRIVATE_KEY" "$RELAYER_B_SEPOLIA_ADDRESS"
 
 echo ""
 echo "=== Sepolia registration complete ==="
-RELA_ACTIVE=$(~/.foundry/bin/cast call "$REGISTRY_ADDR" "isActive(address)(bool)" "0x211416Aa416Bfbd103AfB68bFD120Ef48cD26c37" --rpc-url "$RPC")
-RELB_ACTIVE=$(~/.foundry/bin/cast call "$REGISTRY_ADDR" "isActive(address)(bool)" "0xdFac507Cee79D909af53EC89b981DD9C431264C2" --rpc-url "$RPC")
+RELA_ACTIVE=$(~/.foundry/bin/cast call "$REGISTRY_ADDR" "isActive(address)(bool)" "$RELAYER_A_SEPOLIA_ADDRESS" --rpc-url "$RPC")
+RELB_ACTIVE=$(~/.foundry/bin/cast call "$REGISTRY_ADDR" "isActive(address)(bool)" "$RELAYER_B_SEPOLIA_ADDRESS" --rpc-url "$RPC")
 COUNT=$(~/.foundry/bin/cast call "$REGISTRY_ADDR" "activeCount()(uint256)" --rpc-url "$RPC")
 echo "Relayer A active: $RELA_ACTIVE"
 echo "Relayer B active: $RELB_ACTIVE"

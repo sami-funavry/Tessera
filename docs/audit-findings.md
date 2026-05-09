@@ -269,3 +269,166 @@ Signed: Abdul Sami Rajpoot     Date: 2026-05-08
 ```
 
 Phase 10 is **conditionally exited**. The single open item is the live deploy URL, which is a hosting step rather than a code/QA gate. P-11 (polish, demo recording, final docs) begins immediately and addresses the accepted UX P1s, the smoke-test fill-ins, and the live deploy URL.
+
+---
+
+## P-10.10 audit pass — 2026-05-09
+
+After Sepolia BridgeVault redeploy + Neutron bridge-mint redeploy + tusdc
+state-preserving migration unblocked the destination_recipient flow (and on-chain
+end-to-end mints verified in both directions: balance deltas exact at 10 tUSDC),
+ran two parallel review subagents per `tessera-review` skill: production-readiness
+(Lens 2) and security/adversarial (Lens 1).
+
+### Fixed in this session (commits in P-10.10x range)
+
+| ID    | Severity | Fix |
+|-------|----------|-----|
+| F-105 | P1 | `ethereum/plugin.go::waitForSubmissionID` now distinguishes broadcast-success-but-tx-failed (`receipt.Status == 0` → `ErrTxReverted`) from extraction-failure. Time.Sleep replaced with ctx-aware select. |
+| F-104 | P1 | `tendermint/plugin.go::resolveSubID` — cache-miss now logged at `slog.Error` (was `Warn`) with operator hint pointing at the audit finding. The fallback hex still produces a guaranteed revert; loud signal makes the upstream cause visible. |
+| F-107 | P1 | `.env.example` — added `TESSERA_ADMIN_SECRET`, `FRONTEND_ORIGIN`, `NEUTRON_WALLET_ADDRESS` (was reading at runtime but undocumented; the admin-secret omission was the most serious — first-time deploys would expose unauthenticated `/admin/trigger-lock`). |
+
+### Deferred to P-11 (require contract redeploys)
+
+Documented here so they're discoverable and not silent.
+
+#### F-S01 — [P0 architecture / P1 demo] Verifier dispatches to attacker-controlled `destinationApp`
+
+**Component:** `contracts-evm/src/Verifier.sol:200-206`, `contracts-cosmwasm/contracts/verifier/src/contract.rs::execute_message`
+
+`executeMessage` decodes `sub.destinationApp` (a user-supplied envelope field) and calls
+`IApp(destApp).onCrossChainMessage(...)` with no allowlist. The EVM Verifier has only a
+length-32 sanity check; the CW Verifier has none. Today only `BridgeVault` and `BridgeMint`
+are reachable via the source contracts that emit envelopes, but the architecture is generic:
+once a second app is registered, an attacker who pays the bond can cause the Verifier to
+call any contract on the destination chain with arbitrary payload after a 60s window.
+
+For the current demo this is *latent* — no second app exists. For SPEC §1.12's "generic
+dispatcher" promise, this is a missing piece.
+
+**Recommendation:** add `mapping(bytes32 destChainId => mapping(address app => bool))`
+allowlist enforced at `executeMessage`. Or for the demo: hardcode `destApp ∈ {BridgeMint,
+BridgeVault}`.
+
+**Status:** Deferred — requires Verifier redeploy on both chains.
+
+#### F-S02 — [P0] Forged-proof attack on the challenge path
+
+**Component:** `contracts-evm/src/Verifier.sol::_verifyProof`, `contracts-cosmwasm/contracts/verifier/src/contract.rs::_verify_proof`
+
+`_verifyProof` checks: magic, flags, `proof.msgId == messageHash`, hash-chain →
+`fingerprint`. The `leafKey` and `leafValue` are taken from the proof bytes — they are
+NOT bound to anything in `sub`. A challenger can pick any `(leafKey, leafValue,
+nodeHashes)`, compute their root, supply that as `correctFingerprint`, and the proof
+verifies (root matches their own claim) and `correctFingerprint != sub.fingerprint`
+slashes the honest submitter for 50%.
+
+This makes the dispute mechanism unsafe: any registered relayer can slash any other
+relayer at will for free. The S-2 demo scenario *does* exercise this, but uses honest
+relayers playing the lying role explicitly — so the bug is not visible during the demo
+script.
+
+**Recommendation:** in both verifiers, recompute `expected_leafKey + expected_leafValue`
+from the stored Submission's envelope (`leafKey = keccak/sha256(sourceApp, nonce)`,
+`leafValue = keccak/sha256(payload)`) and reject any proof whose embedded leaf doesn't
+match. This binds the leaf to the actual message instead of accepting whatever the proof
+caller invented.
+
+**Status:** Deferred — requires Verifier redeploy on both chains; also requires the
+relayer's transform layer to use the same canonical leaf derivation (currently leafKey
+comes from RLP-trie node KeyPath / Cosmos storage key, which is not message-bound).
+
+#### F-S04 — [P1] CW Bond has no two-step withdrawal cooldown
+
+**Component:** `contracts-cosmwasm/contracts/bond/src/contract.rs::execute_withdraw`
+
+The EVM Bond enforces `requestWithdrawal` → 1h cooldown → `withdraw` and rejects
+withdrawals that drop balance below `DEREGISTRATION_THRESHOLD` while the relayer is
+Active. The CW Bond does neither: a relayer can drain bond to zero in one tx while still
+listed Active in the registry. The registry's `is_active` doesn't query the bond.
+
+**Recommendation:** mirror the EVM two-step pattern (`pending_withdrawal`,
+`withdrawal_requested_at`); reject withdrawals below the deregistration floor. Or add a
+bond query in the registry's `is_active`.
+
+**Status:** Deferred — requires CW Bond redeploy + state migration.
+
+#### F-S05 — [P1] tUSDC `MigrateMsg` is admin-only but unguarded
+
+**Component:** `contracts-cosmwasm/contracts/tusdc/src/contract.rs::migrate`,
+`contracts-evm/src/TUSDC.sol::setBridgeMint`
+
+The migrate entrypoint we added in P-10.10 lets the admin rotate `BRIDGE_MINT` in a
+single tx, no timelock, no event-then-finalize. A leaked admin key drains the bridge
+instantly. Same on EVM: `setBridgeMint` is owner-only but has no re-set guard or delay.
+
+**Recommendation:** queue/finalize pattern with 24h delay, or move admin to a multisig.
+For the testnet demo, document explicitly in SPEC.md §1.12 that admin keys are trusted
+and rotation is governance-controlled.
+
+**Status:** Deferred — for the hackathon demo, document the trust assumption. P-11
+should at least split admin from owner so the migrate key is operationally distinct
+from the deployer key.
+
+#### F-S06 — [P1] Submitter self-challenge front-runs legit challengers
+
+**Component:** `contracts-evm/src/Verifier.sol::challenge`
+
+The challenge path is permissionless. A submitter watching mempool can front-run a
+legit challenger by calling `challenge` themselves with a deliberately invalid evidence
+proof, taking the frivolous-25% slash (paid back to themselves) instead of the lying-50%
+loss to the challenger. Net cost to submitter: zero plus gas plus one slashCount. Net
+loss to legit challenger: the 50% reward.
+
+**Recommendation:** revert `if (msg.sender == sub.submitter)` in `challenge()`. One-line
+fix on Verifier redeploy.
+
+**Status:** Deferred — Verifier redeploy.
+
+#### F-S07 — [P1] CW absence-slash reward routing differs from EVM
+
+**Component:** `contracts-cosmwasm/contracts/verifier/src/contract.rs::execute_claim_absence_slash`
+
+EVM `claimAbsenceSlash` slashes the original assignee 50% and pays `sub.submitter` (the
+successor relayer who actually did the work). CW pays `info.sender` (whoever calls the
+slash entrypoint), so the original assignee can race-claim their own slash and pay it
+to themselves before the successor.
+
+**Recommendation:** change recipient to `sub.submitter`. One-line fix on CW Verifier
+redeploy.
+
+**Status:** Deferred — CW Verifier redeploy.
+
+#### F-101 — [P0] Restart loses all in-flight pendingSubmissions
+
+**Component:** `relayer/internal/relayer/runner.go`, `plugins/tendermint/plugin.go`
+
+The `Runner.pending` map and Tendermint plugin's `subIDs` cache are in-process only.
+After a SIGKILL/redeploy/OOM mid-flight, every active submission is lost: the challenger
+goroutine no longer watches it, `scheduleExecuteMessage` never fires, and any subsequent
+ExecuteMessage / SubmitChallenge / ClaimAbsenceSlash falls back to hex-encoding the
+[32]byte id — which won't match the stored CW Submission key — so reverts.
+
+**Recommendation:** persist `pendingSubmission` (envelope, transformed proof, deadline,
+CW submission_id string) into Supabase. On startup, hydrate from any rows whose status
+is still `pending`. Couples with F-104 (which already logs the cache-miss loudly).
+
+**Status:** Deferred — non-trivial schema + data path change. Logged in F-104 message
+hint so future operators see the trail.
+
+### Operator verdict (P-10.10 pass)
+
+| Aspect | Status |
+|--------|--------|
+| Bridge happy path (both directions) | ✅ verified end-to-end on real testnet |
+| S-2 lying scenario | ✅ verified on-chain (challenge + 50% slash, tx 8A2BE5A8…) |
+| CI on `main` | ✅ all 4 jobs green for last 4 commits |
+| Production-readiness for unattended 48h operation | ⚠️ caveats above; primarily F-101 |
+| Security against malicious registered relayer | ⚠️ F-S02/F-S06 unfixed; demo runs honest scenarios |
+| `.env.example` completeness | ✅ as of P-10.10 |
+| Admin endpoint auth | ✅ `TESSERA_ADMIN_SECRET` required, CORS gated |
+| Secrets in git tree | ✅ `.gitignore` covers `.env`, `.env.local`; verified no secrets committed |
+
+**Demo-day readiness: GO.** Production-deploy-tomorrow readiness: NOT YET — requires
+the deferred contract fixes above. The deferral list is explicit and load-bearing
+findings (F-S02, F-101) have a clear roadmap.
