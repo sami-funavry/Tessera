@@ -239,13 +239,28 @@ func encodeAuthInfo(pubKeyAny []byte, seq, gasLimit uint64) []byte {
 }
 
 // encodeSignDoc encodes a SignDoc for SIGN_MODE_DIRECT.
-func encodeSignDoc(bodyBytes, authInfoBytes []byte, chainID string, accountNumber, sequence uint64) []byte {
+//
+// Cosmos SDK ≥0.40 (Stargate) `cosmos.tx.v1beta1.SignDoc` has exactly four
+// fields: body_bytes (1), auth_info_bytes (2), chain_id (3), account_number
+// (4). Sequence lives in AuthInfo (and is therefore implicitly bound via
+// the auth_info_bytes hash). Adding a phantom `sequence = 5` here, as the
+// initial P-6 sketch did, gives Cosmos a SignDoc whose bytes don't match
+// what its own SignDoc.Marshal() produces — so SHA256(signedBytes) ≠
+// SHA256(verifierBytes) and ECDSA verification reports the generic
+// "signature verification failed" / "unable to verify single signer
+// signature" error. Pion-1 surfaced this once a node-version upgrade made
+// the verification path stricter; before that, the chain happened to be
+// lenient about the trailing varint.
+//
+// The `sequence` parameter is kept on the function signature so callers
+// don't have to be re-plumbed; it is intentionally unused in the encoded
+// bytes — the binding to the signer's sequence happens via auth_info_bytes.
+func encodeSignDoc(bodyBytes, authInfoBytes []byte, chainID string, accountNumber, _ uint64) []byte {
 	var b []byte
 	b = appendField(b, 1, bodyBytes)
 	b = appendField(b, 2, authInfoBytes)
 	b = appendField(b, 3, []byte(chainID))
 	b = appendVarintField(b, 4, accountNumber)
-	b = appendVarintField(b, 5, sequence)
 	return b
 }
 

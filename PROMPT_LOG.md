@@ -899,3 +899,24 @@
 **Notes:** Each iteration today removed exactly one error-shaped layer: (e) bytea / numeric column type drift in the response decode, (f) projection-based decode to short-circuit further drift, (g) flaky upstream + retry. The pipeline as-of bb0e7e7 was actually finishing FetchProof + TranslateProofTo cleanly — the only thing standing between us and a confirmed Neutron destination tx was Polkachu's free-tier reliability. The fastest signal in this whole cycle was finally hitting `rest-falcron` directly with `curl` and seeing it answer in 200 ms while Polkachu was a wall of 502s — at that point the fix was obvious. P-11 polish: bake a small set of fallback REST URLs into the cosmwasm client and rotate on persistent 5xx, so a bad day at one provider doesn't gate the whole demo.
 
 ---
+
+### [P-10.7h] Cosmos SignDoc had a phantom field 5 (sequence) — verification fails on stricter nodes — 2026-05-09 12:30
+
+**Prompt:** Continue iterating. After P-10.7g shipped, the relayer pipeline runs cleanly through `proof transformed`, accountInfo retries succeed against rest-falcron — but Cosmos broadcast now returns `code=4 log=signature verification failed; please verify account number (700251) and chain-id (pion-1): (unable to verify single signer signature): unauthorized` on every attempt.
+
+**Actions:**
+1. Confirmed env wiring is correct: `RELAYER_PRIVATE_KEY=0x1ee4df24...` derives the on-chain pubkey `AuNwh8vkB7McDOloHFwAVBucb5+9UCW6f1MPJ/HQY6HE` and bech32 address `neutron1sas8u8rl69pvkyv3eka035jlgrm2vsq94725d9` — both match the rest-falcron query for account 700251. So the priv key, pubkey, and address all line up; the failure is in what we're signing, not the key material.
+2. Read `cosmwasm/client.go encodeSignDoc()`. Found it appended **five** length-delimited / varint fields: body_bytes(1), auth_info_bytes(2), chain_id(3), account_number(4), **sequence(5)**. Cosmos SDK ≥ 0.40 (Stargate, 2021) `SignDoc` has only four fields — sequence moved to AuthInfo. Cosmos's verifier re-marshals SignDoc using its own proto and computes SHA256 over those 4 fields' bytes. Our hash includes the 5th field, so the bytes diverge and ECDSA verification rejects.
+3. `git log` shows the bogus field 5 has been in `encodeSignDoc` since the original P-6 sketch (96efdd3). The signature happened to verify against pion-1 in earlier weeks because the chain was lenient about the trailing unrecognised varint, but a Neutron node-version upgrade tightened the verification — that's why yesterday's broadcasts confirmed and today's all return `code=4`.
+4. Removed the `appendVarintField(b, 5, sequence)` line in `encodeSignDoc`. Kept the `sequence` parameter on the signature so callers stay unmodified (it's now `_ uint64`); the actual binding to the signer's sequence happens via `auth_info_bytes` per the Stargate spec. Added an explanatory block comment so the next person doesn't re-introduce it.
+5. `go build ./...`, `go test ./internal/cosmwasm/...` (no test files; smoke), `go test ./internal/relayer/...` — clean.
+
+**Outcome:** patched + built. Pushing now and triggering relayer redeploys. After this lands, the Cosmos broadcast should accept the relayer's signed SubmitMessage tx and write a real `submissions.dest_tx_hash` row.
+
+**Files:** `relayer/internal/cosmwasm/client.go`
+
+**Tokens:** ~245,000. Model: Opus 4.7 (1M context).
+
+**Notes:** This is the most production-grade lesson of the day: a hand-written protobuf encoder against an evolving message schema is a slow time bomb. If you're not pulling the proto definitions from the same vendor as the verifier (i.e., literally `cosmos-sdk/types/tx`), you are one schema bump away from a "verified yesterday, broken today" failure with no Go compile error to warn you. P-11 / P-12 polish: replace the hand-rolled `cosmwasm/client.go` SignDoc encoder with the Cosmos SDK Go SDK's own `tx.SignDoc{}.Marshal()` (or the smaller `cosmos-sdk/types/tx` package), so the relayer's signed bytes are guaranteed to match what the verifier reconstructs. Until then, this single function is a privileged spot in the codebase — it should have its own focused test that round-trips against a public Cosmos node and asserts the signed bytes verify.
+
+---
