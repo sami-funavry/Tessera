@@ -1173,19 +1173,12 @@ function WalletsContent() {
     U->>K: connect (pion-1)
     K-->>FE: address
 
-    par Claim on Sepolia
-        U->>FE: click claim
-        FE->>MM: tUSDC.claim()
-        MM->>SEP: signed tx
-        SEP-->>MM: 1 000 tUSDC (18 dec)
-    and Claim on Neutron
-        U->>FE: click claim
-        FE->>K: tUSDC.Claim{}
-        K->>NEU: signed tx
-        NEU-->>K: 1 000 tUSDC (6 dec)
-    end
+    Note over U,SEP: Claim tUSDC (out-of-widget)<br/>Sepolia: Etherscan Write tab → claim()<br/>Neutron: scripts/claim-neutron-tusdc.js
+    SEP-->>MM: 1 000 tUSDC (18 dec)
+    NEU-->>K: 1 000 tUSDC (6 dec)
 
     U->>FE: bridge X tUSDC, Sepolia → Neutron
+    FE->>MM: tUSDC.approve(BridgeVault, max) — first time only
     FE->>MM: BridgeVault.lock(amount, recipient)
     MM->>SEP: signed tx
     SEP-->>R: Locked event
@@ -1202,9 +1195,9 @@ function WalletsContent() {
             <strong className="text-stone-200">Connect:</strong> Click &ldquo;Connect MetaMask&rdquo; on the homepage. Select Sepolia in your wallet.
           </p>
           <p>
-            <strong className="text-stone-200">Claim tUSDC:</strong> After connecting, click the tUSDC balance pill or call{' '}
-            <code className="bg-stone-950 px-1.5 py-0.5 rounded text-xs text-orange-400">claim()</code> on Etherscan.
-            Each claim gives you 1 000 tUSDC (with 18 decimal places). Cooldown: 24 hours.
+            <strong className="text-stone-200">Claim tUSDC:</strong> The bridge widget does not include a claim button — the on-page tUSDC balance is read-only display. To mint, call{' '}
+            <code className="bg-stone-950 px-1.5 py-0.5 rounded text-xs text-orange-400">claim()</code> on the tUSDC contract directly via Etherscan&apos;s <em>Write Contract</em> tab, or via{' '}
+            <code className="bg-stone-950 px-1.5 py-0.5 rounded text-xs text-stone-300">cast send</code>. Each claim gives 1 000 tUSDC (18 decimals). Cooldown: 24 hours.
           </p>
           <p>
             <strong className="text-stone-200">Add tUSDC to MetaMask:</strong>
