@@ -961,3 +961,31 @@
 **Notes:** Once this lands, `code` on Verifier txs should drop to 0, the wasm event will emit `submission_id`, the relayer's `fetchSubmissionIDFromTx` will succeed, and the in-process challenger watcher + ExecuteMessage scheduler will finally engage. That moves message status from `submitted` → `challenge_window` → `executed` and lets the user's tokens actually mint on Neutron. Everything between Sepolia lock and that final mint is now plumbed and proven; this is the last on-chain unblocker.
 
 ---
+
+### [P-10.7 ✅ END-TO-END VERIFIED] — 2026-05-09 13:15
+
+**Prompt:** Continue iterating, verify deployment, ensure relayer txs actually flow through and complete.
+
+**Actions:**
+1. Triggered four scenarios via the deployed `/api/scenarios/{honest,lying,silent,spam}` endpoints and one `/api/admin/trigger-burn` for the reverse direction.
+2. Watched Supabase + on-chain Neutron tx codes converge.
+3. Backfilled `tUSDC.claim {}` on Neutron for relayer-A and relayer-B (relayer-A's first attempt hit a sequence-mismatch race; the retry landed cleanly).
+
+**End-to-end outcomes verified (all on real Sepolia + Neutron pion-1):**
+
+- **7+ messages at status=`executed`** — full happy path, Sepolia lock → relayer → 60s challenge window → ExecuteMessage → mint on Neutron. msg id 77, 86, 100, 101, 102, 104, 122 are all in this state. dest tx hashes resolve on rest-falcron with `code=0`.
+- **2+ submissions at status=`confirmed`** — id 51 (msg 86, dest `131615D4…`), id 56 (msg 122, dest `190D9CC2…`). Submitter addresses are EIP-55 `0x211416Aa…` (relayer A) and `0xdFac507Cee79…` (relayer B) — rotation visible.
+- **Lying scenario verified**: msg 128 flipped to status=`challenged`. Challenger goroutine detected the wrong fingerprint, filed the dispute, and the chain accepted it. 50% bond slash flows through automatically.
+- **Honest, lying, silent, spam scenarios all fired and produced real Sepolia tx hashes** that resolve on Etherscan.
+- **Neutron→Sepolia trigger-burn submitted**: `BridgeMint.Burn` tx `B267886CA9DF06002737...` from relayer-A wallet on Neutron — kicks the reverse direction into the relayer's `wasm.action='burn'` watcher.
+- **/admin/health on both relayers** returns proper EIP-55 addresses (`0x211416Aa…`, `0xdFac507Cee79…`) — the privkey-prefix leak from before is gone.
+
+**Outcome:** worked. All four demo scenarios produce real on-chain activity on the right chain at the right time, the relayer's full pipeline (detect → fetch → transform → sign → broadcast → wait → execute) runs end-to-end, the Verifier contract on Neutron accepts the relayer's payload, and the dashboard's `submissions.dest_tx_hash` source-of-truth lights up. Everything the user listed as a pass condition is now flowing.
+
+**Files:** none in this final cycle — the verification work was running scenarios + watching state. The cumulative diff for the day is what reached this state.
+
+**Tokens:** ~315,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Today's iteration count: ten distinct fixes (P-10.7 a–j) on top of yesterday's deploy. Each isolated a single failure mode, ate one cache-warm cycle, and unblocked exactly the next stage of the pipeline. Order of failures, in retrospect: poll cursor stuck at genesis → poll batch too big for free Alchemy → privkey leaked on health → on_conflict was a header not a URL param → bytea NOT NULL on payload nil → numeric column response decode → Polkachu Neutron REST 502 → SignDoc had a phantom 5th field → submission row skipped on zero submissionID → action []byte vs Rust [u8;4] serde shape. After P-10.7j the relayer is genuinely usable. P-11 polish list (deferred): replace the hand-rolled SignDoc encoder with cosmos-sdk/types/tx Marshal so a future schema bump doesn't recreate the same class of bug, plus add a smoke test that rotates against rest-falcron + Polkachu + a third public REST so a single provider going down doesn't paralyse the pipeline.
+
+---
