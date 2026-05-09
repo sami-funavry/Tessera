@@ -401,12 +401,13 @@ func (p *Plugin) decodeLocked(log types.Log) (chain.Event, error) {
 	}, nil
 }
 
-// TranslateProofTo converts the Patricia proof to a TesseraProof for destChainID.
-func (p *Plugin) TranslateProofTo(proof chain.Proof, destChainID string) (chain.Proof, error) {
-	env := chain.MessageEnvelope{
-		SourceChainID: p.chainID,
-		DestChainID:   destChainID,
-	}
+// TranslateProofTo converts the Patricia proof to a TesseraProof for the
+// destination verifier. The full envelope must be passed so PatriciaToIAVL
+// can embed sha256(message_id(envelope)) into the leaf — the Neutron verifier
+// re-derives that exact hash from the stored Submission and rejects the
+// proof if they don't match. Building a partial envelope here was P-10.9's
+// "invalid proof" bug.
+func (p *Plugin) TranslateProofTo(proof chain.Proof, env chain.MessageEnvelope) (chain.Proof, error) {
 	return transform.PatriciaToIAVL(proof, env)
 }
 

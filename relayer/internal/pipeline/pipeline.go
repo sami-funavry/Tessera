@@ -84,9 +84,23 @@ func (r *Runner) RunMockSepoliaToNeutron(ctx context.Context) error {
 			"bytes", len(proof.ProofBytes), "state_root", fmt.Sprintf("0x%x...", proof.StateRoot[:4]))
 	}
 
+	// Build the canonical envelope from the mock event so transform and
+	// submit see the exact same SourceApp/Nonce/etc. — required so the
+	// proof's embedded msgID matches what the destination verifier
+	// recomputes from the stored Submission.
+	mockEnvelope := chain.MessageEnvelope{
+		SourceChainID: "sepolia",
+		DestChainID:   "pion-1",
+		SourceApp:     mockEvent.SourceApp,
+		DestApp:       mockEvent.DestApp,
+		Action:        mockEvent.Action,
+		Payload:       mockEvent.Payload,
+		Nonce:         mockEvent.Nonce,
+	}
+
 	// Stage 5: Transform proof Patricia→IAVL.
 	// ErrNotImplemented is expected here until P-4.
-	transformed, transformErr := r.EthPlugin.TranslateProofTo(proof, "pion-1")
+	transformed, transformErr := r.EthPlugin.TranslateProofTo(proof, mockEnvelope)
 	if errors.Is(transformErr, chain.ErrNotImplemented) {
 		slog.Info("pipeline: stage 5 transform stub (P-4 will implement PatriciaToIAVL here)",
 			"status", "P-4 pending")
@@ -98,15 +112,7 @@ func (r *Runner) RunMockSepoliaToNeutron(ctx context.Context) error {
 
 	// Stage 6: Submit to Neutron verifier.
 	// ErrNotImplemented is expected until P-6.
-	_, _, submitErr := r.TmPlugin.SubmitMessage(ctx, chain.MessageEnvelope{
-		SourceChainID: "sepolia",
-		DestChainID:   "pion-1",
-		SourceApp:     mockEvent.SourceApp,
-		DestApp:       mockEvent.DestApp,
-		Action:        mockEvent.Action,
-		Payload:       mockEvent.Payload,
-		Nonce:         mockEvent.Nonce,
-	}, proof)
+	_, _, submitErr := r.TmPlugin.SubmitMessage(ctx, mockEnvelope, proof)
 	if errors.Is(submitErr, chain.ErrNotImplemented) {
 		slog.Info("pipeline: stage 6 submit stub (P-6 will call Neutron verifier here)",
 			"status", "P-6 pending")
@@ -187,9 +193,22 @@ func (r *Runner) RunMockNeutronToSepolia(ctx context.Context) error {
 			"bytes", len(proof.ProofBytes), "app_hash_prefix", appHashPrefix)
 	}
 
+	// Build the canonical envelope from the mock event so transform and
+	// submit see the exact same SourceApp/Nonce/etc. (see Sepolia→Neutron
+	// counterpart for rationale).
+	mockEnvelope := chain.MessageEnvelope{
+		SourceChainID: "pion-1",
+		DestChainID:   "sepolia",
+		SourceApp:     mockEvent.SourceApp,
+		DestApp:       mockEvent.DestApp,
+		Action:        mockEvent.Action,
+		Payload:       mockEvent.Payload,
+		Nonce:         mockEvent.Nonce,
+	}
+
 	// Stage 5: Transform proof IAVL→Patricia.
 	// ErrNotImplemented expected until P-4.
-	transformed, transformErr := r.TmPlugin.TranslateProofTo(proof, "sepolia")
+	transformed, transformErr := r.TmPlugin.TranslateProofTo(proof, mockEnvelope)
 	if errors.Is(transformErr, chain.ErrNotImplemented) {
 		slog.Info("pipeline: stage 5 transform stub (P-4 will implement IAVLToPatricia here)",
 			"status", "P-4 pending")
@@ -201,15 +220,7 @@ func (r *Runner) RunMockNeutronToSepolia(ctx context.Context) error {
 
 	// Stage 6: Submit to Sepolia verifier.
 	// ErrNotImplemented expected until P-6.
-	_, _, submitErr := r.EthPlugin.SubmitMessage(ctx, chain.MessageEnvelope{
-		SourceChainID: "pion-1",
-		DestChainID:   "sepolia",
-		SourceApp:     mockEvent.SourceApp,
-		DestApp:       mockEvent.DestApp,
-		Action:        mockEvent.Action,
-		Payload:       mockEvent.Payload,
-		Nonce:         mockEvent.Nonce,
-	}, proof)
+	_, _, submitErr := r.EthPlugin.SubmitMessage(ctx, mockEnvelope, proof)
 	if errors.Is(submitErr, chain.ErrNotImplemented) {
 		slog.Info("pipeline: stage 6 submit stub (P-6 will call Sepolia verifier here)",
 			"status", "P-6 pending")

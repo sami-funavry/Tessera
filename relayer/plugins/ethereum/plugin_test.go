@@ -37,7 +37,9 @@ func TestEthereumPluginStubConsensus(t *testing.T) {
 // TestEthereumPluginTranslateProof verifies TranslateProofTo succeeds (P-4 implemented).
 func TestEthereumPluginTranslateProof(t *testing.T) {
 	p := newTestPlugin("http://127.0.0.1:19999")
-	result, err := p.TranslateProofTo(chain.Proof{ChainID: "sepolia"}, "pion-1")
+	result, err := p.TranslateProofTo(chain.Proof{ChainID: "sepolia"}, chain.MessageEnvelope{
+		SourceChainID: "sepolia", DestChainID: "pion-1",
+	})
 	require.NoError(t, err, "TranslateProofTo must not error after P-4 implementation")
 	assert.Equal(t, "pion-1", result.ChainID, "translated proof must target pion-1")
 	assert.NotEmpty(t, result.ProofBytes, "translated proof must have wire bytes")

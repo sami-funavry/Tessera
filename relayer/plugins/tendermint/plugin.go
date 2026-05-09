@@ -350,11 +350,12 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 	}, nil
 }
 
-func (p *Plugin) TranslateProofTo(proof chain.Proof, destChainID string) (chain.Proof, error) {
-	env := chain.MessageEnvelope{
-		SourceChainID: p.chainID,
-		DestChainID:   destChainID,
-	}
+// TranslateProofTo converts the IAVL proof to a TesseraProof for the
+// destination verifier. The full envelope must be passed so IAVLToPatricia's
+// computeSolidityMsgID gets the correct SourceApp/Nonce/Action/Payload —
+// the Sepolia Verifier recomputes keccak(abi.encode(envelope)) from the
+// stored Submission and rejects the proof if the embedded msgID differs.
+func (p *Plugin) TranslateProofTo(proof chain.Proof, env chain.MessageEnvelope) (chain.Proof, error) {
 	return transform.IAVLToPatricia(proof, env)
 }
 

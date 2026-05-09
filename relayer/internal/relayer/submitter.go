@@ -99,7 +99,12 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		Nonce:         ev.Nonce,
 	}
 
-	transformedProof, err := src.TranslateProofTo(proof, dst.ChainID())
+	// Pass the full envelope (NOT just dst.ChainID()) — the destination
+	// verifier embeds sha256/keccak(message_id(envelope)) in the proof's
+	// leaf, and a stripped envelope produces a proof whose embedded msgID
+	// doesn't match what the contract recomputes from the stored Submission,
+	// causing "invalid proof" at execute_message. Fixed in P-10.9.
+	transformedProof, err := src.TranslateProofTo(proof, env)
 	if err != nil {
 		return fmt.Errorf("handleEvent TranslateProofTo: %w", err)
 	}

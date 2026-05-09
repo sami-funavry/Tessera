@@ -31,7 +31,9 @@ func TestTendermintPluginChainID(t *testing.T) {
 // TestTendermintPluginTranslateProof verifies TranslateProofTo succeeds (P-4 implemented).
 func TestTendermintPluginTranslateProof(t *testing.T) {
 	p := newTestTmPlugin("http://127.0.0.1:26657", "pion-1")
-	result, err := p.TranslateProofTo(chain.Proof{ChainID: "pion-1"}, "sepolia")
+	result, err := p.TranslateProofTo(chain.Proof{ChainID: "pion-1"}, chain.MessageEnvelope{
+		SourceChainID: "pion-1", DestChainID: "sepolia",
+	})
 	require.NoError(t, err, "TranslateProofTo must not error after P-4 implementation")
 	assert.Equal(t, "sepolia", result.ChainID, "translated proof must target sepolia")
 	assert.NotEmpty(t, result.ProofBytes, "translated proof must have wire bytes")

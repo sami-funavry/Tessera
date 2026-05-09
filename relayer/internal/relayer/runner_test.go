@@ -67,18 +67,10 @@ func (m *mockPlugin) SubscribeEvents(ctx context.Context, _ uint64) (<-chan chai
 	return ch, nil
 }
 
-func (m *mockPlugin) TranslateProofTo(proof chain.Proof, destChainID string) (chain.Proof, error) {
+func (m *mockPlugin) TranslateProofTo(proof chain.Proof, env chain.MessageEnvelope) (chain.Proof, error) {
 	// Route to the real transform function based on source chain.
 	if m.id == "sepolia" || m.id == "11155111" {
-		env := chain.MessageEnvelope{
-			SourceChainID: m.id,
-			DestChainID:   destChainID,
-		}
 		return transform.PatriciaToIAVL(proof, env)
-	}
-	env := chain.MessageEnvelope{
-		SourceChainID: m.id,
-		DestChainID:   destChainID,
 	}
 	return transform.IAVLToPatricia(proof, env)
 }

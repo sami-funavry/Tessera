@@ -105,9 +105,16 @@ type Plugin interface {
 	// The channel is closed when ctx is cancelled.
 	SubscribeEvents(ctx context.Context, fromBlock uint64) (<-chan Event, error)
 
-	// TranslateProofTo converts the proof to a format understood by destChainID.
-	// Stub returning ErrNotImplemented until P-4.
-	TranslateProofTo(proof Proof, destChainID string) (Proof, error)
+	// TranslateProofTo converts the proof to a format understood by the
+	// destination verifier. The envelope is required because the on-chain
+	// verifiers embed sha256/keccak(message_id(envelope)) into the proof's
+	// leaf hash — passing a stripped-down envelope (e.g. without SourceApp
+	// or Nonce) would silently produce a proof whose embedded msgID does
+	// not match what the contract recomputes from the stored Submission's
+	// envelope, and the proof would be rejected as "invalid proof" at
+	// execute_message time. The plugin reads env.DestChainID to pick the
+	// hash function (Keccak vs SHA-256).
+	TranslateProofTo(proof Proof, env MessageEnvelope) (Proof, error)
 
 	// SubmitMessage submits a cross-chain message and proof to the destination
 	// verifier contract. Returns the submission transaction hash and 32-byte submissionId.

@@ -13,6 +13,9 @@ import (
 )
 
 // ChallengeRecord tracks a pending submission that the challenger is watching.
+// Env carries the full message envelope so VerifySubmission can re-derive the
+// proof's embedded msgID identically to the submitting relayer (a mismatch in
+// SourceApp/Nonce here would cause an honest re-derivation to look like fraud).
 type ChallengeRecord struct {
 	SubmissionID   string
 	SubmissionDBID int64
@@ -22,6 +25,7 @@ type ChallengeRecord struct {
 	BlockHeight    uint64
 	Nonce          uint64
 	Deadline       time.Time
+	Env            chain.MessageEnvelope
 }
 
 // runChallenger monitors submitted messages and:
@@ -60,6 +64,7 @@ func (r *Runner) scanForChallenges(ctx context.Context) {
 			BlockHeight:    ps.BlockHeight,
 			Nonce:          ps.Nonce,
 			Deadline:       ps.Deadline,
+			Env:            ps.Env,
 		}
 
 		matches, ourRoot, err := r.VerifySubmission(ctx, rec)
@@ -230,11 +235,19 @@ func (r *Runner) VerifySubmission(ctx context.Context, rec ChallengeRecord) (boo
 		return false, [32]byte{}, fmt.Errorf("VerifySubmission FetchProof: %w", err)
 	}
 
-	destChainID := ""
-	if dst != nil {
-		destChainID = dst.ChainID()
+	// Pass the full envelope through so PatriciaToIAVL/IAVLToPatricia
+	// embed the same msgID the submitter used. If rec.Env is the zero
+	// value (legacy callers that haven't been updated), fall back to
+	// dst.ChainID() — the proof will fail msgID equality on the contract,
+	// but our local re-derivation will at least show the divergence.
+	envForTransform := rec.Env
+	if envForTransform.SourceChainID == "" {
+		envForTransform.SourceChainID = rec.SourceChainID
 	}
-	transformed, err := src.TranslateProofTo(proof, destChainID)
+	if envForTransform.DestChainID == "" && dst != nil {
+		envForTransform.DestChainID = dst.ChainID()
+	}
+	transformed, err := src.TranslateProofTo(proof, envForTransform)
 	if err != nil {
 		return false, [32]byte{}, fmt.Errorf("VerifySubmission TranslateProofTo: %w", err)
 	}

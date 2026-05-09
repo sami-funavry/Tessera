@@ -393,7 +393,15 @@ func newFetchCmd() *cobra.Command {
 					proof = chainpkg.Proof{ChainID: plugin.ChainID(), BlockNumber: blockHeight}
 				}
 
-				translated, xlateErr := plugin.TranslateProofTo(proof, destChainID)
+				// CLI fetch path is for diagnostics only — there's no real
+				// envelope here, so build one with what the user supplied.
+				// The transformed root won't be valid for any on-chain
+				// submission unless the same envelope is used at submit.
+				cliEnv := chainpkg.MessageEnvelope{
+					SourceChainID: plugin.ChainID(),
+					DestChainID:   destChainID,
+				}
+				translated, xlateErr := plugin.TranslateProofTo(proof, cliEnv)
 				if xlateErr != nil {
 					return fmt.Errorf("TranslateProofTo: %w", xlateErr)
 				}
