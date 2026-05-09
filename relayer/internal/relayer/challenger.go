@@ -124,6 +124,41 @@ func (r *Runner) handleFraud(ctx context.Context, ps *pendingSubmission, ourRoot
 	r.dbUpdateSubmissionStatus(ctx, ps.SubmissionDBID, "challenged", txHash)
 	r.dbUpdateMessageStatus(ctx, ps.MessageDBID, "challenged")
 
+	// P-10.8: emit Challenged + Slashed (or ChallengeRejected for S-4) into
+	// the events table so the demo log can show the dispute pipeline.
+	destChain := ps.DestPlugin.ChainID()
+	frivolous := r.IsForceFrivolous()
+	r.dbAppendPipelineEvent(ctx, destChain, 0, txHash,
+		"Challenged", ps.Env.DestApp, map[string]any{
+			"nonce":        ps.Nonce,
+			"relayer":      r.cfg.RelayerAddr,
+			"wrong_root":   hex.EncodeToString(ps.Proof.StateRoot),
+			"correct_root": hex.EncodeToString(ourRoot[:]),
+			"result":       map[bool]string{true: "baseless", false: "fraud"}[frivolous],
+		})
+	if frivolous {
+		// Frivolous challenger forfeits 25% of their bond.
+		r.dbAppendPipelineEvent(ctx, destChain, 0, txHash,
+			"ChallengeRejected", ps.Env.DestApp, map[string]any{
+				"nonce":          ps.Nonce,
+				"relayer":        r.cfg.RelayerAddr,
+				"slash_pct":      25,
+				"amount_slashed": "0.005",
+				"paid_to":        "submitter",
+			})
+	} else {
+		// Lying submitter loses 50% of bond, paid to the challenger.
+		r.dbAppendPipelineEvent(ctx, destChain, 0, txHash,
+			"Slashed", ps.Env.DestApp, map[string]any{
+				"nonce":          ps.Nonce,
+				"relayer":        ps.Env.SourceApp,
+				"slash_pct":      50,
+				"reason":         "wrong fingerprint",
+				"amount_slashed": "0.01",
+				"paid_to":        r.cfg.RelayerAddr,
+			})
+	}
+
 	// Record dispute in DB.
 	if r.cfg.DB != nil && ps.SubmissionDBID != 0 {
 		disputeID, err := r.cfg.DB.InsertDispute(ctx, supabase.DisputeRow{
@@ -162,6 +197,18 @@ func (r *Runner) handleAbsence(ctx context.Context, ps *pendingSubmission) {
 	r.removePending(ps.SubmissionID)
 	r.dbUpdateSubmissionStatus(ctx, ps.SubmissionDBID, "slashed", txHash)
 	r.dbUpdateMessageStatus(ctx, ps.MessageDBID, "reverted")
+
+	// P-10.8: emit AbsenceSlash for the demo log so the silent scenario
+	// shows the handover + slash on screen.
+	r.dbAppendPipelineEvent(ctx, ps.DestPlugin.ChainID(), 0, txHash,
+		"AbsenceSlash", ps.Env.DestApp, map[string]any{
+			"nonce":          ps.Nonce,
+			"relayer":        ps.Env.SourceApp,
+			"slash_pct":      50,
+			"reason":         "absence",
+			"amount_slashed": "0.01",
+			"paid_to":        r.cfg.RelayerAddr,
+		})
 }
 
 // VerifySubmission independently verifies a submission's transformed root (R-52).

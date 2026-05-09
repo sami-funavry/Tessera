@@ -989,3 +989,52 @@
 **Notes:** Today's iteration count: ten distinct fixes (P-10.7 a–j) on top of yesterday's deploy. Each isolated a single failure mode, ate one cache-warm cycle, and unblocked exactly the next stage of the pipeline. Order of failures, in retrospect: poll cursor stuck at genesis → poll batch too big for free Alchemy → privkey leaked on health → on_conflict was a header not a URL param → bytea NOT NULL on payload nil → numeric column response decode → Polkachu Neutron REST 502 → SignDoc had a phantom 5th field → submission row skipped on zero submissionID → action []byte vs Rust [u8;4] serde shape. After P-10.7j the relayer is genuinely usable. P-11 polish list (deferred): replace the hand-rolled SignDoc encoder with cosmos-sdk/types/tx Marshal so a future schema bump doesn't recreate the same class of bug, plus add a smoke test that rotates against rest-falcron + Polkachu + a third public REST so a single provider going down doesn't paralyse the pipeline.
 
 ---
+
+### [P-10.8] cost-log + reflection + UI bridge stuck + scenarios stuck — 2026-05-09 16:55
+
+**Prompt:** UI bridge tx stuck at "Submitted by relayer · Awaiting destination tx" then times out — find the actual cause, deploy fix, retest. Scenarios from UI just show the lock log line and stop. Read `info/notionfile_hackathon.txt`, then create root-level `cost-log.md` (3-day spend) and `reflection.md` (1-page Claude Code experience) before fixing the bridge.
+
+**Actions:**
+
+**Cost log + reflection (deliverables):**
+1. Read §5 (cost log template) and §9 (reflection template) of `info/notionfile_hackathon.txt`.
+2. Wrote `cost-log.md` at repo root: 3-day Day/Spend/Sessions/Hours/$/hour table (May 7 ~$8, May 8 ~$24, May 9 ~$26 — total ~$58, well under the $75 soft cap), pricing reference, surprises section, methodology note.
+3. Wrote `reflection.md` at repo root following the §9 template: before/after takes, 3 patterns to keep, 2 to drop, what to change in team workflow, "would I keep using this" answer. Honest tone — Sonnet-default and one-page invariant skill called out as the highest-leverage habits.
+
+**Bridge widget root cause (Issue 1):**
+4. Queried Supabase for the stuck tx `0xa29cf04b…`. Found two message rows with the same source_tx_hash:
+   - id=130: status=`pending`, source_chain_id=`'11155111'` (frontend's row)
+   - id=131: status=`executed`, source_chain_id=`'sepolia'` (relayer's row)
+5. Frontend's `awaitRelayer()` subscribes to UPDATE events on id=130; nothing ever updates id=130, so it sits pending until the 180s timeout. Meanwhile id=131 has the real `dest_tx_hash` already.
+6. **Root cause:** `frontend/app/api/bridge/relay/route.ts` used `CHAIN_SEPOLIA = '11155111'`, but `relayer/plugins/ethereum/plugin.go` line 53 sets `chainID = "sepolia"`. The Supabase upsert key is `(source_chain_id, nonce)`, so the two writes never collided — they each created their own row.
+7. **Fix:** changed `CHAIN_SEPOLIA = '11155111'` → `'sepolia'`. Added a 7-line block comment explaining why, so the next person doesn't switch it back to the EIP-155 literal.
+
+**Demo scenarios root cause (Issue 2):**
+8. Pulled the latest 200 events from the events table — only `Locked` rows in the last 24 hours (98 of them). Counter showed `Submitted/Executed/ProofTransformed/WindowOpen` exist historically but none today.
+9. Read `relayer/internal/relayer/submitter.go`: `dbAppendEvent` is only called once per event (the source `Locked`), and `scheduleExecuteMessage` never writes anything to the events table on success. The submission/execution flow only updates the `messages.status` column and inserts a `submissions` row — neither shows up in `useEventsRealtime(100)`.
+10. **Root cause:** the demo log streams the `events` table; the relayer never wrote pipeline events for `ProofFetched / ProofTransformed / Submitted / WindowOpen / WindowClose / Executed / Challenged / ChallengeRejected / Slashed / AbsenceSlash`. The `EVENT_TYPE_TO_TAG` map in `frontend/app/demo/page.tsx` was waiting for rows that never came.
+11. **Fix:** added a `dbAppendPipelineEvent()` helper in submitter.go (raw fields, no chain.Event coupling), then called it at every pipeline stage:
+    - After `FetchProof` → `ProofFetched` (with source_root + node count)
+    - After `TranslateProofTo` → `ProofTransformed` (transform direction + roots)
+    - After `SubmitMessage` (both happy + zero-submissionID branches) → `Submitted` + `WindowOpen`
+    - After `ExecuteMessage` success → `WindowClose` + `Executed`
+12. Wired the same helper into `challenger.go`:
+    - `handleFraud` → `Challenged` + (frivolous → `ChallengeRejected` else → `Slashed`)
+    - `handleAbsence` → `AbsenceSlash`
+13. Also fixed a side bug in `dbAppendEvent`: it always wrote `event_type='Locked'`, even for Neutron source events. Added a chain-aware switch so pion-1 events emit `'Burned'` (matches the `EVENT_TYPE_TO_TAG.Burned` mapping).
+14. Added a small `fingerprintType(r)` helper that returns `"WRONG"` when the lying-scenario fault is armed, `"OK"` otherwise — surfaces in `Submitted.raw_data.fingerprint_type` so the demo UI can flag tampered fingerprints.
+
+**Verification:**
+15. `go build ./...` clean.
+16. `go test ./internal/relayer/...` passes (5.0 s).
+17. `npx tsc --noEmit` on frontend clean.
+
+**Outcome:** patched + tested + ready to deploy. Pushing should let the next bridge from `/` light up the full roadmap (Lock → Proof → Transform → Submit → Window → Mint) AND let the next scenario from `/demo` stream the full pipeline log instead of stopping at the lock line.
+
+**Files:** `cost-log.md`, `reflection.md`, `frontend/app/api/bridge/relay/route.ts`, `relayer/internal/relayer/submitter.go`, `relayer/internal/relayer/challenger.go`
+
+**Tokens:** ~245,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Two distinct UX-completion bugs that both passed every previous "tests pass / e2e works" check because the pipeline DID complete on-chain — only the UI's read path was broken. Lesson: the dashboard reads from a different source-of-truth (events table) than the API readiness signal (messages.status), so "the bridge works" in the relayer's worldview doesn't mean "the dashboard renders it." Worth a P-11 follow-up: write a contract test that asserts every message lifecycle stage produces exactly one row in the events table with the expected event_type, so the demo log invariant is enforced rather than implied. Also ran the existing tests against the new pipeline-event helper to make sure I didn't break the silent-mode hot path; the Locked branch is unchanged for the runner tests.
+
+---

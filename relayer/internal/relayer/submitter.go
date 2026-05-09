@@ -78,6 +78,15 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 	if err != nil {
 		return fmt.Errorf("handleEvent FetchProof: %w", err)
 	}
+	// P-10.8: surface ProofFetched in the events table so the demo log can
+	// stream this stage (frontend/app/demo/page.tsx EVENT_TYPE_TO_TAG).
+	r.dbAppendPipelineEvent(ctx, src.ChainID(), ev.BlockHeight, ev.TxHash,
+		"ProofFetched", ev.SourceApp, map[string]any{
+			"nonce":       ev.Nonce,
+			"source_root": hex.EncodeToString(proof.StateRoot),
+			"proof_depth": len(proof.ProofBytes),
+			"nodes":       len(proof.ProofBytes) / 32,
+		})
 
 	// Step 4: Build the canonical envelope and transform the proof.
 	env := chain.MessageEnvelope{
@@ -114,6 +123,19 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		"transformed_root", fingerprint,
 		"proof_bytes", len(transformedProof.ProofBytes))
 
+	// P-10.8: emit ProofTransformed for the demo log.
+	transformLabel := "Patricia → IAVL"
+	if src.ChainID() == "pion-1" {
+		transformLabel = "IAVL → Patricia"
+	}
+	r.dbAppendPipelineEvent(ctx, src.ChainID(), ev.BlockHeight, ev.TxHash,
+		"ProofTransformed", ev.SourceApp, map[string]any{
+			"nonce":            ev.Nonce,
+			"transform":        transformLabel,
+			"source_root":      hex.EncodeToString(proof.StateRoot),
+			"transformed_root": fingerprint,
+		})
+
 	// Step 5: Submit to the destination verifier.
 	txHash, submissionID, err := dst.SubmitMessage(ctx, env, transformedProof)
 	if err != nil {
@@ -139,6 +161,16 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 			Status:           "submitted",
 		})
 		r.dbUpdateMessageStatus(ctx, msgDBID, "submitted")
+		// P-10.8: emit Submitted on the destination chain so the demo log
+		// shows the relayer's destination tx hash + fingerprint.
+		r.dbAppendPipelineEvent(ctx, dst.ChainID(), 0, txHash,
+			"Submitted", ev.DestApp, map[string]any{
+				"nonce":            ev.Nonce,
+				"destination":      dst.ChainID(),
+				"relayer":          r.cfg.RelayerAddr,
+				"fingerprint":      fingerprint,
+				"fingerprint_type": fingerprintType(r),
+			})
 		return nil
 	}
 	// Update message status only after confirmed submission.
@@ -148,6 +180,22 @@ func (r *Runner) handleEvent(ctx context.Context, src, dst chain.Plugin, ev chai
 		"dest", dst.ChainID(), "nonce", ev.Nonce,
 		"tx_hash", txHash,
 		"submission_id", hex.EncodeToString(submissionID[:]))
+
+	// P-10.8: Submitted + WindowOpen for the demo log. The window is the
+	// 60-second challenge window started by the destination Verifier.
+	r.dbAppendPipelineEvent(ctx, dst.ChainID(), 0, txHash,
+		"Submitted", ev.DestApp, map[string]any{
+			"nonce":            ev.Nonce,
+			"destination":      dst.ChainID(),
+			"relayer":          r.cfg.RelayerAddr,
+			"fingerprint":      fingerprint,
+			"fingerprint_type": fingerprintType(r),
+		})
+	r.dbAppendPipelineEvent(ctx, dst.ChainID(), 0, txHash,
+		"WindowOpen", ev.DestApp, map[string]any{
+			"nonce":      ev.Nonce,
+			"window_sec": 60,
+		})
 
 	// Step 6: Write submission row + update message status.
 	subDBID := r.dbInsertSubmission(ctx, supabase.SubmissionRow{
@@ -224,6 +272,29 @@ func (r *Runner) scheduleExecuteMessage(ctx context.Context, ps *pendingSubmissi
 	r.removePending(ps.SubmissionID)
 	r.dbUpdateSubmissionStatus(ctx, ps.SubmissionDBID, "confirmed", execTxHash)
 	r.dbUpdateMessageStatus(ctx, ps.MessageDBID, "executed")
+
+	// P-10.8: emit WindowClose + Executed for the demo log so it can show
+	// the destination tx hash and complete the pipeline visualization.
+	r.dbAppendPipelineEvent(ctx, ps.DestPlugin.ChainID(), 0, execTxHash,
+		"WindowClose", ps.Env.DestApp, map[string]any{
+			"nonce": ps.Nonce,
+		})
+	r.dbAppendPipelineEvent(ctx, ps.DestPlugin.ChainID(), 0, execTxHash,
+		"Executed", ps.Env.DestApp, map[string]any{
+			"nonce":         ps.Nonce,
+			"destination":   ps.DestPlugin.ChainID(),
+			"submission_id": hex.EncodeToString(ps.SubmissionID[:]),
+		})
+}
+
+// fingerprintType returns "WRONG" if the lying-relayer fault is currently
+// armed, "OK" otherwise. Used in the Submitted event raw_data so the demo
+// log can highlight tampered fingerprints.
+func fingerprintType(r *Runner) string {
+	if r.HasWrongFingerprintFault() {
+		return "WRONG"
+	}
+	return "OK"
 }
 
 // ─── DB write helpers — all log on error, never crash the hot path ───────────
@@ -298,11 +369,17 @@ func (r *Runner) dbAppendEvent(ctx context.Context, ev chain.Event) {
 	if r.cfg.DB == nil {
 		return
 	}
+	// Ethereum BridgeVault emits "Locked"; CosmWasm BridgeMint emits "Burned".
+	// Detect by source chain ID so the demo log can render the correct verb.
+	eventType := "Locked"
+	if ev.SourceChainID == "pion-1" {
+		eventType = "Burned"
+	}
 	err := r.cfg.DB.AppendEvent(ctx, supabase.EventRow{
 		ChainID:         ev.SourceChainID,
 		BlockNumber:     ev.BlockHeight,
 		TxHash:          ev.TxHash,
-		EventType:       "Locked",
+		EventType:       eventType,
 		ContractAddress: ev.SourceApp,
 		RawData: map[string]any{
 			"nonce":    ev.Nonce,
@@ -313,5 +390,37 @@ func (r *Runner) dbAppendEvent(ctx context.Context, ev chain.Event) {
 	})
 	if err != nil {
 		slog.Error(fmt.Sprintf("db AppendEvent failed: %v", err), "tx", ev.TxHash)
+	}
+}
+
+// P-10.8: dbAppendPipelineEvent writes a non-source-chain event (proof
+// transformation, submission, execution, challenge) to the events table so
+// the /demo page log can stream the full relay pipeline. Without these rows
+// the UI only ever sees the initial Locked/Burned event and appears stuck.
+// All errors are logged and never crash the hot path — these rows are for
+// observability, not correctness.
+func (r *Runner) dbAppendPipelineEvent(
+	ctx context.Context,
+	chainID string,
+	blockNum uint64,
+	txHash string,
+	eventType string,
+	contractAddr string,
+	raw map[string]any,
+) {
+	if r.cfg.DB == nil {
+		return
+	}
+	err := r.cfg.DB.AppendEvent(ctx, supabase.EventRow{
+		ChainID:         chainID,
+		BlockNumber:     blockNum,
+		TxHash:          txHash,
+		EventType:       eventType,
+		ContractAddress: contractAddr,
+		RawData:         raw,
+	})
+	if err != nil {
+		slog.Error(fmt.Sprintf("db AppendEvent (pipeline) failed: %v", err),
+			"event_type", eventType, "tx", txHash)
 	}
 }

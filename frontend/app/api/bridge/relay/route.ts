@@ -25,7 +25,14 @@ import { createSupabaseAdmin } from '@/lib/supabase-admin';
 const SEPOLIA_VAULT = '0x2C3544434185DD65F058494816bB816e5314a29E';
 const NEUTRON_BRIDGE_MINT =
   'neutron18am0spqaanz75mh2tl43ychhvf537wcklf3rjlv0y03tvrn6gdksq8ltt7';
-const CHAIN_SEPOLIA = '11155111';
+// P-10.8: must match the Go relayer's `ChainPlugin.ChainID()` exactly so the
+// (source_chain_id, nonce) upsert key collides with the relayer's own write.
+// Previously we used '11155111' (Ethereum chain ID literal); the relayer uses
+// 'sepolia' (canonical plugin chain name from relayer/plugins/ethereum/plugin.go
+// line 53). The mismatch silently produced two separate message rows per
+// bridge — one pending (frontend's), one executed (relayer's) — leaving the
+// widget's realtime UPDATE subscription waiting forever on the orphan row.
+const CHAIN_SEPOLIA = 'sepolia';
 const CHAIN_NEUTRON = 'pion-1';
 
 interface BridgeRelayBody {
