@@ -2,6 +2,9 @@ import type { NextConfig } from 'next';
 import path from 'path';
 
 const nextConfig: NextConfig = {
+  // Standalone bundles only the modules actually imported into a server.js
+  // entrypoint at .next/standalone/server.js — used by the Railway Dockerfile.
+  output: 'standalone',
   turbopack: {
     root: path.resolve(__dirname),
   },

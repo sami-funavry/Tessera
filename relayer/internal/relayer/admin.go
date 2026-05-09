@@ -1,8 +1,10 @@
-// Package relayer — admin HTTP server for demo scenario fault injection.
+// Package relayer — admin HTTP server for demo scenario fault injection
+// and platform healthcheck.
 //
 // Only enabled when --admin flag is set on `tessera relayer`.
 // Endpoints:
 //
+//	GET  /admin/health                                          — unauthenticated healthcheck for platforms (Railway, Fly, k8s)
 //	POST /admin/inject-fault?type=wrong_fingerprint&duration=1  — make next submission send wrong fingerprint
 //	POST /admin/go-silent?nonces=1                              — skip submission for N nonces
 //	POST /admin/force-frivolous?nonces=1                        — force challenger to file baseless dispute (S-4)
@@ -10,6 +12,7 @@
 package relayer
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -33,13 +36,53 @@ type AdminState struct {
 // Requires the X-Admin-Secret header to match the TESSERA_ADMIN_SECRET env var
 // when that env var is set. Set TESSERA_ADMIN_SECRET before starting the relayer
 // in any non-localhost deployment.
+//
+// /admin/health is the only unauthenticated endpoint. CORS is set when
+// FRONTEND_ORIGIN is configured so the deployed Next.js can call /admin/* from
+// its server-side API routes.
 func (r *Runner) AdminServer(addr string) *http.Server {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/admin/inject-fault", r.checkAdminSecret(r.handleInjectFault))
-	mux.HandleFunc("/admin/go-silent", r.checkAdminSecret(r.handleGoSilent))
-	mux.HandleFunc("/admin/force-frivolous", r.checkAdminSecret(r.handleForceFrivolous))
-	mux.HandleFunc("/admin/status", r.checkAdminSecret(r.handleAdminStatus))
+	mux.HandleFunc("/admin/health", r.withCORS(r.handleHealth))
+	mux.HandleFunc("/admin/inject-fault", r.withCORS(r.checkAdminSecret(r.handleInjectFault)))
+	mux.HandleFunc("/admin/go-silent", r.withCORS(r.checkAdminSecret(r.handleGoSilent)))
+	mux.HandleFunc("/admin/force-frivolous", r.withCORS(r.checkAdminSecret(r.handleForceFrivolous)))
+	mux.HandleFunc("/admin/status", r.withCORS(r.checkAdminSecret(r.handleAdminStatus)))
 	return &http.Server{Addr: addr, Handler: mux}
+}
+
+// withCORS adds CORS headers when FRONTEND_ORIGIN is set, allowing the deployed
+// Next.js API routes to proxy to the relayer admin endpoints. Handles OPTIONS
+// preflight inline.
+func (r *Runner) withCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		origin := os.Getenv("FRONTEND_ORIGIN")
+		if origin != "" {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Admin-Secret")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		}
+		if req.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next(w, req)
+	}
+}
+
+// handleHealth is an unauthenticated readiness probe. Returns 200 with the
+// relayer's identity. Used by Railway/Fly/k8s to determine if the container
+// is up. Does not check chain connectivity (that would make the probe flap on
+// transient RPC outages); the deeper /admin/status endpoint covers that.
+func (r *Runner) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	body := map[string]any{
+		"status":  "ok",
+		"service": "tessera-relayer",
+	}
+	if r.cfg.RelayerAddr != "" {
+		body["relayer_addr"] = r.cfg.RelayerAddr
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // checkAdminSecret wraps a handler with a shared-secret check.

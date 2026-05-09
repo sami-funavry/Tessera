@@ -17,6 +17,7 @@ import { cn, explorerTxUrl } from '@/lib/utils';
 import { neutronFee } from '@/lib/keplr';
 import { BRIDGE_PARAMS, ADDRESSES, CHAIN_CONFIG } from '@/lib/config';
 import { ERC20_ABI, BRIDGE_VAULT_ABI } from '@/lib/bridgeAbis';
+import { supabase } from '@/lib/supabase';
 import { useWalletContext } from '@/hooks/useWalletContext';
 import { useSystemStats } from '@/hooks/useMessages';
 import { useToast } from '@/hooks/useToast';
@@ -1162,10 +1163,12 @@ export default function HomepageClient({
   const neutronBalance = useNeutronTusdcBalance(neutronAddress);
 
   /**
-   * Posts to /api/bridge/relay so the server-side simulator delivers tokens
-   * on the destination chain. Returns the real destination tx hash.
+   * Records the user's source-side intent in Supabase via /api/bridge/relay
+   * (no on-chain action; the deployed Go relayer detects the source event
+   * independently and processes it). Returns the messageId so the bridge
+   * widget can subscribe to realtime updates on that row.
    */
-  async function callRelayer(body: {
+  async function recordIntent(body: {
     direction: 'sepolia_to_neutron' | 'neutron_to_sepolia';
     amount: string;
     sender: string;
@@ -1173,7 +1176,7 @@ export default function HomepageClient({
     sourceTxHash: string;
     sourceBlock: number;
     nonce: number;
-  }): Promise<{ destTxHash: string; destExplorerUrl: string }> {
+  }): Promise<{ messageId: number }> {
     const res = await fetch('/api/bridge/relay', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1181,13 +1184,96 @@ export default function HomepageClient({
     });
     const json = await res.json();
     if (!res.ok || !json.success) {
-      // Prefer `detail` over `error`: the route returns a short generic error
-      // ("Destination relay failed") plus a long actionable detail containing
-      // the actual cause (e.g. "Relayer A wallet has only 1908 untrn"). Show
-      // the detail so users can act on it.
-      throw new Error(json.detail ?? json.error ?? 'Relay failed');
+      throw new Error(json.detail ?? json.error ?? 'Failed to record intent');
     }
-    return { destTxHash: json.destTxHash, destExplorerUrl: json.destExplorerUrl };
+    return { messageId: json.messageId as number };
+  }
+
+  /**
+   * Subscribes to Supabase realtime for a specific message row, resolving
+   * with the destination tx hash once the deployed Go relayer marks the
+   * message executed. Times out after `timeoutMs` so a stuck relayer
+   * doesn't hang the UI forever.
+   */
+  async function awaitRelayer(
+    messageId: number,
+    timeoutMs: number,
+  ): Promise<{ destTxHash: string }> {
+    return new Promise((resolve, reject) => {
+      // Initialize to a no-op timer that's cleared immediately so the type
+      // is non-null at the point of clearTimeout. Replaced below with the
+      // real 180s timeout.
+      let timer: ReturnType<typeof setTimeout> = setTimeout(() => undefined, 0);
+
+      const channel = supabase
+        .channel(`bridge-msg-${messageId}-${Math.random().toString(36).slice(2)}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'messages',
+            filter: `id=eq.${messageId}`,
+          },
+          async (payload) => {
+            const row = payload.new as { status?: string };
+            if (row.status === 'executed') {
+              const { data } = await supabase
+                .from('submissions')
+                .select('dest_tx_hash')
+                .eq('message_id', messageId)
+                .order('id', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              const hash = (data as { dest_tx_hash?: string } | null)?.dest_tx_hash;
+              if (hash) {
+                supabase.removeChannel(channel);
+                clearTimeout(timer);
+                resolve({ destTxHash: hash });
+              }
+            } else if (row.status === 'reverted') {
+              supabase.removeChannel(channel);
+              clearTimeout(timer);
+              reject(new Error('Relayer reverted the message — see dashboard for details'));
+            }
+          },
+        )
+        .subscribe();
+
+      // Also poll once immediately in case the relayer beat the subscription.
+      (async () => {
+        const { data } = await supabase
+          .from('messages')
+          .select('status')
+          .eq('id', messageId)
+          .maybeSingle();
+        if ((data as { status?: string } | null)?.status === 'executed') {
+          const { data: sub } = await supabase
+            .from('submissions')
+            .select('dest_tx_hash')
+            .eq('message_id', messageId)
+            .order('id', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          const hash = (sub as { dest_tx_hash?: string } | null)?.dest_tx_hash;
+          if (hash) {
+            supabase.removeChannel(channel);
+            clearTimeout(timer);
+            resolve({ destTxHash: hash });
+          }
+        }
+      })();
+
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        supabase.removeChannel(channel);
+        reject(
+          new Error(
+            'Timed out waiting for relayer. Check the dashboard — the bridge may complete shortly.',
+          ),
+        );
+      }, timeoutMs);
+    });
   }
 
   const handleBridge = useCallback(
@@ -1273,8 +1359,10 @@ export default function HomepageClient({
           ];
           timeoutsRef.current = stageTimeouts;
 
-          // Step 3 — Call /api/bridge/relay to deliver on Neutron.
-          const relayResult = await callRelayer({
+          // Step 3 — Record intent in Supabase. The deployed Go relayer
+          // detects the Locked event on Sepolia independently, fetches the
+          // proof, transforms it, and submits to the Neutron Verifier.
+          const { messageId } = await recordIntent({
             direction: 'sepolia_to_neutron',
             amount: amountWei.toString(),
             sender: evmAddress,
@@ -1284,15 +1372,18 @@ export default function HomepageClient({
             nonce: Number(nonce),
           });
 
-          setLiveDestHash(relayResult.destTxHash);
+          // Step 4 — Wait for the relayer to mark the message executed
+          // and write the destination tx hash. Block height & 60s challenge
+          // window mean ~30-90s end-to-end on a healthy testnet.
+          const { destTxHash } = await awaitRelayer(messageId, 180_000);
+
+          setLiveDestHash(destTxHash);
           setTxProgress(4); // submitted on Neutron
-          setTxProgress(5); // window closed (instant in demo)
+          setTxProgress(5); // window closed
           setTxProgress(6); // executed + minted
 
           // Refresh both balances now that destination tokens exist.
           await refetchSepoliaBalance();
-          // Neutron balance polls every 15s; we don't have a refetch handle, but the
-          // poll will catch up. The toast confirms the action.
           toast({
             title: 'Minted on Neutron',
             description: `${data.amount} tUSDC delivered. View on Celatone.`,
@@ -1356,8 +1447,10 @@ export default function HomepageClient({
         ];
         timeoutsRef.current = stageTimeouts;
 
-        // Step 2 — Call /api/bridge/relay to deliver on Sepolia.
-        const relayResult = await callRelayer({
+        // Step 2 — Record intent. The Go relayer watches Neutron, detects
+        // the Burned event, fetches the IAVL proof, transforms to Patricia,
+        // and submits to the Sepolia Verifier which calls Vault.release.
+        const { messageId } = await recordIntent({
           direction: 'neutron_to_sepolia',
           amount: amountUtusdc,
           sender: neutronAddress,
@@ -1367,7 +1460,9 @@ export default function HomepageClient({
           nonce: Number(nonce),
         });
 
-        setLiveDestHash(relayResult.destTxHash);
+        const { destTxHash } = await awaitRelayer(messageId, 180_000);
+
+        setLiveDestHash(destTxHash);
         setTxProgress(4);
         setTxProgress(5);
         setTxProgress(6);

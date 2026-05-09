@@ -587,3 +587,114 @@
 **Notes:** Most consequential audit insight: ~two-thirds of the serious security bugs (SEC-03 to SEC-15) live in the **production proof-verification path** but are bypassed by the **frontend demo simulator**. Fixing them is multi-week mainnet-grade work; per SPEC.md §1.12 they are out of hackathon scope. The audit-findings doc surfaces every one of them as "Accepted with explicit caveat" rather than hiding them, with each entry pointing at a `post-hackathon-roadmap.md` section that picks it up. This is the right honest posture for a Phase-10 gate that is followed by a "polish + record + ship" Phase 11 — not a "patch over and hope" gate. The SEC-01 / SEC-02 fixes (origin allowlist + rate limit on the public-internet API surface) are the only **demo-path exploits** found; both are now guarded. The demo will pass for judges and the production-readiness work is documented as the explicit follow-up plan, not buried.
 
 ---
+
+### [P-10-followup] in-app docs overhaul + Mermaid + Notion export rebuild — 2026-05-08
+
+**Prompt:** Hardline doc polish: convert ASCII arrow art in `/docs` to real Mermaid diagrams; add system architecture, DB schema (with relations), bidirectional bridge flow, wallet connection flow, relayer module diagrams; extend the cryptography tab to walk Patricia↔IAVL translation, Ed25519 verification, and the byte-identity claim; verify limitations and roadmap reflect reality; update user / developer / relayer guides; document every test + deployment script; link a Notion doc URL into the in-app docs; refresh `notion-export.md`; run a doc audit loop until "high end documentation engineer" pass; finish with a complete code/UI/project audit (report-only, no fixes).
+
+**Actions:**
+1. Audited the existing in-app docs (sub-agent) — 10 ASCII arrow-art blocks across 6 MDX files, no DB ER diagram, no wallet flow, fictional 9-method `ChainPlugin` interface in `frontend/app/docs/page.tsx`, missing PM Brief / Technical Decisions / DB / Scripts / Cryptography deep-dive in the Notion-bound MDX set.
+2. Installed `mermaid@11` in `frontend/`, built `frontend/components/Mermaid.tsx` — client component that dynamic-imports mermaid in `useEffect`, renders to themed SVG (stone-950 background + orange-400 accent matched to the rest of the site), `dangerouslySetInnerHTML` for the SVG output.
+3. Rewrote `frontend/app/docs/page.tsx` (1115 → 1911 lines): 14 sections (added `database` and `scripts`), 16 Mermaid diagrams replacing every ASCII block — overview topology, two bridge sequence diagrams, trust-layer diagram, four cryptography diagrams (Patricia tree, IAVL tree, transformation pipeline, Ed25519 bypass sequence), relayer-process layout, ER diagram + status FSM, wallet flow swimlane, relayer lifecycle FSM + role-assignment formula, plugin pattern. Replaced the invented 9-method ChainPlugin with the verbatim 13-method `Plugin` interface from `relayer/internal/chain/plugin.go`. Added a Notion-link callout in Overview.
+4. Mirrored the Mermaid blocks into `docs/*.mdx` via a sub-agent — 19 ` ```mermaid ` blocks across 9 MDX files. Created three new MDX files: `13-database.mdx`, `14-scripts.mdx`, `15-cryptography.mdx`, each with frontmatter following the existing pattern. Updated `docs/sidebar.json` to include sections 12, 13, 14, 15 (was missing 12 too).
+5. Wrote `/tmp/build-notion-export.py` to stitch every MDX file in sidebar order into a single 2332-line `docs/notion-export.md` (was 643 lines) with Resources block at top, 19 Mermaid blocks, 19 image refs, 113 H2 sections, Appendix A screenshot gallery, Appendix B regeneration instructions.
+6. Ran a senior-doc-expert audit (sub-agent) — 5 P0 + 8 P1 issues. Fixed all P0: stale `77 tests` typo (→ 88) in `07-developer-guide.mdx` and `12-technical-decisions.mdx`; the fictional `ChainPlugin` interface in `page.tsx`; wrong test-file paths (`relayer/internal/consensus/ed25519_test.go` → `relayer/plugins/tendermint/plugin_test.go`; `relayer/internal/transform/msgid_test.go` → `relayer/internal/transform/transform_test.go`); incorrect `tessera-bridge/tessera` GitHub URL → `sami-funavry/Tessera`. Fixed key P1s: dropped invented `~10 min` ZK-bridge claim and `100-validator` magic number; tightened the `cargo test 28 passing` figure; relocated `/tmp/tessera-*-verify.py` references into `scripts/verify/`; README "13 sections" → "16 sections"; testnet caveat on the README Relayer Status table.
+7. Persisted `/tmp/tessera-ui-verify.py`, `/tmp/tessera-demo-verify.py`, and `/tmp/verify-docs-mermaid.py` into `scripts/verify/` — they are now in-repo, not transient.
+8. Verification: `pnpm exec tsc --noEmit` clean; `scripts/verify/docs-mermaid-verify.py` 9/9 (every section in `/docs` renders its expected Mermaid count without parse errors); `scripts/verify/ui-verify.py` 11/11; `scripts/verify/demo-verify.py` 11/11.
+9. Final whole-project audit (report-only, sub-agent) — produced a triaged punch list of 4 showstoppers (`<LIVE_URL>` placeholder still in 3 files; missing `frontend/.env.example`; no `app/not-found.tsx` / `error.tsx` / `loading.tsx`; default Next.js favicon, no opengraph-image), 6 production-stoppers (server-side relayer wallet, Supabase service-role key in API routes, contract addresses duplicated across 7 files, six `as any` Supabase casts, one stray `fmt.Println` in `relayer/internal/cli/root.go`), 8 polish items, 5 open questions for the user. **No code fixes applied** per instruction.
+
+**Outcome:** worked — committed as `e586961` ("docs: overhaul in-app + Notion docs with Mermaid diagrams (P-10 follow-up)"), pushed `6787ea3..e586961`. 44 files changed, 2358 insertions, 242 deletions.
+
+**Files:**
+- New: `frontend/components/Mermaid.tsx`, `docs/13-database.mdx`, `docs/14-scripts.mdx`, `docs/15-cryptography.mdx`, `scripts/verify/ui-verify.py`, `scripts/verify/demo-verify.py`, `scripts/verify/docs-mermaid-verify.py`
+- Modified: `frontend/app/docs/page.tsx`, `frontend/package.json`, `frontend/pnpm-lock.yaml`, `docs/01-overview.mdx`, `docs/02-background.mdx`, `docs/03-architecture.mdx`, `docs/04-economics.mdx`, `docs/05-demo-scenarios.mdx`, `docs/07-developer-guide.mdx`, `docs/08-protocol-user-guide.mdx`, `docs/09-tusdc-bridge.mdx`, `docs/12-technical-decisions.mdx`, `docs/notion-export.md`, `docs/sidebar.json`, `README.md`, `PROMPT_LOG.md`
+
+**Tokens:** ~150,000 (1 audit sub-agent + 1 MDX-mirror sub-agent + 1 senior-doc-expert sub-agent + 1 final-audit sub-agent). Model: Opus 4.7 (1M context).
+
+**Notes:** The fictional ChainPlugin interface is the highest-impact P0 caught here — the in-app docs (the most visible reader surface) had been showing a 9-method interface with parameters that don't exist anywhere in the codebase (`ChainType()`, `proofKind`, `targetChainType`, `bondRef`, `contractAddrs`). Anti-hallucination rule violation that would have shipped to graders. The audit-loop pattern (write doc → senior-doc-expert review → triage → fix P0/P1 → re-verify) is what caught it. Worth keeping as a pattern for any doc work where the surface area is large enough that a single pass misses things.
+
+---
+
+### [P-10-followup] full Notion documentation rebuild — 2026-05-08
+
+**Prompt:** Verify Notion reachability + read existing Tessera docs there (no changes). Then: complete the Notion doc to a senior documentation engineer level, detailed for users / developers / CEOs / clients / other angles, consistent with `SPEC.md` and `CLAUDE.md`, ensure all diagrams are present and structured, navigable, leave deployment links empty until P-11 deploy.
+
+**Actions:**
+1. Read all 12 existing Notion pages (root + 11 children) via `mcp__claude_ai_Notion__notion-fetch`. Built a delta vs `docs/notion-export.md`: stale build-status table (P-1 said 77 tests, P-8/9/10 marked unfinished), stale Neutron tUSDC v1 address in 3 places, fictional 9-method ChainPlugin on Page 3, wrong `cmd/relayer` binary name across pages 5-8, wrong Celatone URL on Page 7, missing 5 sections (PM Brief, Technical Decisions, State & Database, Scripts & Tests, Cryptography Deep-Dive), zero Mermaid diagrams, zero UI screenshots.
+2. Created 5 new Notion pages (1 batched call): `0. PM Brief`, `12. Technical Decisions`, `13. State & Database`, `14. Scripts & Tests`, `15. Cryptography Deep-Dive` — each with `<table_of_contents/>`, `<callout>` intro, full canonical content from the corresponding MDX file, Notion-flavored Mermaid blocks where applicable.
+3. Refreshed all 11 existing pages via `replace_content`: end-to-end content from the canonical MDX, Mermaid where applicable, fixed every stale fact (88 tests / `cmd/tessera` / canonical Celatone URL / Neutron tUSDC v2 / verbatim 13-method `Plugin` interface), GitHub raw URLs for screenshots, "Related: …" footers using inline italic page references.
+4. Updated the root page: a system-topology Mermaid at top, a 16-section navigation table with audience tags ("Engineers", "Architects", "Builders / CEOs", etc.), corrected Sepolia + Neutron Deployed Contract tables, corrected build status (P-0 through P-10 ✅, P-11 🔄), Live Links table with deploy URLs **left empty per operator instruction**, all 16 `<page url=...>` blocks at bottom to preserve the parent-child hierarchy.
+5. Verification: refetched the root page (16 child page tags reachable, system Mermaid intact), spot-fetched Pages 13 and 15 (4 Mermaid blocks each render correctly, ER + FSM diagrams + tables intact).
+
+**Outcome:** worked — 16 Notion pages now match the in-app docs end-to-end. Root navigation reachable. Live demo / in-app docs URLs intentionally empty until P-11 deploy.
+
+**Files:** Notion pages only (no repo files modified). Page IDs preserved for the existing 11 child pages so any externally-shared Notion links continue to resolve.
+
+**Tokens:** ~110,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Notion's MCP markdown spec accepts standard pipe tables and ` ```mermaid ` code blocks but uses XML-style `<table>` for the spec docs. Standard markdown round-tripped fine. One sharp gotcha: the spec rejects `\(` / `\)` inside Mermaid node labels — must wrap the whole label in double quotes (e.g. `A["Notion (App + API)"]`). The `replace_content` command preserved child pages because we re-included every `<page url=...>` block in the new content. Without that, the children would have been deleted.
+
+---
+
+### [P-10-followup] convert Notion Mermaid blocks to image embeds (private repo discovery) — 2026-05-09
+
+**Prompt:** Two issues spotted on the Notion pages: (1) Mermaid code is visible above each rendered diagram (Notion shows source + preview both), (2) GitHub-raw image URLs return 404 because the repo is private. Fix by capturing every diagram as a PNG (use Playwright on the rendered in-app `/docs`, or run the UI in a browser and re-shoot), embed the PNGs as Notion images instead of Mermaid blocks, and ensure the diagrams are big enough and readable.
+
+**Actions:**
+1. Verified the GitHub repo is private (`curl -sI https://github.com/sami-funavry/Tessera` → 404 anonymous), and `gh` CLI not installed locally — operator action required to flip visibility.
+2. Wrote `scripts/verify/capture-mermaid-diagrams.py` — Playwright at 1600×1100 viewport, `device_scale_factor=2` for retina output, walks each `/docs` section, awaits the dynamic-imported mermaid render, screenshots each `<figure>` element. Captured **15 diagrams** → `docs/images/mermaid/{01-overview-1, 03-how-{1,2}, 04-trust-1, 05-crypto-{1,2,3,4}, 06-architecture-1, 07-database-{1,2}, 08-wallets-1, 09-relayer-{1,2}, 10-addchain-1}.png`.
+3. Wrote `scripts/verify/render-extra-mermaid.py` + `/tmp/mermaid-harness.html` — standalone harness that imports `mermaid@11` from CDN with the same theme as the in-app component, accepts a chart string via `window.__renderMermaid()`, screenshots the bounding rect. Used this for the 5 mermaid blocks that exist only in MDX (4 demo scenarios + disputes flow). Hit one parse failure first run: a `;` inside a sequence message was being treated as a mermaid statement separator — replaced with `—` and re-rendered. Got the remaining **5 diagrams** → `docs/images/mermaid/{02-scenarios-s{1,2,3,4}, 11-disputes}.png`. Total: **20 PNGs**.
+4. Pushed all 20 PNGs + both capture scripts to `main` (commit `81219d2`, "docs: capture all 20 Mermaid diagrams as PNGs for Notion embed").
+5. Replaced every Mermaid code block in the affected Notion pages with `![caption](https://raw.githubusercontent.com/sami-funavry/Tessera/main/docs/images/mermaid/<file>.png)` via `update_content` search-replace. **19 mermaid blocks across 9 pages**: Root (1), Page 1 (1), Page 3 (3), Page 4 (1), Page 5 (4), Page 8 (1), Page 9 (2), Page 13 (2), Page 15 (4). Each caption is a one-line description of what the diagram shows.
+6. Verified Page 15 fetched back with 4 inline `![…](…)` blocks instead of mermaid code — confirmed the duplicated-source artifact is gone.
+
+**Outcome:** partial — diagram embeds in place; **the repo must be made public for the image URLs to resolve**. Once flipped, every embedded image (these 20 + the existing 11 UI screenshots already referenced from `docs/images/`) renders for everyone.
+
+**Files:** Notion pages 0/1/3/4/5/8/9/13/15 + new in-repo: `scripts/verify/capture-mermaid-diagrams.py`, `scripts/verify/render-extra-mermaid.py`, `docs/images/mermaid/*.png` (20).
+
+**Tokens:** ~70,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Notion's mermaid code-block renders source + preview together by default; there is no API toggle to suppress the source. The only durable fix is to render externally and embed as a PNG, which is what we did. The 2× device-scale-factor + 1600px viewport choice keeps the diagrams crisp at any Notion column width — sequence diagrams especially benefit from the extra resolution. Both capture scripts are reproducible: re-run them after any in-app docs change to refresh the assets.
+
+---
+
+### [P-10-followup] verify UI claim-button claim, fix docs — 2026-05-09
+
+**Prompt:** Verify whether the UI actually has a "Claim 1000 tUSDC" button on first load (the docs say it does and that it triggers MetaMask popup #1). If not, update / remove that section. Separately: the docs mention the user-facing bridge is not hitting the Go relayer directly — is that correct, why, and is verification + Patricia↔IAVL translation actually happening in the scenarios + bridge invoked from the UI? Just answer that part, no code changes.
+
+**Actions:**
+1. Traced the homepage: `frontend/app/HomepageClient.tsx` lines 862-868 show the tUSDC balance as **passive read-only text**, not a clickable button. There is **no** `claim()` `writeContract` call anywhere in the homepage. The only `writeContract` calls are `tUSDC.approve(BridgeVault, max)` (first-time only) and `BridgeVault.lock(...)`. So the docs claim ("MetaMask popup #1 is `claim()`") was wrong, and the popup numbering downstream was off-by-one.
+2. Updated Notion Page 9 ("Reference App — tUSDC Bridge") UI Walkthrough — replaced the false "Click Claim 1000 tUSDC → popup #1 = claim()" step with a corrected step explaining that the widget does **not** include a claim button, and giving the actual minting paths: Etherscan's *Write Contract* tab (Sepolia) or `node scripts/claim-neutron-tusdc.js` (Neutron). Renumbered popups: approve = #1 (first-time only), lock = #2.
+3. Updated `frontend/app/docs/page.tsx` for the same correction: dropped the "click the tUSDC balance pill" copy (the pill is not clickable) and replaced with the actual minting instructions. Updated the wallet swimlane Mermaid diagram to drop the fictional `FE→tUSDC.claim()` popup pair and show the real two-popup approve+lock bridge flow.
+4. Re-ran `scripts/verify/capture-mermaid-diagrams.py` on the wallet section, regenerated `docs/images/mermaid/08-wallets-1.png`, pushed.
+5. Answered the bridge-architecture question without modifying code: the user-facing bridge in `HomepageClient.handleBridge` calls `/api/bridge/relay`, which calls `relaySepoliaToNeutron`/`relayNeutronToSepolia` from `frontend/lib/relay-helper.ts` — a **server-side simulator** that uses Relayer A's wallet to do a direct CW20/ERC20 transfer to the recipient. The Verifier contract is **not** involved on the user-facing path. Synthetic 32-byte source / transformed roots (`randomHex32()`) are written to Supabase as `ProofFetched` / `ProofTransformed` events for the dashboard. The full Patricia↔IAVL transform, Ed25519 verification, and Verifier proof walk are exercised only by the in-process scenario runner (`go run ./cmd/tessera test-scenario [1..4]`) and the contract test suites; not by anything the user clicks. This is `DEC-06` ("server-side relay simulator") and is on the post-hackathon roadmap.
+
+**Outcome:** worked — committed as `6b7a3cf` ("docs: remove non-existent claim button from wallet flow"), pushed `81219d2..6b7a3cf`. 2 files changed, 7 insertions, 14 deletions. `pnpm exec tsc --noEmit` clean.
+
+**Files:**
+- Modified: `frontend/app/docs/page.tsx`, `docs/images/mermaid/08-wallets-1.png`, Notion Page 9 (tUSDC Bridge)
+
+**Tokens:** ~25,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Subtle docs-vs-reality drift that's easy to ship: the homepage shows tUSDC balance as text, and an early doc draft assumed it was a balance "pill" that you could click. Once a single doc says it, downstream docs (Notion, in-app /docs, the wallet swimlane diagram) inherit the same fiction. The lesson is to verify **every UI claim** in the docs against the actual rendered widget before signing off on a doc pass — Playwright was the right tool here. The bridge-architecture answer is the second subtle one: the UI says "Relayer is now translating the proof" while the simulator does a direct token transfer in the background. Both the toast copy and the progress roadmap are talking about a flow that doesn't actually happen in the user path. **This is captured in DEC-06 and the audit findings, but the user-facing copy still asserts it confidently** — consider tightening the toast / progress text in P-11 polish so the demo is honest about where the proof flow runs.
+
+---
+
+### [P-11] deployment planning — Railway MCP, deployment shape, end-to-end via real relayer — 2026-05-09
+
+**Prompt:** Plan deployment on Railway free plan: UI + 2 Go relayers + end-to-end via the actual Go relayer (no simulator shortcuts). Is there a Railway MCP for Claude Code that the VS Code extension can use? How will deployment work — direct from GitHub or via Docker images? Walk through the process in human-readable terms. Also append the missing post-P-10 documentation prompts to PROMPT_LOG.md (invoke the prompt-log skill).
+
+**Actions:**
+1. Invoked the `tessera-prompt-log` skill, audited PROMPT_LOG.md, found four post-P-10 doc-overhaul prompts had not been logged. Appended retroactive entries for: in-app docs Mermaid overhaul (`e586961`), full Notion documentation rebuild, Mermaid → PNG conversion (`81219d2`), and the claim-button correction (`6b7a3cf`).
+2. Researched Railway MCP — answered separately in the chat (a Railway MCP exists; can be added via `claude mcp add` in CLI or via the VS Code extension's MCP UI). Outlined the full deployment shape: three Railway services (frontend + Relayer A + Relayer B) connected to the GitHub repo via Nixpacks (no Dockerfile required for the initial path), each service with its own root directory + start command + env-var set. Explained the architectural change required to actually go end-to-end via the real relayer: the existing `frontend/app/api/bridge/relay/route.ts` calls a server-side simulator; for production this either (a) gets removed and the frontend polls Supabase while the relayer detects the source-chain `Locked` event itself (the relayer already does this in `SubscribeEvents`), or (b) the route becomes an HTTP proxy that posts to a new endpoint added to the Go relayer. (a) is the cleaner architectural fit but requires the relayer to be reliably online; (b) keeps the request-response feel of today.
+3. No code changes this prompt — the user explicitly asked for guidance only; the actual wiring + redeploy work happens after Railway MCP is added and after the GitHub repo is made public for image URLs in Notion to render.
+
+**Outcome:** worked — PROMPT_LOG.md caught up; deployment plan articulated; no code changes per instructions.
+
+**Files:** `PROMPT_LOG.md`
+
+**Tokens:** ~30,000. Model: Opus 4.7 (1M context).
+
+**Notes:** The Go relayer as written is a **goroutine daemon** — it observes both chains via `SubscribeEvents` and reacts; it does not currently expose an HTTP API. Option (a) above is therefore a smaller code change than option (b), because the relayer's existing event-subscriber loop is exactly what we want once the user's `BridgeVault.lock(...)` tx confirms. The frontend would need to drop the `/api/bridge/relay` simulator call and instead poll `messages` in Supabase (or use Supabase realtime — the subscription is already wired in `useMessageEvents.ts`) for the `executed` status. Railway's $5/month free credit covers roughly one always-on small service; running three (frontend + 2 relayers) likely exceeds it within days, so the deploy plan needs a billing call before going live.
+
+---
