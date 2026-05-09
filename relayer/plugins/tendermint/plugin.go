@@ -611,14 +611,28 @@ func extractSubmissionID(events []abci.Event) (string, bool) {
 	return "", false
 }
 
+// cwEnvelope mirrors tessera_types::MessageEnvelope on the CosmWasm side.
+// The two field types matter:
+//
+//   - `Action` is a fixed [4]byte (matches Rust's `[u8; 4]`). serde's default
+//     for `[u8; N]` is a JSON array of numbers (`[0, 0, 0, 1]`). Go's
+//     `json.Marshal` encodes a fixed-size byte array the same way (numeric
+//     array), but encodes a `[]byte` slice as a base64 *string*. Using `[]byte`
+//     here was the bug that produced
+//     `Error parsing into type verifier::msg::ExecuteMsg: Invalid type` — serde
+//     saw a string and expected a 4-element array.
+//
+//   - `Payload` stays `[]byte` because the Rust side is `cosmwasm_std::Binary`,
+//     which IS a JSON-base64 string. Go's `[]byte` round-trips correctly
+//     against `Binary`.
 type cwEnvelope struct {
-	SourceChainID string `json:"source_chain_id"`
-	SourceApp     string `json:"source_app"`
-	DestChainID   string `json:"destination_chain_id"`
-	DestApp       string `json:"destination_app"`
-	Action        []byte `json:"action"`
-	Payload       []byte `json:"payload"`
-	Nonce         uint64 `json:"nonce"`
+	SourceChainID string  `json:"source_chain_id"`
+	SourceApp     string  `json:"source_app"`
+	DestChainID   string  `json:"destination_chain_id"`
+	DestApp       string  `json:"destination_app"`
+	Action        [4]byte `json:"action"`
+	Payload       []byte  `json:"payload"`
+	Nonce         uint64  `json:"nonce"`
 }
 
 func toCWEnvelope(env chain.MessageEnvelope) cwEnvelope {
@@ -627,7 +641,7 @@ func toCWEnvelope(env chain.MessageEnvelope) cwEnvelope {
 		SourceApp:     env.SourceApp,
 		DestChainID:   env.DestChainID,
 		DestApp:       env.DestApp,
-		Action:        env.Action[:],
+		Action:        env.Action,
 		Payload:       env.Payload,
 		Nonce:         env.Nonce,
 	}
