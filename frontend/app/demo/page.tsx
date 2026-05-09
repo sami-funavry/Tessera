@@ -345,7 +345,11 @@ export default function DemoPage() {
     const eventItems: LogItem[] = (eventsData.data ?? []).map((e) => {
       const rawData = (e.raw_data ?? {}) as Record<string, unknown>;
       const tag = EVENT_TYPE_TO_TAG[e.event_type] ?? e.event_type.toLowerCase();
-      const chain: 'sepolia' | 'neutron' = e.chain_id === '11155111' ? 'sepolia' : 'neutron';
+      // P-10.8b: relayer writes chain_id='sepolia' (canonical plugin name);
+      // legacy/seeded rows use the EIP-155 literal '11155111'. Accept both
+      // so explorer links don't silently route to Celatone for Sepolia txs.
+      const chain: 'sepolia' | 'neutron' =
+        e.chain_id === '11155111' || e.chain_id === 'sepolia' ? 'sepolia' : 'neutron';
 
       // Only show tx hash if it's real-looking (not our synthetic all-zeros fallback)
       const isSyntheticFallback = e.tx_hash === '0x' + '0'.repeat(64);

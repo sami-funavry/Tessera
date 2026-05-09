@@ -1038,3 +1038,22 @@
 **Notes:** Two distinct UX-completion bugs that both passed every previous "tests pass / e2e works" check because the pipeline DID complete on-chain — only the UI's read path was broken. Lesson: the dashboard reads from a different source-of-truth (events table) than the API readiness signal (messages.status), so "the bridge works" in the relayer's worldview doesn't mean "the dashboard renders it." Worth a P-11 follow-up: write a contract test that asserts every message lifecycle stage produces exactly one row in the events table with the expected event_type, so the demo log invariant is enforced rather than implied. Also ran the existing tests against the new pipeline-event helper to make sure I didn't break the silent-mode hot path; the Locked branch is unchanged for the runner tests.
 
 ---
+
+### [P-10.8b] broaden frontend chain_id checks for legacy '11155111' vs canonical 'sepolia' — 2026-05-09 17:10
+
+**Prompt:** Continue iteration after P-10.8 verification. Found two more places where the same chain_id mismatch from P-10.8 silently degrades the UI — the demo log's chain classifier and the bonds-table lookup.
+
+**Actions:**
+1. `frontend/app/demo/page.tsx:348` — `e.chain_id === '11155111' ? 'sepolia' : 'neutron'`. Since the relayer writes `'sepolia'` to events.chain_id, every Sepolia event was getting classified as `'neutron'` and the explorer link in the log routed to Celatone instead of Etherscan. Broadened to `e.chain_id === '11155111' || e.chain_id === 'sepolia'`.
+2. `frontend/hooks/useRelayers.ts:158` — same comparison for bonds. The bonds table is still seeded with `'11155111'` (legacy from indexer setup), but if the indexer ever writes new rows with `'sepolia'`, the bond card would silently empty out. Broadened to accept both literals.
+3. `npx tsc --noEmit` clean.
+
+**Outcome:** patched + type-checked. Shipping in the same cycle as P-10.8 for one rebuild.
+
+**Files:** `frontend/app/demo/page.tsx`, `frontend/hooks/useRelayers.ts`
+
+**Tokens:** ~95,000. Model: Opus 4.7 (1M context).
+
+**Notes:** The right long-term fix is normalizing chain_id at the schema boundary — either migrate bonds rows to 'sepolia' or have the relayer write '11155111'. Both are straight one-liner code changes but require a coordinated data migration. The accept-both shim is a P-11 polish item to revisit; it costs one branch in two hot paths in exchange for zero migration risk during the demo window.
+
+---

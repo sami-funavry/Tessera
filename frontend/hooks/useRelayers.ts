@@ -152,10 +152,14 @@ export function useRelayerStats(): HookState<RelayerInfo[]> {
       const relayers: RelayerInfo[] = (['A', 'B'] as const).map((id) => {
         const addrs = RELAYER_ADDRESSES[id];
 
+        // P-10.8b: bonds table is seeded with chain_id='11155111' (EIP-155);
+        // the relayer writes 'sepolia' (canonical plugin name) into events
+        // and messages. Accept both so the bond card lights up regardless of
+        // which writer last touched the row.
         const sepoliaBond = bonds.find(
           (b) =>
             b.relayer_address.toLowerCase() === addrs.sepolia.toLowerCase() &&
-            b.chain_id === '11155111'
+            (b.chain_id === '11155111' || b.chain_id === 'sepolia')
         );
         const neutronBond = bonds.find(
           (b) =>
