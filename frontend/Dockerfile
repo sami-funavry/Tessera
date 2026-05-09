@@ -22,8 +22,26 @@ RUN corepack enable
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-# Next.js build expects NEXT_PUBLIC_* envs at build time (they're inlined into
-# the client bundle). Railway injects build-time env vars; nothing extra to do.
+# Next.js bakes NEXT_PUBLIC_* env vars into the client bundle at build time.
+# Docker BuildKit requires each one declared as ARG and re-exported as ENV
+# before `pnpm build` for Railway-injected build args to be visible.
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG NEXT_PUBLIC_SEPOLIA_RPC_URL
+ARG NEXT_PUBLIC_SEPOLIA_CHAIN_ID
+ARG NEXT_PUBLIC_NEUTRON_RPC_URL
+ARG NEXT_PUBLIC_NEUTRON_REST_URL
+ARG NEXT_PUBLIC_NEUTRON_CHAIN_ID
+ARG NEXT_PUBLIC_RELAYER_ADMIN_URL
+ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL \
+    NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY \
+    NEXT_PUBLIC_SEPOLIA_RPC_URL=$NEXT_PUBLIC_SEPOLIA_RPC_URL \
+    NEXT_PUBLIC_SEPOLIA_CHAIN_ID=$NEXT_PUBLIC_SEPOLIA_CHAIN_ID \
+    NEXT_PUBLIC_NEUTRON_RPC_URL=$NEXT_PUBLIC_NEUTRON_RPC_URL \
+    NEXT_PUBLIC_NEUTRON_REST_URL=$NEXT_PUBLIC_NEUTRON_REST_URL \
+    NEXT_PUBLIC_NEUTRON_CHAIN_ID=$NEXT_PUBLIC_NEUTRON_CHAIN_ID \
+    NEXT_PUBLIC_RELAYER_ADMIN_URL=$NEXT_PUBLIC_RELAYER_ADMIN_URL
+
 RUN pnpm build
 
 # ─── 3. Runtime ───────────────────────────────────────────────────────────────
