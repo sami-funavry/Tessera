@@ -131,11 +131,21 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // ─── Messages ─────────────────────────────────────────────────────────────────
 
+// idOnly is a minimal response shape that only decodes the row's primary key.
+// Used so we don't have to keep MessageRow / SubmissionRow JSON tags in lockstep
+// with PostgreSQL's actual return shape (PostgreSQL emits `numeric` columns as
+// JSON numbers, `bytea` as `\\x` literals, etc — which fights with whatever
+// types we picked for sending). PostgREST honours `?select=id` and returns
+// just that column.
+type idOnly struct {
+	ID int64 `json:"id"`
+}
+
 // UpsertMessage inserts or updates a message row (upsert on source_chain_id + nonce).
 // Returns the assigned database ID.
 func (c *Client) UpsertMessage(ctx context.Context, msg MessageRow) (int64, error) {
-	var rows []MessageRow
-	if err := c.upsert(ctx, "messages", "source_chain_id,nonce", msg, &rows); err != nil {
+	var rows []idOnly
+	if err := c.upsertSelect(ctx, "messages", "source_chain_id,nonce", "id", msg, &rows); err != nil {
 		return 0, fmt.Errorf("supabase UpsertMessage nonce=%d: %w", msg.Nonce, err)
 	}
 	if len(rows) == 0 {
@@ -153,7 +163,7 @@ func (c *Client) UpdateMessageStatus(ctx context.Context, id int64, status strin
 // FindMessageID looks up the database ID for a message by chain + nonce.
 // Returns 0, nil if the message is not found yet.
 func (c *Client) FindMessageID(ctx context.Context, sourceChainID string, nonce uint64) (int64, error) {
-	var rows []MessageRow
+	var rows []idOnly
 	filter := fmt.Sprintf("source_chain_id=eq.%s&nonce=eq.%d&select=id", sourceChainID, nonce)
 	if err := c.get(ctx, "messages", filter, &rows); err != nil {
 		return 0, fmt.Errorf("supabase FindMessageID: %w", err)
@@ -168,8 +178,8 @@ func (c *Client) FindMessageID(ctx context.Context, sourceChainID string, nonce 
 
 // InsertSubmission inserts a submission row. Returns the assigned database ID.
 func (c *Client) InsertSubmission(ctx context.Context, sub SubmissionRow) (int64, error) {
-	var rows []SubmissionRow
-	if err := c.insert(ctx, "submissions", sub, &rows); err != nil {
+	var rows []idOnly
+	if err := c.insertSelect(ctx, "submissions", "id", sub, &rows); err != nil {
 		return 0, fmt.Errorf("supabase InsertSubmission message_id=%d: %w", sub.MessageID, err)
 	}
 	if len(rows) == 0 {
@@ -259,6 +269,41 @@ func (c *Client) insert(ctx context.Context, table string, row any, out any) err
 	}
 	c.setHeaders(req, true)
 	return c.doAndDecode(req, out, http.StatusCreated)
+}
+
+// insertSelect POSTs a row and asks PostgREST to return only the columns named
+// in `selectCols` (e.g. "id"). Used by callers that only need the assigned
+// primary key; avoids fights with PostgreSQL column-type → JSON shape drift
+// (numeric → number, bytea → \\x literal, etc.) that broke a full-row decode.
+func (c *Client) insertSelect(ctx context.Context, table, selectCols string, row any, out any) error {
+	body, err := json.Marshal(row)
+	if err != nil {
+		return fmt.Errorf("insertSelect %s: marshal: %w", table, err)
+	}
+	url := c.projectURL + "/rest/v1/" + table + "?select=" + selectCols
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("insertSelect %s: build request: %w", table, err)
+	}
+	c.setHeaders(req, true)
+	return c.doAndDecode(req, out, http.StatusCreated)
+}
+
+// upsertSelect is the on-conflict-merge variant of insertSelect — same
+// rationale for the projection.
+func (c *Client) upsertSelect(ctx context.Context, table, onConflict, selectCols string, row any, out any) error {
+	body, err := json.Marshal(row)
+	if err != nil {
+		return fmt.Errorf("upsertSelect %s: marshal: %w", table, err)
+	}
+	url := c.projectURL + "/rest/v1/" + table + "?on_conflict=" + onConflict + "&select=" + selectCols
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("upsertSelect %s: build request: %w", table, err)
+	}
+	c.setHeaders(req, true)
+	req.Header.Set("Prefer", "resolution=merge-duplicates,return=representation")
+	return c.doAndDecode(req, out, http.StatusCreated, http.StatusOK)
 }
 
 // upsert POSTs a row with on-conflict merge. onConflict is a comma-separated column list.

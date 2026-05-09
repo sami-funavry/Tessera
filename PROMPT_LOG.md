@@ -858,3 +858,23 @@
 **Notes:** Both bugs are "the type system can't help you when you cross a marshalling boundary" failures: (a) `[]byte` in Go means "send/receive base64" by JSON convention, but PostgreSQL bytea has its own `\\x…` encoding — the field is named `bytea` for a reason and the Go convention conflicts with it; (b) `*big.Int` and `*hexutil.Big` are nominally interchangeable big-integer types in go-ethereum but their JSON serialisations are different in a way that propagates to every downstream consumer. The defence in depth is what the verbose logging from P-10.7d enabled — without those changes, both of these would still be hiding behind the same generic "submitter: handleEvent failed" message and we'd be blind. P-11 polish: add fuzz tests for the supabase client that round-trip every column type against a real PostgREST instance, plus a unit test that swaps go-ethereum's StorageResult.Value between `*big.Int` and `*hexutil.Big` to keep the storageProofEntry decoder honest.
 
 ---
+
+### [P-10.7f] decode UPSERT response with `?select=id` — sidestep every column-type fight — 2026-05-09 11:55
+
+**Prompt:** Continue iterating until the relayer pipeline works end-to-end. The user wants real txs going through.
+
+**Actions:**
+1. Reviewed bb0e7e7 deploy logs after the honest scenario ran. Real progress visible: `LockTusdc: lock submitted` (3:52:38) → `handleEvent: proof transformed` (3:53:08) → then two new errors: `cannot unmarshal number into Go struct field MessageRow.amount of type string` (PostgreSQL `numeric` column returns a JSON number; relayer's `Amount string` rejected it) and `cosmwasm execute: account info: status 502` (Polkachu Neutron REST flake).
+2. The amount-type-drift is the same family as P-10.7e's `storageProof.value` and `payload`: PostgreSQL types (`numeric`, `bytea`, etc.) emit JSON shapes that don't match the Go struct field types we picked for *send*. Rather than fix every column individually, switched the upsert/insert response decoders to a minimal `idOnly` struct (`{ "id": int64 }`) and added two new low-level helpers — `upsertSelect` and `insertSelect` — that pass `?select=id` so PostgREST returns only the column we actually need. Applied to `UpsertMessage`, `FindMessageID`, and `InsertSubmission`.
+3. The Neutron 502 is transient infra (Polkachu free-tier flake on `account info` query before broadcasting). Will let it self-heal on the next event poll cycle and only intervene if the failure persists post-deploy. Adding RPC retry/backoff is a separate scope.
+4. `go build`, `go test ./internal/relayer/... ./internal/supabase/...` clean.
+
+**Outcome:** patched + tested locally. Pushing + redeploying — once this lands the upsert response decode error is gone, leaving only the transient Neutron 502 to ride out on retry.
+
+**Files:** `relayer/internal/supabase/client.go`
+
+**Tokens:** ~210,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Don't try to keep two struct definitions in lockstep with a database's wire format. The pattern here — "use a tiny projection struct for the response, leave the request struct alone, ask the server to return only what you need" — is the right answer for any client that has more than two columns of type drift between send and receive. The flip side: the relayer can no longer read back arbitrary fields from the upsert response, but it never needed to — `dbUpsertMessage` only consumes the row id. Future calls that need additional fields can use a one-off projection struct + appropriate `?select=` list.
+
+---
