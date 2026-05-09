@@ -1,7 +1,7 @@
 # Multi-stage build for the Tessera Go relayer.
 # Final image is minimal Alpine + the static binary; no Go toolchain at runtime.
 
-FROM golang:1.23-alpine AS builder
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /build
 
