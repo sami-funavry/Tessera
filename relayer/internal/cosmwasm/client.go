@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	btcecdsa "github.com/btcsuite/btcd/btcec/v2/ecdsa"
@@ -274,37 +275,64 @@ func compactSig(sig *btcecdsa.Signature) []byte {
 // ─── REST helpers ────────────────────────────────────────────────────────────
 
 // accountInfo queries the Neutron REST endpoint for the signer's account number and sequence.
+//
+// Public Cosmos REST endpoints (Polkachu, Allnodes, etc.) periodically return
+// 5xx — Polkachu's pion-1 REST returned a solid 502 for ~30 minutes during
+// P-10.7g — so we retry with exponential backoff on transient gateway / DNS
+// failures. The relayer's submitter goroutine drops events on error, so a
+// single-shot failure here costs us a whole bridge.
 func (c *Client) accountInfo(ctx context.Context) (accountNumber, sequence uint64, err error) {
+	const maxAttempts = 5
 	url := fmt.Sprintf("%s/cosmos/auth/v1beta1/accounts/%s", c.restURL, c.address)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return 0, 0, fmt.Errorf("account info GET: %w", err)
-	}
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, 0, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return 0, 0, fmt.Errorf("account info: status %d: %s", resp.StatusCode, body)
-	}
 
-	var result struct {
-		Account struct {
-			AccountNumber string `json:"account_number"`
-			Sequence      string `json:"sequence"`
-		} `json:"account"`
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if reqErr != nil {
+			return 0, 0, reqErr
+		}
+		resp, doErr := c.httpClient.Do(req)
+		if doErr != nil {
+			lastErr = fmt.Errorf("account info GET: %w", doErr)
+		} else {
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr != nil {
+				lastErr = readErr
+			} else if resp.StatusCode == http.StatusOK {
+				var result struct {
+					Account struct {
+						AccountNumber string `json:"account_number"`
+						Sequence      string `json:"sequence"`
+					} `json:"account"`
+				}
+				if uErr := json.Unmarshal(body, &result); uErr != nil {
+					return 0, 0, fmt.Errorf("account info parse: %w", uErr)
+				}
+				fmt.Sscanf(result.Account.AccountNumber, "%d", &accountNumber)
+				fmt.Sscanf(result.Account.Sequence, "%d", &sequence)
+				return accountNumber, sequence, nil
+			} else if resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests {
+				// Retryable upstream failure.
+				lastErr = fmt.Errorf("account info: status %d: %s", resp.StatusCode, body)
+			} else {
+				// 4xx other than 429 — not retryable, return now.
+				return 0, 0, fmt.Errorf("account info: status %d: %s", resp.StatusCode, body)
+			}
+		}
+
+		if attempt < maxAttempts {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second // 1s, 2s, 4s, 8s
+			slog.Warn("cosmwasm accountInfo: retrying after upstream error",
+				"attempt", attempt, "backoff_sec", backoff.Seconds(), "err", lastErr)
+			select {
+			case <-ctx.Done():
+				return 0, 0, ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
 	}
-	if err := json.Unmarshal(body, &result); err != nil {
-		return 0, 0, fmt.Errorf("account info parse: %w", err)
-	}
-	fmt.Sscanf(result.Account.AccountNumber, "%d", &accountNumber)
-	fmt.Sscanf(result.Account.Sequence, "%d", &sequence)
-	return accountNumber, sequence, nil
+	return 0, 0, fmt.Errorf("account info: %d attempts exhausted: %w", maxAttempts, lastErr)
 }
 
 // broadcast sends TxRaw bytes to the Neutron broadcast endpoint.

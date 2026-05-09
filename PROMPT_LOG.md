@@ -878,3 +878,24 @@
 **Notes:** Don't try to keep two struct definitions in lockstep with a database's wire format. The pattern here — "use a tiny projection struct for the response, leave the request struct alone, ask the server to return only what you need" — is the right answer for any client that has more than two columns of type drift between send and receive. The flip side: the relayer can no longer read back arbitrary fields from the upsert response, but it never needed to — `dbUpsertMessage` only consumes the row id. Future calls that need additional fields can use a one-off projection struct + appropriate `?select=` list.
 
 ---
+
+### [P-10.7g] Polkachu Neutron REST 502'ing — swap endpoint + add retry — 2026-05-09 12:05
+
+**Prompt:** Continuing the iteration. After P-10.7f shipped, the deployed pipeline now flows: `handleEvent: received cross-chain event` → `LockTusdc: lock submitted` → `handleEvent: proof transformed` (FetchProof + Patricia→IAVL transform working!) → ❌ `cosmwasm execute: account info: status 502`. Polkachu's Neutron pion-1 REST is solid-502'ing every request.
+
+**Actions:**
+1. Probed alternative public Neutron pion-1 REST endpoints with `curl`. Polkachu (`https://neutron-testnet-api.polkachu.com`) returns 502 on every request; `https://rest-falcron.pion-1.ntrn.tech` returns 200 with the relayer's correct `account_number=700244, sequence=63`. Confirmed both `/cosmos/auth/v1beta1/accounts/{addr}` and `/cosmos/tx/v1beta1/txs` work on rest-falcron.
+2. Updated `NEUTRON_REST_URL` env var on both relayer-a and relayer-b services via Railway MCP `variable_set`. Setting an env var auto-triggers a redeploy.
+3. Added retry-with-exponential-backoff to `cosmwasm.accountInfo` in `relayer/internal/cosmwasm/client.go`: 5 attempts, 1s/2s/4s/8s backoff. Retries on 5xx and 429; non-retryable 4xx returns immediately. Honours ctx cancellation. The submitter goroutine has been dropping events on a single-shot failure — once REST flakes, the lock event is lost from that relayer's perspective forever (cursor advances past the block). With this retry, transient infra blips no longer cost us bridges.
+4. Did not retry the `broadcast` step — that one is idempotent at the protocol level (Cosmos accepts the same TxRaw byte-for-byte and dedups by hash) but wraps a real money-spending operation, so I'd rather see one explicit error than have it accidentally double-broadcast. Account info reads are safe to retry.
+5. `go build ./...`, `go test ./internal/cosmwasm/...` clean.
+
+**Outcome:** patched, build green. Pushing now. Both env vars are already set so the next redeploy of either relayer will pick up `NEUTRON_REST_URL=https://rest-falcron.pion-1.ntrn.tech` and the `accountInfo` retry path.
+
+**Files:** `relayer/internal/cosmwasm/client.go`
+
+**Tokens:** ~225,000. Model: Opus 4.7 (1M context).
+
+**Notes:** Each iteration today removed exactly one error-shaped layer: (e) bytea / numeric column type drift in the response decode, (f) projection-based decode to short-circuit further drift, (g) flaky upstream + retry. The pipeline as-of bb0e7e7 was actually finishing FetchProof + TranslateProofTo cleanly — the only thing standing between us and a confirmed Neutron destination tx was Polkachu's free-tier reliability. The fastest signal in this whole cycle was finally hitting `rest-falcron` directly with `curl` and seeing it answer in 200 ms while Polkachu was a wall of 502s — at that point the fix was obvious. P-11 polish: bake a small set of fallback REST URLs into the cosmwasm client and rotate on persistent 5xx, so a bad day at one provider doesn't gate the whole demo.
+
+---
