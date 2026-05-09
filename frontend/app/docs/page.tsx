@@ -1510,7 +1510,7 @@ function ScriptsContent() {
             ],
             [
               <code key="f8" className="font-mono text-xs">relayer/internal/scenario/runner_test.go</code>,
-              'In-process scenario runner — invoke via `go test -run TestRunS[1-4] ./internal/scenario/...`',
+              'In-process scenario runner — invoke via `go test -run TestS[1-4]_ ./internal/scenario/...` or `go run ./cmd/tessera test-scenario [1..4]`',
             ],
           ]}
         />
@@ -1601,8 +1601,10 @@ function ScriptsContent() {
           ]}
         />
         <p className="text-stone-500 text-xs mt-3">
-          The in-process equivalent (no testnet funds required) is{' '}
-          <code className="font-mono text-stone-300">go test -run TestRunS[1-4] ./relayer/internal/scenario/...</code>.
+          In-process equivalents (no testnet funds required):{' '}
+          <code className="font-mono text-stone-300">go test -run TestS[1-4]_ ./relayer/internal/scenario/...</code>{' '}
+          or{' '}
+          <code className="font-mono text-stone-300">go run ./cmd/tessera test-scenario [1..4]</code>.
         </p>
       </ProseSection>
 
