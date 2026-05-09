@@ -6,6 +6,59 @@
 
 ---
 
+# Prompt Log Highlights — Form 2 Deliverable
+
+> Operator-curated 5-best + 3-worst selection from this build's ~150 prompts.
+> Added 2026-05-10 after the P-10.13 frontend fix round closed.
+
+## 5 best prompts
+
+### #1 — Forensic test against the real failed-tx bytes
+**Prompt:** "Continue the iteration loop after Phase A — instrument and pinpoint the 'invalid proof' rejection on Neutron `execute_message`."
+**Section:** [P-10.9 Phase B] in PROMPT_LOG.md
+**Why it worked:** Steered Claude into diagnostic mode against actual failing wire bytes from the explorer instead of guessing. A 4-line Go program decoded the proof's embedded msgID, computed the contract-expected msgID, and showed they differed by exactly the `SourceApp`/`Nonce` fields the `TranslateProofTo` interface had been silently dropping. Hours of root-cause hunting collapsed to one diagnostic test, and the fix was a clean interface-signature change with regression tests baked in.
+
+### #2 — Sub-agent dispatch for Phase 0 discovery
+**Prompt:** "Use a subagent to go through the repo (skills, .claude, CLAUDE.md, SPEC.md) to build a mental map of the project. Summarize in 100 words, give 1-liner phases, and produce a tweakable execution plan. No coding yet."
+**Section:** [P-pre] in PROMPT_LOG.md
+**Why it worked:** Three parallel Explore agents read SPEC.md (129 reqs), catalogued all 13 skills, and mapped the empty file tree concurrently. Captured the right scope (no code, just plan), produced a usable phase-by-phase execution plan in one pass, and established the sub-agent-for-read-heavy-exploration pattern that paid off across every later phase.
+
+### #3 — Multi-lens P-10 audit with parallel auditors
+**Prompt:** "Execute Phase 10 end-to-end: in-depth audit (security, production-readiness, UX, docs), find all errors including critical and fix them, iterate until 100% functional… produce a severity table + scorecard, log to PROMPT_LOG, wait for commit approval."
+**Section:** [P-10] in PROMPT_LOG.md
+**Why it worked:** Four parallel auditors returned 89 findings (15 P0, 38 P1, 36 P2). Critically the prompt set the right honest posture — "accept-with-rationale + roadmap link" for out-of-scope production-grade fixes rather than "patch over and hope" — which surfaced SEC-01/SEC-02 demo-path exploits and got them gated, while documenting SEC-03..SEC-15 as explicit follow-ups instead of hiding them.
+
+### #4 — Senior-doc-expert audit loop catches the fictional ChainPlugin
+**Prompt:** "Hardline doc polish: convert ASCII arrow art in `/docs` to real Mermaid diagrams… run a doc audit loop until 'high end documentation engineer' pass; finish with a complete code/UI/project audit (report-only, no fixes)."
+**Section:** [P-10-followup] in PROMPT_LOG.md
+**Why it worked:** The "write doc → senior-doc-expert review → triage → fix P0/P1 → re-verify" loop caught a 9-method fictional `ChainPlugin` interface in the most user-visible doc surface — a direct anti-hallucination rule violation that would otherwise have shipped to graders. Single-pass doc reviews would have missed it; explicitly naming the audit role in the prompt forced the depth.
+
+### #5 — UI ↔ on-chain reality reconciliation with Playwright verification
+**Prompt:** "Discover root causes of 11 surfaced UI bugs… Build an independent fix plan separate from P-10/P-11. Then execute the plan: fix all bugs, run full audit, use Playwright for UI verification, iterate until 100% passing."
+**Section:** [P-9.5] in PROMPT_LOG.md
+**Why it worked:** Three parallel Explore subagents resolved exact file:line root causes for every reported bug before any code changed. The "build a plan, then execute" structure forced Claude into investigative mode; Playwright was named as the verification gate, so "fixed" meant "verified rendered". All 14 todos closed in one loop with real on-chain balances moving as proof.
+
+## 3 worst prompts
+
+### #1 — "Production ready, no vulnerabilities, use all skills necessary"
+**Prompt:** "Production ready, no vulnerabilities, use all skills necessary."
+**Section:** [P-10.10] in PROMPT_LOG.md
+**Why it failed:** Hand-wave at the end of an already-deep iteration. "Production ready" against a hackathon codebase with known-deferred contract bugs (F-S02 forged-proof attack, F-101 restart loss) cannot be satisfied without contract redeploys; the prompt invited Claude to either lie or boil the ocean. The audit dutifully surfaced 11 findings but the framing made triage harder, not easier — the honest answer was "no, and here is the list" not "yes."
+
+### #2 — Vague continuation prompt during the P-10.7 firefight
+**Prompt:** "Continue iterating, verify deployment, ensure relayer txs actually flow through and complete."
+**Section:** [P-10.7 ✅ END-TO-END VERIFIED] in PROMPT_LOG.md (and several sibling P-10.7 entries)
+**Why it failed:** Ten back-to-back fixes (P-10.7a–j) ran on prompts of this shape with zero scope — each cycle ate one cache-warm and one Railway redeploy uncovering the next masked failure (poll cursor → batch size → privkey leak → on_conflict header → bytea null → numeric drift → REST 502 → SignDoc field → zero submissionID → action serde shape). Most were genuine, but the lack of a "stop after N or escalate" guardrail meant tokens kept burning when a human-in-the-loop architectural review (e.g. "should we be hand-rolling SignDoc at all?") would have been cheaper.
+
+### #3 — "Better than the mockup. Menace level UI."
+**Prompt:** "Build the entire Next.js frontend end-to-end… Target: 'menace level' UI with animations and 3D effects, better than the mockup."
+**Section:** [P-9] full frontend build in PROMPT_LOG.md
+**Why it failed:** Aesthetic vibes-only direction with no measurable pass condition. Claude burned ~180k tokens on a one-shot build, shipped a working surface, but missed the locked invariant that the frontend's `/api/bridge/relay` was a server-side simulator (DEC-06) — not flagged in the prompt, not flagged in review, surfaced months later in P-9.5 + P-10-followup as "the toast says 'relayer is translating the proof' but no relayer is involved." Vague creative briefs hide architectural drift; tight invariants ("must call the deployed Go relayer") would have caught it on day one.
+
+---
+
+
+
 ### [P-pre] project discovery and execution plan — 2026-05-07
 
 **Prompt:** Use a subagent to go through the repo (skills, .claude, CLAUDE.md, SPEC.md) to build a mental map of the project. Summarize in 100 words, give 1-liner phases, and produce a tweakable execution plan. No coding yet.
