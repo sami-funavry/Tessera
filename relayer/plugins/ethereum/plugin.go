@@ -116,9 +116,16 @@ func (p *Plugin) connect(ctx context.Context) error {
 func (p *Plugin) ChainID() string { return p.chainID }
 
 // SepoliaBridgeVaultAddr returns the deployed Sepolia BridgeVault address as
-// a 0x-prefixed hex string. Used by the admin /trigger-burn handler to default
-// the destination_app on Neutron→Sepolia demos.
+// a 0x-prefixed hex string. Used as the source-side `lock` contract on the
+// Sepolia→Neutron flow.
 func (p *Plugin) SepoliaBridgeVaultAddr() string { return p.addrs.SepoliaBridgeVault }
+
+// SepoliaBridgeMintAddr returns the deployed Sepolia BridgeMint address.
+// Used as the destination-side dispatch target for Neutron→Sepolia burns,
+// so fresh tokens are minted rather than released from a prior-locked vault
+// position. (BridgeVault.release would revert UnknownNonce because the
+// Neutron burn nonce isn't tied to any earlier Sepolia lock.)
+func (p *Plugin) SepoliaBridgeMintAddr() string { return p.addrs.SepoliaBridgeMint }
 
 // RelayerSepoliaAddr returns the relayer's own Sepolia EVM address derived
 // from the configured private key, as an EIP-55 0x-prefixed hex string.

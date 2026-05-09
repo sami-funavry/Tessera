@@ -97,16 +97,20 @@ func (r *Runner) handleTriggerBurn(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	// destApp is the Sepolia BridgeVault contract; recipient is the user's
-	// Sepolia EVM address. P-10.10 split these previously-conflated params:
-	// `recipient` used to mean the destination contract, which made it
-	// impossible for the relayer to know who to release tokens to.
+	// destApp is the Sepolia destination contract; recipient is the user's
+	// Sepolia EVM address. Default destApp is BridgeMint, not BridgeVault:
+	// for fresh Neutron→Sepolia bridges the burn nonce is independent of any
+	// prior Sepolia lock, so BridgeVault.release would revert UnknownNonce.
+	// BridgeMint mints fresh tUSDC to the recipient, which is the correct
+	// behavior for Neutron-originated bridges. Callers can override via
+	// `dest_app=` to target BridgeVault explicitly when finalising a
+	// Sepolia→Neutron→Sepolia round-trip with a known prior lock nonce.
 	destApp := req.URL.Query().Get("dest_app")
 	if destApp == "" {
-		destApp = ethPlugin.SepoliaBridgeVaultAddr()
+		destApp = ethPlugin.SepoliaBridgeMintAddr()
 	}
 	if destApp == "" {
-		http.Error(w, "destination Sepolia BridgeVault address not configured", http.StatusBadRequest)
+		http.Error(w, "destination Sepolia address not configured (SEPOLIA_MINT/SEPOLIA_VAULT)", http.StatusBadRequest)
 		return
 	}
 	recipient := req.URL.Query().Get("recipient")
