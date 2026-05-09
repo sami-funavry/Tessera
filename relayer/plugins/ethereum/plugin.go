@@ -890,9 +890,15 @@ func buildBridgePayloadForDest(
 			// with InvalidPayload, which is louder than a silent zero-byte drop.
 			recipient = user.Hex()
 		}
+		// Scale 18-decimal Sepolia wei → 6-decimal Neutron uTUSDC. Without this
+		// the recipient would receive amount * 10^12 tokens on Neutron (10
+		// tUSDC locked → 10 trillion tUSDC minted) which we measured on the
+		// first end-to-end run. Truncates sub-1µtUSDC dust silently — fine
+		// for testnet demo amounts.
+		neutronAmount := new(big.Int).Quo(amount, big.NewInt(1_000_000_000_000))
 		return []byte(fmt.Sprintf(
 			`{"recipient":%q,"amount":"%s","nonce":%d}`,
-			recipient, amount.String(), nonce,
+			recipient, neutronAmount.String(), nonce,
 		))
 	}
 	return buildLockPayload(user, amount, nonce)

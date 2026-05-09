@@ -368,6 +368,12 @@ func (p *Plugin) decodeResultTx(tx *coretypes.ResultTx) (chain.Event, error) {
 // `recipientHex` is a 0x-prefixed 20-byte hex string from the Burn event
 // attributes; malformed values produce a zero address (the destination
 // contract will revert). `amount` may be nil (treated as zero).
+//
+// Scales the 6-decimal Neutron uTUSDC amount up to 18-decimal Sepolia wei
+// by multiplying by 10^12; the symmetric scale-down lives in
+// ethereum/plugin.go::buildBridgePayloadForDest. Without this the user
+// would receive amount/10^12 on Sepolia (10 tUSDC burned → 0.00000001
+// tUSDC released).
 func buildBurnPayload(recipientHex string, amount *big.Int, nonce uint64) []byte {
 	var buf [96]byte
 	if recipientHex != "" {
@@ -378,7 +384,8 @@ func buildBurnPayload(recipientHex string, amount *big.Int, nonce uint64) []byte
 		}
 	}
 	if amount != nil {
-		amount.FillBytes(buf[32:64])
+		sepoliaAmount := new(big.Int).Mul(amount, big.NewInt(1_000_000_000_000))
+		sepoliaAmount.FillBytes(buf[32:64])
 	}
 	binary.BigEndian.PutUint64(buf[88:96], nonce)
 	return buf[:]
